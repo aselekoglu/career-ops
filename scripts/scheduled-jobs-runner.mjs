@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 import {
   readScheduledStore,
   withResourceLock,
