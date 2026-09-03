@@ -50,8 +50,25 @@ test("runner and scheduler-status derive the same default and custom lock path",
   const root = "C:/career-ops";
   const defaultStore = scheduledStorePath(root, null);
   assert.equal(scheduledRunnerResourcePath(defaultStore), `${defaultStore}.runner`);
-  const customStore = scheduledStorePath(root, "C:/profile/scheduled-jobs.json");
-  assert.equal(scheduledRunnerResourcePath(customStore), `${path.resolve("C:/profile/scheduled-jobs.json")}.runner`);
+  const configuredStore = "C:/profile/scheduled-jobs.json";
+  const customStore = scheduledStorePath(root, configuredStore);
+  assert.equal(customStore, configuredStore);
+  assert.equal(scheduledRunnerResourcePath(customStore), `${configuredStore}.runner`);
+});
+
+test("relative configured store paths resolve against the supplied career-ops root", () => {
+  const firstRoot = fs.mkdtempSync(path.join(process.env.TEMP || process.cwd(), "career-ops-store-root-a-"));
+  const secondRoot = fs.mkdtempSync(path.join(process.env.TEMP || process.cwd(), "career-ops-store-root-b-"));
+  try {
+    const relative = "data/custom-scheduled-jobs.json";
+    assert.equal(scheduledStorePath(firstRoot, relative), path.resolve(firstRoot, relative));
+    assert.equal(scheduledStorePath(secondRoot, relative), path.resolve(secondRoot, relative));
+    const absolute = path.join(firstRoot, "absolute-scheduled-jobs.json");
+    assert.equal(scheduledStorePath(secondRoot, absolute), absolute);
+  } finally {
+    fs.rmSync(firstRoot, { recursive: true, force: true });
+    fs.rmSync(secondRoot, { recursive: true, force: true });
+  }
 });
 
 test("scheduled-job CRUD uses the shared store resolver", () => {
