@@ -8,7 +8,7 @@ import {
 } from "./scheduled-jobs-store.mjs";
 import { nextScheduledRun } from "./scheduled-cadence.mjs";
 import { assertScheduledJobBody } from "./scheduled-job-input.mjs";
-import { scheduledStorePath } from "./scheduled-runner-path.mjs";
+import { scheduledStorePath } from "../../../lib/scheduled-runner-path.mjs";
 
 export type JobStatus = "active" | "paused" | "deleted";
 export type ScanEngine = "full" | "portals";
