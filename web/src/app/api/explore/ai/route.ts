@@ -11,7 +11,8 @@ import { assembleDedupContext } from "@/lib/core/discover";
 // cannot persist; the only writes happen when the user later ADDs a candidate.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 600;
+// Vercel Hobby allows at most 300 seconds per Serverless Function.
+export const maxDuration = 300;
 
 const OUTPUT_CONTRACT = `
 

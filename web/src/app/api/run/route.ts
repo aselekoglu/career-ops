@@ -12,7 +12,10 @@ import { acquireTrackerWrite, releaseTrackerWrite } from "@/lib/core/run-registr
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 800; // a real oferta evaluation / pdf-mode CV tailoring + render is heavy and multi-step
+// Vercel Hobby enforces a 300-second maximum for Serverless Functions.
+// Cloud execution is currently fail-closed in proxy.ts; keep this value valid
+// so the deployment output can still be built and promoted safely.
+export const maxDuration = 300;
 
 export async function POST(req: Request) {
   let body: { kind?: string; input?: string; cliId?: string };
@@ -170,14 +173,14 @@ export async function POST(req: Request) {
       let lastCostUsd: number | null = null;
       // pdf-mode's agent only tailors content now (rendering moved to the
       // backend, #2172) — but its killMs still has to leave real headroom
-      // inside the route's overall maxDuration (800s): the render+mark phase
+      // inside the route's overall maxDuration (300s): the render+mark phase
       // (renderPdf, below) starts only after this timer's window and has no
       // timeout of its own, so an agent that runs close to its full budget
       // would otherwise leave the platform's hard maxDuration cutoff to kill
       // generate-pdf.mjs mid-render. 600s agent / ~200s render is ample —
       // a Chromium PDF render normally takes low tens of seconds even with a
       // cold Playwright launch.
-      const killMs = kind === "pdf" ? 600_000 : 285_000;
+      const killMs = kind === "pdf" ? 240_000 : 240_000;
       killer = setTimeout(() => {
         try { child.kill("SIGTERM"); } catch { /* ignore */ }
       }, killMs);
