@@ -85,6 +85,7 @@ export function ScheduleJobAction({ filters }: { filters: ExploreFilters }) {
           {state && <span className="text-xs text-muted">{state}</span>}
         </div>
       )}
+      {!open && state && <span role="status" className="text-xs text-muted">{state}</span>}
     </div>
   );
 }

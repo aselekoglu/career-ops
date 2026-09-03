@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import * as yaml from "js-yaml";
 import {
   isSafeScheduledId,
-  readScheduledStore,
   withResourceLock,
   withScheduledStore,
   writeScheduledStoreAtomic,
@@ -54,38 +53,65 @@ function claimIsStale(item, nowMs) {
   return !Number.isFinite(claimedMs) || nowMs - claimedMs >= QUEUE_CLAIM_STALE_MS;
 }
 
+function claimQueueItem(store, item, job, nowMs) {
+  if (item.claimToken && !claimIsStale(item, nowMs)) return null;
+  if (item.claimToken) {
+    const staleRun = item.runId && store.runs.find((run) => run.id === item.runId);
+    if (staleRun) {
+      staleRun.state = "queued";
+      staleRun.message = "Requeued after an interrupted worker.";
+    }
+  }
+  const claimToken = randomUUID();
+  item.claimToken = claimToken;
+  item.claimedAt = new Date(nowMs).toISOString();
+  if (!item.runId || !isSafeScheduledId(item.runId)) item.runId = randomUUID();
+  const run = store.runs.find((candidate) => candidate.id === item.runId);
+  if (run) {
+    run.state = "running";
+    run.at = new Date(nowMs).toISOString();
+    run.attempt = (run.attempt || 0) + 1;
+  } else {
+    store.runs.unshift({ id: item.runId, jobId: job.id, at: new Date(nowMs).toISOString(), state: "running", attempt: 1, engine: job.engine || "full" });
+  }
+  return { job: structuredClone(job), queueId: item.id, runId: item.runId, claimToken };
+}
+
 export function claimDueJob(store, nowMs = Date.now()) {
   for (const item of store.queue) {
     const job = store.jobs.find((candidate) => candidate.id === item.jobId && candidate.status === "active");
     if (!job) continue;
-    if (item.claimToken && !claimIsStale(item, nowMs)) continue;
-    if (item.claimToken) {
-      const staleRun = item.runId && store.runs.find((run) => run.id === item.runId);
-      if (staleRun) {
-        staleRun.state = "queued";
-        staleRun.message = "Requeued after an interrupted worker.";
-      }
-    }
-    const claimToken = randomUUID();
-    item.claimToken = claimToken;
-    item.claimedAt = new Date(nowMs).toISOString();
-    if (!item.runId || !isSafeScheduledId(item.runId)) item.runId = randomUUID();
-    const run = store.runs.find((candidate) => candidate.id === item.runId);
-    if (run) {
-      run.state = "running";
-      run.at = new Date(nowMs).toISOString();
-      run.attempt = (run.attempt || 0) + 1;
-    } else {
-      store.runs.unshift({ id: item.runId, jobId: job.id, at: new Date(nowMs).toISOString(), state: "running", attempt: 1, engine: job.engine || "full" });
-    }
-    return { job: structuredClone(job), queueId: item.id, runId: item.runId, claimToken };
+    const claim = claimQueueItem(store, item, job, nowMs);
+    if (claim) return claim;
   }
   return null;
 }
 
+export function claimManualJob(store, jobId, nowMs = Date.now()) {
+  const job = store.jobs.find((candidate) => candidate.id === jobId && candidate.status === "active");
+  if (!job) return null;
+  let item = store.queue.find((candidate) => candidate.jobId === jobId);
+  if (!item) {
+    item = { id: randomUUID(), jobId, queuedAt: new Date(nowMs).toISOString() };
+    store.queue.push(item);
+  }
+  return claimQueueItem(store, item, job, nowMs);
+}
+
+export function runnerResourcePath(storePath) {
+  return `${storePath}.runner`;
+}
+
+function numericFilter(value, fallback, minimum, maximum = Number.POSITIVE_INFINITY) {
+  if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.round(number)));
+}
+
 export function buildScanCommand(job) {
   const filters = job.filters || {};
-  const sinceDays = Number.isFinite(Number(filters.sinceDays)) ? Math.max(1, Math.round(Number(filters.sinceDays))) : 7;
+  const sinceDays = numericFilter(filters.sinceDays, 7, 1);
   if (job.engine === "portals") {
     return {
       script: "scan.mjs",
@@ -96,14 +122,18 @@ export function buildScanCommand(job) {
   const ats = Array.isArray(filters.ats) && filters.ats.length
     ? filters.ats.join(",")
     : "greenhouse,lever,ashby,workday";
-  const limit = Number.isFinite(Number(filters.limitPerAts))
-    ? Math.min(500, Math.max(50, Math.round(Number(filters.limitPerAts))))
-    : 150;
+  const limit = numericFilter(filters.limitPerAts, 150, 50, 500);
   return {
     script: "scan-ats-full.mjs",
     args: ["--since", String(sinceDays), "--ats", ats, "--limit", String(limit), "--json"],
   };
 }
+
+/*
+ * Keep the temporary portal overlay scoped to each retry. A thrown setup or
+ * spawn error is retryable just like a non-zero scanner exit, while cleanup
+ * still runs before the next attempt.
+ */
 
 export function extractRolesFound(engine, stdout) {
   if (engine === "full") {
@@ -183,6 +213,8 @@ export function executeJob(root, job, options = {}) {
         };
       }
       lastError = firstErrorLine(result);
+    } catch (error) {
+      lastError = firstErrorLine({ error });
     } finally {
       if (tempPortals) {
         try {
@@ -269,7 +301,7 @@ async function main() {
     ? path.resolve(process.env.CAREER_OPS_SCHEDULED_JOBS_PATH)
     : path.join(root, "data", "scheduled-jobs.json");
   const noticePath = path.join(root, "data", "scheduled-job-notifications.json");
-  const runnerResource = path.join(root, "data", "scheduled-jobs-runner");
+  const runnerResource = runnerResourcePath(storePath);
   const manualJobId = requestedJobId(process.argv.slice(2));
 
   return withResourceLock(
@@ -278,10 +310,13 @@ async function main() {
       let claim;
       if (manualJobId) {
         if (!isSafeScheduledId(manualJobId)) throw new Error("Invalid scheduled job identifier.");
-        const store = readScheduledStore(storePath);
-        const job = store.jobs.find((item) => item.id === manualJobId && item.status !== "deleted");
-        if (!job) throw new Error("Scheduled job not found.");
-        claim = { job: structuredClone(job), queueId: null, runId: randomUUID(), claimToken: randomUUID() };
+        claim = await withScheduledStore(storePath, (store) => {
+          const job = store.jobs.find((item) => item.id === manualJobId && item.status !== "deleted");
+          if (!job) throw new Error("Scheduled job not found.");
+          const manualClaim = claimManualJob(store, manualJobId);
+          if (!manualClaim) throw new Error("Scheduled job is already running.");
+          return manualClaim;
+        });
       } else {
         claim = await takeDueJob(storePath);
       }

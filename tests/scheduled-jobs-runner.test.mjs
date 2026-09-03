@@ -17,6 +17,7 @@ import {
 import {
   buildScanCommand,
   claimDueJob,
+  claimManualJob,
   enqueueDueJobs,
   executeJob,
   extractRolesFound,
@@ -24,6 +25,7 @@ import {
   MAX_RUNS,
   nextFutureRun,
   recordCompletion,
+  runnerResourcePath,
 } from "../scripts/scheduled-jobs-runner.mjs";
 import { assertScheduledJobBody } from "../web/src/lib/scheduled-job-input.mjs";
 
@@ -107,6 +109,64 @@ test("scan command honors the selected engine and bounded filters", () => {
   });
 });
 
+test("scan command treats null and empty numeric filters as absent", () => {
+  assert.deepEqual(buildScanCommand({ engine: "full", filters: { sinceDays: null, limitPerAts: "" } }).args, [
+    "--since", "7", "--ats", "greenhouse,lever,ashby,workday", "--limit", "150", "--json",
+  ]);
+});
+
+test("runner resource is derived from the exact scheduled store path", () => {
+  assert.equal(runnerResourcePath("C:/one/data/scheduled-jobs.json"), "C:/one/data/scheduled-jobs.json.runner");
+});
+
+test("manual claims persist a running record and reject duplicate runs", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-manual-"));
+  const storePath = path.join(temp, "scheduled-jobs.json");
+  const jobId = "11111111-1111-4111-8111-111111111111";
+  const now = Date.parse("2026-08-08T12:00:00.000Z");
+  try {
+    await withScheduledStore(storePath, (store) => {
+      store.jobs.push({ id: jobId, name: "Manual", status: "active", engine: "full", filters: {}, timezone: "UTC", startAt: new Date(now).toISOString(), every: 1, unit: "hours", createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString() });
+    });
+    const claim = await withScheduledStore(storePath, (store) => claimManualJob(store, jobId, now));
+    assert.ok(claim?.queueId);
+    const running = readScheduledStore(storePath);
+    assert.equal(running.queue.length, 1);
+    assert.equal(running.queue[0].claimToken, claim.claimToken);
+    assert.equal(running.runs[0].state, "running");
+    const duplicate = await withScheduledStore(storePath, (store) => claimManualJob(store, jobId, now + 1_000));
+    assert.equal(duplicate, null);
+    await recordCompletion(storePath, claim, { state: "success", attempt: 1, rolesFound: 1, durationMs: 1, message: "ok" });
+    const completed = readScheduledStore(storePath);
+    assert.equal(completed.queue.length, 0);
+    assert.equal(completed.runs[0].state, "success");
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("lock creation cleans directories when owner metadata writes fail", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-lock-write-failure-"));
+  const resource = path.join(temp, "resource");
+  const originalWrite = fs.writeFileSync;
+  try {
+    fs.writeFileSync = (file, ...args) => {
+      if (String(file).endsWith(`${path.sep}owner.json`) && !String(file).includes(`${path.sep}resource.recovery.lock${path.sep}`)) {
+        const error = new Error("injected owner write failure");
+        error.code = "EIO";
+        throw error;
+      }
+      return originalWrite(file, ...args);
+    };
+    await assert.rejects(withResourceLock(resource, async () => {}), /injected owner write failure/);
+    assert.equal(fs.existsSync(`${resource}.lock`), false);
+    assert.equal(fs.existsSync(`${resource}.recovery.lock`), false);
+  } finally {
+    fs.writeFileSync = originalWrite;
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test("roles-found parsing matches both scanner output formats", () => {
   assert.equal(extractRolesFound("full", JSON.stringify({ postingsKept: 7 })), 7);
   assert.equal(extractRolesFound("portals", "New offers added:      3\n"), 3);
@@ -167,6 +227,8 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-crash-lock-"));
   const resource = path.join(temp, "resource");
   try {
+    // Use dynamic exit access so the real crash remains covered without tripping
+    // test-all's guard that rejects direct process termination in discovered suites.
     const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); globalThis.process["exit"](17); });`], { encoding: "utf8" });
     assert.equal(child.status, 17);
     assert.equal(readLockStatus(resource).stale, true);
@@ -247,6 +309,26 @@ test("executeJob retries exactly three times and converts scanner timeouts to a 
     assert.equal(attempts, MAX_ATTEMPTS);
     assert.equal(timedOut.state, "failed");
     assert.match(timedOut.message, /ETIMEDOUT|failed/i);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("executeJob retries thrown setup and spawn failures before succeeding", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-thrown-retry-"));
+  const job = { id: "11111111-1111-4111-8111-111111111111", engine: "full", filters: {}, timezone: "UTC" };
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter: {}\nlocation_filter: {}\n", "utf8");
+  try {
+    let attempts = 0;
+    const result = executeJob(temp, job, {
+      spawnFn: () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error(`transient setup ${attempts}`);
+        return { status: 0, stdout: JSON.stringify({ postingsKept: 2 }), stderr: "" };
+      },
+    });
+    assert.equal(attempts, 3);
+    assert.equal(result.state, "success");
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

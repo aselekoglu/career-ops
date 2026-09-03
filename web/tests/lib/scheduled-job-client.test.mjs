@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cadenceMinimum, createScheduledJobRequest, MIN_SCHEDULE_MINUTES } from "../../src/lib/scheduled-job-client.mjs";
+import { cadenceMinimum, createScheduledJobRequest, MIN_SCHEDULE_MINUTES, updateScheduledJobRequest } from "../../src/lib/scheduled-job-client.mjs";
 import { runStatusTone } from "../../src/lib/scheduled-run-status.mjs";
+import { isSchedulerStatusPayload } from "../../src/lib/scheduled-scheduler-status.mjs";
+import { cycleFocusIndex } from "../../src/lib/scheduled-overlay-focus.mjs";
 
 test("scheduled-job client keeps one cadence minimum and preserves payload", async () => {
   assert.equal(cadenceMinimum("minutes"), MIN_SCHEDULE_MINUTES);
@@ -19,4 +21,24 @@ test("scheduled-job client keeps one cadence minimum and preserves payload", asy
 test("only failed runs use the failure tone", () => {
   assert.equal(runStatusTone("failed"), "failed");
   for (const state of ["queued", "running", "cancelled", "success"]) assert.notEqual(runStatusTone(state), "failed");
+});
+
+test("scheduled-job client updates by encoded id and preserves payload", async () => {
+  let request;
+  const result = await updateScheduledJobRequest("job/1", { status: "paused" }, async (...args) => {
+    request = args;
+    return { ok: true, async json() { return { id: "job/1", status: "paused" }; } };
+  });
+  assert.deepEqual(result, { id: "job/1", status: "paused" });
+  assert.equal(request[0], "/api/scheduled-jobs/job%2F1");
+  assert.deepEqual(JSON.parse(request[1].body), { status: "paused" });
+});
+
+test("scheduler payload and overlay focus helpers fail closed and wrap", () => {
+  assert.equal(isSchedulerStatusPayload({ task: {} }), true);
+  assert.equal(isSchedulerStatusPayload({ error: "offline" }), false);
+  assert.equal(isSchedulerStatusPayload(null), false);
+  assert.equal(cycleFocusIndex(0, 2, true), 1);
+  assert.equal(cycleFocusIndex(1, 2, false), 0);
+  assert.equal(cycleFocusIndex(0, 0), -1);
 });

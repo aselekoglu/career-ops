@@ -6,7 +6,7 @@ import type { ScheduledJob, ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
 import { FilterBuilder } from "@/components/explore/filter-builder";
 import { ScheduledOverlay } from "./scheduled-overlay";
-import { cadenceMinimum } from "@/lib/scheduled-job-client.mjs";
+import { cadenceMinimum, updateScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
 
 export function EditJobModal({
   job,
@@ -57,22 +57,13 @@ export function EditJobModal({
     setError("");
 
     try {
-      const res = await fetch(`/api/scheduled-jobs/${job.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          engine,
-          every,
-          unit,
-          filters,
-        }),
+      await updateScheduledJobRequest(job.id, {
+        name,
+        engine,
+        every,
+        unit,
+        filters,
       });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Failed to update scheduled scan");
-      }
 
       onUpdated();
       onClose();

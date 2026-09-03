@@ -20,6 +20,8 @@ import { JobCard } from "./scheduled-scans/job-card";
 import { RunHistoryDrawer } from "./scheduled-scans/run-history-drawer";
 import type { ScheduledJob, JobRun } from "@/lib/scheduled-jobs";
 import { instrumentSerif } from "@/lib/fonts";
+import { updateScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
+import { isSchedulerStatusPayload } from "@/lib/scheduled-scheduler-status.mjs";
 
 type Store = { jobs: ScheduledJob[]; runs: JobRun[] };
 type SchedulerStatus = {
@@ -62,7 +64,7 @@ export function ScheduledJobsView() {
         jobs: Array.isArray(resJobs.jobs) ? resJobs.jobs : [],
         runs: Array.isArray(resJobs.runs) ? resJobs.runs : [],
       });
-      if (resScheduler) setScheduler(resScheduler);
+      if (schedulerResponse.ok && isSchedulerStatusPayload(resScheduler)) setScheduler(resScheduler as SchedulerStatus);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load scheduled scans.");
     } finally {
@@ -76,17 +78,12 @@ export function ScheduledJobsView() {
 
   const handleToggleStatus = async (id: string, currentStatus: string) => {
     const nextStatus = currentStatus === "active" ? "paused" : "active";
-    const response = await fetch(`/api/scheduled-jobs/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: nextStatus }),
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setError(body.error || "Could not update scheduled scan.");
-      return;
+    try {
+      await updateScheduledJobRequest(id, { status: nextStatus });
+      await loadData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update scheduled scan.");
     }
-    await loadData();
   };
 
   const handleDelete = async (id: string) => {

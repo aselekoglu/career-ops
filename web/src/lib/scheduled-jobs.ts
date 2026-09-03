@@ -151,7 +151,7 @@ export async function updateScheduledJob(
     if (startChanged) {
       job.nextRunAt = fields.startAt;
     } else if (cadenceChanged) {
-      job.nextRunAt = nextScheduledRun(new Date().toISOString(), fields.every, fields.unit, Date.now(), fields.timezone) || job.nextRunAt;
+      job.nextRunAt = nextScheduledRun(job.startAt, fields.every, fields.unit, Date.now(), fields.timezone) || job.nextRunAt;
     }
     return job;
   });
@@ -173,7 +173,7 @@ export async function patchScheduledJob(id: string, raw: unknown): Promise<Sched
     const cadenceChanged = fields.every !== current.every || fields.unit !== current.unit || fields.timezone !== current.timezone;
     Object.assign(current, fields, input.status ? { status: input.status } : {}, { updatedAt: new Date().toISOString() });
     if (startChanged) current.nextRunAt = fields.startAt;
-    else if (cadenceChanged) current.nextRunAt = nextScheduledRun(new Date().toISOString(), fields.every, fields.unit, Date.now(), fields.timezone) || current.nextRunAt;
+    else if (cadenceChanged) current.nextRunAt = nextScheduledRun(current.startAt, fields.every, fields.unit, Date.now(), fields.timezone) || current.nextRunAt;
     return current;
   });
 }

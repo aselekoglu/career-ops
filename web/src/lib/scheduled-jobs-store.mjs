@@ -161,7 +161,7 @@ async function withRecoveryGuard(resourcePath, options, fn) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") {
-        if (created && readOwner(guardDir)?.token === token) {
+        if (created) {
           try { fs.rmSync(guardDir, { recursive: true, force: true }); } catch { /* best effort */ }
         }
         throw error;
@@ -207,7 +207,7 @@ async function acquireResourceLock(resourcePath, options = {}) {
         return true;
       } catch (error) {
         if (error?.code !== "EEXIST") {
-          if (created && readOwner(lockDir)?.token === token) {
+          if (created) {
             try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
           }
           throw error;

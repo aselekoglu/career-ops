@@ -14,3 +14,14 @@ export async function createScheduledJobRequest(payload, fetcher = fetch) {
   if (!response.ok) throw new Error(body.error || "Could not create the scheduled scan.");
   return body;
 }
+
+export async function updateScheduledJobRequest(id, payload, fetcher = fetch) {
+  const response = await fetcher(`/api/scheduled-jobs/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || "Could not update the scheduled scan.");
+  return body;
+}
