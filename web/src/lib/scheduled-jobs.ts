@@ -1,4 +1,3 @@
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { DEFAULT_FILTERS, parseExplorePatch, type ExploreFilters } from "@/lib/explore";
@@ -9,6 +8,7 @@ import {
 } from "./scheduled-jobs-store.mjs";
 import { nextScheduledRun } from "./scheduled-cadence.mjs";
 import { assertScheduledJobBody } from "./scheduled-job-input.mjs";
+import { scheduledStorePath } from "./scheduled-runner-path.mjs";
 
 export type JobStatus = "active" | "paused" | "deleted";
 export type ScanEngine = "full" | "portals";
@@ -55,7 +55,7 @@ export class ScheduledJobValidationError extends Error {
   }
 }
 
-const storeFile = () => path.join(careerOpsRoot(), "data", "scheduled-jobs.json");
+const storeFile = () => scheduledStorePath(careerOpsRoot());
 
 function read(): Store {
   return readScheduledStore(storeFile()) as Store;

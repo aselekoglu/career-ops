@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { cadenceMinimum, createScheduledJobRequest, MIN_SCHEDULE_MINUTES, updateScheduledJobRequest } from "../../src/lib/scheduled-job-client.mjs";
 import { runStatusTone } from "../../src/lib/scheduled-run-status.mjs";
@@ -51,4 +52,10 @@ test("runner and scheduler-status derive the same default and custom lock path",
   assert.equal(scheduledRunnerResourcePath(defaultStore), `${defaultStore}.runner`);
   const customStore = scheduledStorePath(root, "C:/profile/scheduled-jobs.json");
   assert.equal(scheduledRunnerResourcePath(customStore), `${path.resolve("C:/profile/scheduled-jobs.json")}.runner`);
+});
+
+test("scheduled-job CRUD uses the shared store resolver", () => {
+  const source = fs.readFileSync(new URL("../../src/lib/scheduled-jobs.ts", import.meta.url), "utf8");
+  assert.match(source, /import \{ scheduledStorePath \} from "\.\/scheduled-runner-path\.mjs"/);
+  assert.match(source, /scheduledStorePath\(careerOpsRoot\(\)\)/);
 });
