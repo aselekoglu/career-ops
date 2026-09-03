@@ -88,13 +88,17 @@ export function ScheduledJobsView() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this scheduled scan?")) return;
-    const response = await fetch(`/api/scheduled-jobs/${id}`, { method: "DELETE" });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setError(body.error || "Could not delete scheduled scan.");
-      return;
+    try {
+      const response = await fetch(`/api/scheduled-jobs/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setError(body.error || "Could not delete scheduled scan.");
+        return;
+      }
+      await loadData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not delete scheduled scan.");
     }
-    await loadData();
   };
 
   const handleTriggerOsScheduler = async () => {

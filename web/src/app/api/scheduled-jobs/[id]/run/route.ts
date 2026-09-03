@@ -10,38 +10,60 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const TIMEOUT_MS = 76 * 60 * 1_000;
+const KILL_GRACE_MS = 5_000;
 const MAX_OUTPUT = 512 * 1024;
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 function runJob(runner: string, id: string) {
   return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
-    const child = spawn(process.execPath, [runner, "--job", id], {
-      cwd: careerOpsRoot(),
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = (result: { code: number | null; stdout: string; stderr: string; timedOut: boolean }) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve(result);
+    };
+
+    let child;
+    try {
+      child = spawn(process.execPath, [runner, "--job", id], {
+        cwd: careerOpsRoot(),
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (error) {
+      finish({ code: 1, stdout, stderr: error instanceof Error ? error.message : "Could not start scheduled scan.", timedOut });
+      return;
+    }
 
     const append = (current: string, chunk: Buffer) => (current + chunk.toString()).slice(-MAX_OUTPUT);
     child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
 
-    const timer = setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
+      if (settled) return;
       timedOut = true;
-      child.kill("SIGTERM");
+      try { child.kill("SIGTERM"); } catch { /* close/error settles the promise */ }
+      killTimer = setTimeout(() => {
+        if (settled) return;
+        try { child.kill("SIGKILL"); } catch { /* close/error settles the promise */ }
+      }, KILL_GRACE_MS);
     }, TIMEOUT_MS);
 
     child.once("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: 1, stdout, stderr: error.message, timedOut });
+      finish({ code: 1, stdout, stderr: error.message, timedOut });
     });
     child.once("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      finish({ code, stdout, stderr, timedOut });
     });
   });
 }

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { cadenceMinimum, createScheduledJobRequest, MIN_SCHEDULE_MINUTES, updateScheduledJobRequest } from "../../src/lib/scheduled-job-client.mjs";
+import { cadenceMinimum, cadenceValueForUnit, createScheduledJobRequest, MIN_SCHEDULE_MINUTES, updateScheduledJobRequest } from "../../src/lib/scheduled-job-client.mjs";
 import { runStatusTone } from "../../src/lib/scheduled-run-status.mjs";
 import { isSchedulerStatusPayload } from "../../src/lib/scheduled-scheduler-status.mjs";
 import { cycleFocusIndex } from "../../src/lib/scheduled-overlay-focus.mjs";
@@ -58,4 +58,18 @@ test("scheduled-job CRUD uses the shared store resolver", () => {
   const source = fs.readFileSync(new URL("../../src/lib/scheduled-jobs.ts", import.meta.url), "utf8");
   assert.match(source, /import \{ scheduledStorePath \} from "\.\/scheduled-runner-path\.mjs"/);
   assert.match(source, /scheduledStorePath\(careerOpsRoot\(\)\)/);
+});
+
+test("minute cadence changes clamp to the shared minimum without shrinking larger values", () => {
+  assert.equal(cadenceValueForUnit(6, "minutes"), MIN_SCHEDULE_MINUTES);
+  assert.equal(cadenceValueForUnit(30, "minutes"), 30);
+  assert.equal(cadenceValueForUnit(15, "hours"), 15);
+});
+
+test("scheduled run route has a bounded SIGKILL fallback and idempotent cleanup", () => {
+  const source = fs.readFileSync(new URL("../../src/app/api/scheduled-jobs/[id]/run/route.ts", import.meta.url), "utf8");
+  assert.match(source, /SIGKILL/);
+  assert.match(source, /killTimer/);
+  assert.match(source, /if \(settled\) return/);
+  assert.match(source, /clearTimeout\(killTimer\)/);
 });

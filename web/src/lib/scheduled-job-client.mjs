@@ -4,6 +4,11 @@ export function cadenceMinimum(unit) {
   return unit === "minutes" ? MIN_SCHEDULE_MINUTES : 1;
 }
 
+export function cadenceValueForUnit(every, unit) {
+  const value = Number(every);
+  return Number.isFinite(value) ? Math.max(cadenceMinimum(unit), value) : cadenceMinimum(unit);
+}
+
 export async function createScheduledJobRequest(payload, fetcher = fetch) {
   const response = await fetcher("/api/scheduled-jobs", {
     method: "POST",

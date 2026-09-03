@@ -6,7 +6,7 @@ import type { ScheduledJob, ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
 import { FilterBuilder } from "@/components/explore/filter-builder";
 import { ScheduledOverlay } from "./scheduled-overlay";
-import { cadenceMinimum, updateScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
+import { cadenceMinimum, cadenceValueForUnit, updateScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
 
 export function EditJobModal({
   job,
@@ -137,7 +137,11 @@ export function EditJobModal({
                 />
                 <select
                   value={unit}
-                  onChange={(e) => setUnit(e.target.value as "minutes" | "hours" | "days")}
+                  onChange={(e) => {
+                    const nextUnit = e.target.value as "minutes" | "hours" | "days";
+                    setUnit(nextUnit);
+                    setEvery((value) => cadenceValueForUnit(value, nextUnit));
+                  }}
                   className="flex-1 rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60"
                 >
                   <option value="hours">Hours</option>
