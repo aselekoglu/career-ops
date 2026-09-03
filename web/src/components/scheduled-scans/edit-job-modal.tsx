@@ -117,7 +117,7 @@ export function EditJobModal({
               onChange={(e) => setName(e.target.value)}
               required
               className="w-full rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60 focus:ring-2 focus:ring-brand/20"
-              placeholder="e.g. Senior Backend & AI Roles"
+              placeholder="e.g. Roles matching my profile"
             />
           </div>
 
