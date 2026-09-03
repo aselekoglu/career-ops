@@ -16,4 +16,9 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances 
 $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Career Ops scheduled-jobs queue worker every 15 minutes (local-only, zero-token; current user must be logged in)' -Force | Out-Null
+$registered = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+$actual = $registered.Principal
+if ($actual.UserId -ne $principal.UserId -or $actual.LogonType.ToString() -notin @('Interactive', 'InteractiveToken') -or $actual.RunLevel.ToString() -ne 'Limited') {
+  throw "Scheduled task '$taskName' has an unexpected security context (UserId=$($actual.UserId), LogonType=$($actual.LogonType), RunLevel=$($actual.RunLevel)); refusing to continue."
+}
 Write-Output "Installed '$taskName' for $($principal.UserId) (interactive; the user must be logged in)."

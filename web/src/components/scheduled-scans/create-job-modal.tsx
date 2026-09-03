@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { CalendarPlus, Loader2, Sparkles, X } from "lucide-react";
 import type { ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
 import { FilterBuilder } from "@/components/explore/filter-builder";
+import { ScheduledOverlay } from "./scheduled-overlay";
+import { cadenceMinimum, createScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
 
 export function CreateJobModal({
   isOpen,
@@ -29,14 +31,6 @@ export function CreateJobModal({
   const [error, setError] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    nameRef.current?.focus();
-    const handleEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", handleEscape);
-    return () => document.removeEventListener("keydown", handleEscape);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -45,22 +39,7 @@ export function CreateJobModal({
     setError("");
 
     try {
-      const res = await fetch("/api/scheduled-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          engine,
-          every,
-          unit,
-          filters,
-        }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Failed to create scheduled scan");
-      }
+      await createScheduledJobRequest({ name, engine, every, unit, filters });
 
       onCreated();
       onClose();
@@ -72,14 +51,7 @@ export function CreateJobModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="create-scheduled-scan-title"
-        onClick={(e) => e.stopPropagation()}
-        className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
-      >
+    <ScheduledOverlay isOpen={isOpen} onClose={onClose} titleId="create-scheduled-scan-title" initialFocusRef={nameRef} panelClassName="max-w-2xl">
         <div className="flex items-center justify-between border-b border-border pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-xl bg-brand-soft text-brand">
@@ -112,7 +84,7 @@ export function CreateJobModal({
               onChange={(e) => setName(e.target.value)}
               required
               className="w-full rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60 focus:ring-2 focus:ring-brand/20"
-              placeholder="e.g. Senior Backend & AI Roles"
+        placeholder="e.g. Roles matching my profile"
             />
           </div>
 
@@ -139,9 +111,9 @@ export function CreateJobModal({
               <div className="flex gap-2">
                 <input
                   type="number"
-                  min={unit === "minutes" ? 15 : 1}
+                  min={cadenceMinimum(unit)}
                   value={every}
-                  onChange={(e) => setEvery(Math.max(unit === "minutes" ? 15 : 1, Number(e.target.value)))}
+                  onChange={(e) => setEvery(Math.max(cadenceMinimum(unit), Number(e.target.value)))}
                   className="w-20 rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60"
                 />
                 <select
@@ -181,7 +153,6 @@ export function CreateJobModal({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ScheduledOverlay>
   );
 }

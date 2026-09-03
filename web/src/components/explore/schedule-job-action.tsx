@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CalendarPlus } from "lucide-react";
 import type { ExploreFilters } from "@/lib/explore";
 import { Button } from "@/components/ui/button";
+import { cadenceMinimum, createScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
 
 type ScheduleUnit = "minutes" | "hours" | "days";
 
@@ -14,26 +15,20 @@ export function ScheduleJobAction({ filters }: { filters: ExploreFilters }) {
   const [unit, setUnit] = useState<ScheduleUnit>("hours");
   const [state, setState] = useState("");
   const [saving, setSaving] = useState(false);
-  const minimum = unit === "minutes" ? 15 : 1;
+  const minimum = cadenceMinimum(unit);
 
   const save = async () => {
     setSaving(true);
     setState("Saving...");
     try {
-      const response = await fetch("/api/scheduled-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await createScheduledJobRequest({
           name,
           every: Math.max(minimum, every),
           unit,
           filters,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           startAt: new Date().toISOString(),
-        }),
       });
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(body.error || "Could not create the scheduled scan.");
       setState("Scheduled scan created.");
       setOpen(false);
     } catch (error) {

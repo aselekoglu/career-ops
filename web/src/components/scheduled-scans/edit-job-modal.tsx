@@ -5,6 +5,8 @@ import { Edit3, Loader2, X } from "lucide-react";
 import type { ScheduledJob, ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
 import { FilterBuilder } from "@/components/explore/filter-builder";
+import { ScheduledOverlay } from "./scheduled-overlay";
+import { cadenceMinimum } from "@/lib/scheduled-job-client.mjs";
 
 export function EditJobModal({
   job,
@@ -28,7 +30,6 @@ export function EditJobModal({
 
   useEffect(() => {
     if (job) {
-      nameRef.current?.focus();
       setName(job.name || "");
       setEngine(job.engine || "full");
       setEvery(job.every || 6);
@@ -47,13 +48,6 @@ export function EditJobModal({
       });
     }
   }, [job]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", handleEscape);
-    return () => document.removeEventListener("keydown", handleEscape);
-  }, [isOpen, onClose]);
 
   if (!isOpen || !job) return null;
 
@@ -90,14 +84,7 @@ export function EditJobModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-scheduled-scan-title"
-        onClick={(e) => e.stopPropagation()}
-        className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
-      >
+    <ScheduledOverlay isOpen={isOpen} onClose={onClose} titleId="edit-scheduled-scan-title" initialFocusRef={nameRef} panelClassName="max-w-2xl">
         <div className="flex items-center justify-between border-b border-border pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-xl bg-brand-soft text-brand">
@@ -152,9 +139,9 @@ export function EditJobModal({
               <div className="flex gap-2">
                 <input
                   type="number"
-                  min={unit === "minutes" ? 15 : 1}
+                  min={cadenceMinimum(unit)}
                   value={every}
-                  onChange={(e) => setEvery(Math.max(unit === "minutes" ? 15 : 1, Number(e.target.value)))}
+                  onChange={(e) => setEvery(Math.max(cadenceMinimum(unit), Number(e.target.value)))}
                   className="w-20 rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60"
                 />
                 <select
@@ -194,7 +181,6 @@ export function EditJobModal({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ScheduledOverlay>
   );
 }

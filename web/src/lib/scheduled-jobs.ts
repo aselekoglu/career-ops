@@ -8,6 +8,7 @@ import {
   withScheduledStore,
 } from "./scheduled-jobs-store.mjs";
 import { nextScheduledRun } from "./scheduled-cadence.mjs";
+import { assertScheduledJobBody } from "./scheduled-job-input.mjs";
 
 export type JobStatus = "active" | "paused" | "deleted";
 export type ScanEngine = "full" | "portals";
@@ -87,8 +88,12 @@ function validateTimezone(value: string): string {
 }
 
 export function parseScheduledJobInput(raw: unknown, base?: ScheduledJob): JobFields {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ScheduledJobValidationError("Scheduled job body must be an object.");
-  const input = raw as Record<string, unknown>;
+  let input: Record<string, unknown>;
+  try {
+    input = assertScheduledJobBody(raw) as Record<string, unknown>;
+  } catch (error) {
+    throw new ScheduledJobValidationError(error instanceof Error ? error.message : "Scheduled job body must be an object.");
+  }
   const fallbackName = base?.name || "Scheduled scan";
   const name = String(input.name ?? fallbackName).trim().slice(0, 80) || fallbackName;
   if (input.engine !== undefined && input.engine !== "portals" && input.engine !== "full") throw new ScheduledJobValidationError("Invalid scan engine.");
@@ -157,7 +162,9 @@ export async function patchScheduledJob(id: string, raw: unknown): Promise<Sched
   return withScheduledStore(storeFile(), (store: Store) => {
     const current = store.jobs.find((item) => item.id === id && item.status !== "deleted");
     if (!current) return null;
-    const input = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    let input: Record<string, unknown>;
+    try { input = assertScheduledJobBody(raw) as Record<string, unknown>; }
+    catch (error) { throw new ScheduledJobValidationError(error instanceof Error ? error.message : "Scheduled job body must be an object."); }
     if (input.status !== undefined && input.status !== "active" && input.status !== "paused") {
       throw new ScheduledJobValidationError("Invalid status.");
     }

@@ -16,10 +16,10 @@ import {
 import { nextScheduledRun } from "../web/src/lib/scheduled-cadence.mjs";
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const MAX_RUNS = 100;
+export const MAX_RUNS = 100;
 const MAX_NOTICES = 100;
-const MAX_ATTEMPTS = 3;
-const SCAN_TIMEOUT_MS = 25 * 60 * 1_000;
+export const MAX_ATTEMPTS = 3;
+export const SCAN_TIMEOUT_MS = 25 * 60 * 1_000;
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 export const QUEUE_CLAIM_STALE_MS = 30 * 1_000;
 
@@ -148,7 +148,8 @@ function firstErrorLine(result) {
   return String(raw).split(/\r?\n/).find(Boolean)?.slice(0, 300) || "Scan failed";
 }
 
-function executeJob(root, job) {
+export function executeJob(root, job, options = {}) {
+  const spawnFn = options.spawnFn || spawnSync;
   const startedAt = Date.now();
   let lastError = "Scan failed";
 
@@ -157,7 +158,7 @@ function executeJob(root, job) {
     try {
       tempPortals = writeJobPortals(root, job);
       const command = buildScanCommand(job);
-      const result = spawnSync(
+      const result = spawnFn(
         process.execPath,
         [command.script, ...command.args],
         {

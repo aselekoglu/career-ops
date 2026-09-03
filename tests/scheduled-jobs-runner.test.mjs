@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
 
 import {
   emptyScheduledStore,
@@ -17,10 +18,14 @@ import {
   buildScanCommand,
   claimDueJob,
   enqueueDueJobs,
+  executeJob,
   extractRolesFound,
+  MAX_ATTEMPTS,
+  MAX_RUNS,
   nextFutureRun,
   recordCompletion,
 } from "../scripts/scheduled-jobs-runner.mjs";
+import { assertScheduledJobBody } from "../web/src/lib/scheduled-job-input.mjs";
 
 test("scheduled-jobs store starts empty and never seeds candidate-specific targeting", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-store-"));
@@ -170,5 +175,100 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
     assert.equal(entered, true);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("concurrent real contenders never overlap while taking over or releasing a lock", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-race-"));
+  const resource = path.join(temp, "resource");
+  const moduleUrl = pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href;
+  const runChild = (index) => new Promise((resolve, reject) => {
+    const marker = path.join(temp, `${index}.json`);
+    const code = `import fs from 'node:fs'; import { withResourceLock } from ${JSON.stringify(moduleUrl)}; const marker=${JSON.stringify(marker)}; await withResourceLock(${JSON.stringify(resource)}, async()=>{ const start=Date.now(); await new Promise(r=>setTimeout(r,35)); fs.writeFileSync(marker, JSON.stringify({start,end:Date.now()})); });`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status) => status === 0 ? resolve() : reject(new Error(stderr || `child exited ${status}`)));
+  });
+  try {
+    await Promise.all(Array.from({ length: 8 }, (_, index) => runChild(index)));
+    const intervals = Array.from({ length: 8 }, (_, index) => JSON.parse(fs.readFileSync(path.join(temp, `${index}.json`), "utf8"))).sort((a, b) => a.start - b.start);
+    for (let index = 1; index < intervals.length; index += 1) assert.ok(intervals[index].start >= intervals[index - 1].end, "lock holders overlapped");
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("a worker crash after a persisted claim leaves the queue recoverable", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-claim-crash-"));
+  const storePath = path.join(temp, "scheduled-jobs.json");
+  const storeModule = pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href;
+  const runnerModule = pathToFileURL(path.resolve("scripts/scheduled-jobs-runner.mjs")).href;
+  const jobId = "11111111-1111-4111-8111-111111111111";
+  const queueId = "22222222-2222-4222-8222-222222222222";
+  const now = new Date().toISOString();
+  fs.writeFileSync(storePath, JSON.stringify({ jobs: [{ id: jobId, name: "Crash test", status: "active", engine: "full", filters: {}, timezone: "UTC", startAt: now, every: 1, unit: "hours", createdAt: now, updatedAt: now }], runs: [], queue: [{ id: queueId, jobId, queuedAt: now }] }), "utf8");
+  try {
+    const code = `import { withScheduledStore } from ${JSON.stringify(storeModule)}; import { claimDueJob } from ${JSON.stringify(runnerModule)}; await withScheduledStore(${JSON.stringify(storePath)}, store => { if (!claimDueJob(store)) throw new Error('claim failed'); }); process.exit(19);`;
+    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
+    assert.equal(child.status, 19);
+    const persisted = readScheduledStore(storePath);
+    const oldClaim = persisted.queue[0].claimToken;
+    assert.ok(oldClaim);
+    const reclaimed = claimDueJob(persisted, Date.now() + 31_000);
+    assert.ok(reclaimed);
+    assert.notEqual(reclaimed.claimToken, oldClaim);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("executeJob retries exactly three times and converts scanner timeouts to a final failure", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-retry-"));
+  const job = { id: "11111111-1111-4111-8111-111111111111", engine: "full", filters: {}, timezone: "UTC" };
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter: {}\nlocation_filter: {}\n", "utf8");
+  try {
+    let attempts = 0;
+    const recovered = executeJob(temp, job, {
+      spawnFn: () => {
+        attempts += 1;
+        return attempts < 3 ? { status: 1, stdout: "", stderr: "transient" } : { status: 0, stdout: JSON.stringify({ postingsKept: 4 }), stderr: "" };
+      },
+    });
+    assert.equal(attempts, MAX_ATTEMPTS);
+    assert.equal(recovered.state, "success");
+    assert.equal(recovered.attempt, 3);
+
+    attempts = 0;
+    const timedOut = executeJob(temp, job, {
+      spawnFn: () => { attempts += 1; return { status: null, stdout: "", stderr: "", error: new Error("ETIMEDOUT") }; },
+    });
+    assert.equal(attempts, MAX_ATTEMPTS);
+    assert.equal(timedOut.state, "failed");
+    assert.match(timedOut.message, /ETIMEDOUT|failed/i);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("completion history is capped at 100 records", async () => {
+  const jobId = "11111111-1111-4111-8111-111111111111";
+  const queueId = "22222222-2222-4222-8222-222222222222";
+  const runId = "33333333-3333-4333-8333-333333333333";
+  const store = {
+    jobs: [{ id: jobId, status: "active", lastRunAt: undefined }],
+    runs: Array.from({ length: MAX_RUNS }, (_, index) => ({ id: `${String(index + 4).padStart(8, "0")}-4444-4444-8444-444444444444`, jobId, at: new Date().toISOString(), state: "success", attempt: 1 })),
+    queue: [{ id: queueId, jobId, queuedAt: new Date().toISOString(), claimToken: "44444444-4444-4444-8444-444444444444", runId }],
+  };
+  store.runs[0].id = runId;
+  await recordCompletion("unused", { job: { id: jobId, engine: "full" }, queueId, runId, claimToken: store.queue[0].claimToken }, { state: "success", attempt: 1, rolesFound: 0, durationMs: 1, message: "ok" }, store);
+  assert.equal(store.runs.length, MAX_RUNS);
+  assert.equal(store.runs[0].id, runId);
+});
+
+test("a non-object scheduled-job patch is rejected by input validation", () => {
+  for (const value of [null, "status", ["status"]]) {
+    assert.throws(() => assertScheduledJobBody(value), /object/);
   }
 });

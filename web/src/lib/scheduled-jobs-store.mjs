@@ -144,6 +144,45 @@ function takeOverStaleLock(lockDir) {
   return true;
 }
 
+async function withRecoveryGuard(resourcePath, options, fn) {
+  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
+  const guardDir = `${resourcePath}.recovery.lock`;
+  const token = randomUUID();
+  const deadline = Date.now() + timeoutMs;
+  fs.mkdirSync(path.dirname(guardDir), { recursive: true });
+  for (;;) {
+    let created = false;
+    try {
+      fs.mkdirSync(guardDir);
+      created = true;
+      fs.writeFileSync(path.join(guardDir, "owner.json"), JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }), "utf8");
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        if (created && readOwner(guardDir)?.token === token) {
+          try { fs.rmSync(guardDir, { recursive: true, force: true }); } catch { /* best effort */ }
+        }
+        throw error;
+      }
+      if (readLockStatus(`${resourcePath}.recovery`, { staleMs }).stale) {
+        takeOverStaleLock(guardDir);
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`scheduled-jobs lock timeout: ${resourcePath}`);
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    if (readOwner(guardDir)?.token === token) {
+      try { fs.rmSync(guardDir, { recursive: true, force: true }); } catch { /* stale recovery handles it */ }
+    }
+  }
+}
+
 async function acquireResourceLock(resourcePath, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
@@ -155,30 +194,31 @@ async function acquireResourceLock(resourcePath, options = {}) {
   fs.mkdirSync(path.dirname(lockDir), { recursive: true });
 
   for (;;) {
-    let created = false;
-    try {
-      fs.mkdirSync(lockDir);
-      created = true;
-      fs.writeFileSync(
-        path.join(lockDir, "owner.json"),
-        JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }, null, 2),
-        "utf8",
-      );
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST") {
-        if (created && readOwner(lockDir)?.token === token) {
-          try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    const acquired = await withRecoveryGuard(resourcePath, options, () => {
+      let created = false;
+      try {
+        fs.mkdirSync(lockDir);
+        created = true;
+        fs.writeFileSync(
+          path.join(lockDir, "owner.json"),
+          JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }, null, 2),
+          "utf8",
+        );
+        return true;
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          if (created && readOwner(lockDir)?.token === token) {
+            try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+          throw error;
         }
-        throw error;
+        if (readLockStatus(resourcePath, { staleMs }).stale) takeOverStaleLock(lockDir);
+        return false;
       }
-      if (readLockStatus(resourcePath, { staleMs }).stale) {
-        takeOverStaleLock(lockDir);
-        continue;
-      }
-      if (Date.now() >= deadline) throw new Error(`scheduled-jobs lock timeout: ${resourcePath}`);
-      await new Promise((resolve) => setTimeout(resolve, retryMs));
-    }
+    });
+    if (acquired) break;
+    if (Date.now() >= deadline) throw new Error(`scheduled-jobs lock timeout: ${resourcePath}`);
+    await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
 
   let released = false;

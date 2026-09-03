@@ -1,9 +1,11 @@
 "use client";
 
 import { CheckCircle2, XCircle, Clock, X, TerminalSquare, Loader2, Ban } from "lucide-react";
-import { useEffect } from "react";
+import { useRef } from "react";
 import type { JobRun } from "@/lib/scheduled-jobs";
 import { cn } from "@/lib/cn";
+import { ScheduledOverlay } from "./scheduled-overlay";
+import { runStatusTone } from "@/lib/scheduled-run-status.mjs";
 
 export function RunHistoryDrawer({
   isOpen,
@@ -14,29 +16,18 @@ export function RunHistoryDrawer({
   onClose: () => void;
   runs: JobRun[];
 }) {
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", handleEscape);
-    return () => document.removeEventListener("keydown", handleEscape);
-  }, [isOpen, onClose]);
+  const closeRef = useRef<HTMLButtonElement>(null);
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm transition-opacity" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="run-history-title"
-        onClick={(e) => e.stopPropagation()}
-        className="relative flex h-full w-full max-w-md flex-col border-l border-border bg-surface shadow-2xl"
-      >
+    <ScheduledOverlay isOpen={isOpen} onClose={onClose} titleId="run-history-title" initialFocusRef={closeRef} overlayClassName="justify-end" panelClassName="!my-0 !mr-0 !h-full !max-h-none max-w-md rounded-none rounded-l-2xl border-y-0 border-r-0 p-0 flex flex-col">
         <div className="flex items-center justify-between border-b border-border p-4">
           <div className="flex items-center gap-2">
             <TerminalSquare className="size-5 text-brand" />
             <h2 id="run-history-title" className="text-base font-semibold text-foreground">Execution Run History</h2>
           </div>
           <button
+            ref={closeRef}
             type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-faint hover:bg-surface-hover hover:text-foreground"
@@ -56,6 +47,7 @@ export function RunHistoryDrawer({
               const isRunning = run.state === "running";
               const isQueued = run.state === "queued";
               const isCancelled = run.state === "cancelled";
+              const tone = runStatusTone(run.state);
               return (
                 <div
                   key={`${run.id || "run"}-${i}`}
@@ -74,7 +66,7 @@ export function RunHistoryDrawer({
                       ) : (
                         <XCircle className="size-4 text-rose-500" />
                       )}
-                      <span className={cn(isSuccess ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500")}>
+                      <span className={cn(tone === "success" ? "text-emerald-600 dark:text-emerald-400" : tone === "failed" ? "text-rose-500" : "text-muted")}>
                         {isSuccess ? "Success" : isRunning ? "Running" : isQueued ? "Queued" : isCancelled ? "Cancelled" : "Failed"}
                       </span>
                       {run.engine && (
@@ -102,7 +94,6 @@ export function RunHistoryDrawer({
             })
           )}
         </div>
-      </div>
-    </div>
+    </ScheduledOverlay>
   );
 }
