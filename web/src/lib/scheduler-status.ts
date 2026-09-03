@@ -4,7 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { readLockStatus } from "./scheduled-jobs-store.mjs";
-import { scheduledRunnerResourcePath, scheduledStorePath } from "../../../lib/scheduled-runner-path.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "./scheduled-runner-path.mjs";
 
 const execFileAsync = promisify(execFile);
 const TASK_NAME = "career-ops recurring scan";

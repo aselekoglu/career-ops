@@ -6,7 +6,7 @@ import { cadenceMinimum, cadenceValueForUnit, createScheduledJobRequest, MIN_SCH
 import { runStatusTone } from "../../src/lib/scheduled-run-status.mjs";
 import { isSchedulerStatusPayload } from "../../src/lib/scheduled-scheduler-status.mjs";
 import { cycleFocusIndex } from "../../src/lib/scheduled-overlay-focus.mjs";
-import { scheduledRunnerResourcePath, scheduledStorePath } from "../../../lib/scheduled-runner-path.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "../../src/lib/scheduled-runner-path.mjs";
 
 test("scheduled-job client keeps one cadence minimum and preserves payload", async () => {
   assert.equal(cadenceMinimum("minutes"), MIN_SCHEDULE_MINUTES);
@@ -73,7 +73,7 @@ test("relative configured store paths resolve against the supplied career-ops ro
 
 test("scheduled-job CRUD uses the shared store resolver", () => {
   const source = fs.readFileSync(new URL("../../src/lib/scheduled-jobs.ts", import.meta.url), "utf8");
-  assert.match(source, /import \{ scheduledStorePath \} from "\.\.\/\.\.\/\.\.\/lib\/scheduled-runner-path\.mjs"/);
+  assert.match(source, /import \{ scheduledStorePath \} from "\.\/scheduled-runner-path\.mjs"/);
   assert.match(source, /scheduledStorePath\(careerOpsRoot\(\)\)/);
 });
 
