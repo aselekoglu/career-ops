@@ -44,21 +44,27 @@ export function ScheduledJobsView() {
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ScheduledJob | null>(null);
   const [osRunning, setOsRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const [resJobs, resScheduler] = await Promise.all([
-        fetch("/api/scheduled-jobs", { cache: "no-store" }).then((r) => r.json()),
-        fetch("/api/scheduler", { cache: "no-store" }).then((r) => r.json()).catch(() => null),
+      const [jobsResponse, schedulerResponse] = await Promise.all([
+        fetch("/api/scheduled-jobs", { cache: "no-store" }),
+        fetch("/api/scheduler", { cache: "no-store" }),
       ]);
+      const resJobs = await jobsResponse.json().catch(() => ({}));
+      const resScheduler = await schedulerResponse.json().catch(() => null);
+      if (!jobsResponse.ok) throw new Error(resJobs.error || "Could not load scheduled scans.");
+      if (!schedulerResponse.ok && resScheduler?.error) setError(resScheduler.error);
       setStore({
         jobs: Array.isArray(resJobs.jobs) ? resJobs.jobs : [],
         runs: Array.isArray(resJobs.runs) ? resJobs.runs : [],
       });
       if (resScheduler) setScheduler(resScheduler);
-    } catch {
-      /* ignore */
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load scheduled scans.");
     } finally {
       setLoading(false);
     }
@@ -70,27 +76,39 @@ export function ScheduledJobsView() {
 
   const handleToggleStatus = async (id: string, currentStatus: string) => {
     const nextStatus = currentStatus === "active" ? "paused" : "active";
-    await fetch(`/api/scheduled-jobs/${id}`, {
+    const response = await fetch(`/api/scheduled-jobs/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: nextStatus }),
     });
-    void loadData();
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setError(body.error || "Could not update scheduled scan.");
+      return;
+    }
+    await loadData();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this scheduled scan?")) return;
-    await fetch(`/api/scheduled-jobs/${id}`, { method: "DELETE" });
-    void loadData();
+    const response = await fetch(`/api/scheduled-jobs/${id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setError(body.error || "Could not delete scheduled scan.");
+      return;
+    }
+    await loadData();
   };
 
   const handleTriggerOsScheduler = async () => {
     setOsRunning(true);
     try {
-      await fetch("/api/scheduler", { method: "POST" });
-      void loadData();
-    } catch {
-      /* ignore */
+      const response = await fetch("/api/scheduler", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Could not start scheduler.");
+      await loadData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start scheduler.");
     } finally {
       setOsRunning(false);
     }
@@ -163,6 +181,7 @@ export function ScheduledJobsView() {
           </button>
         </div>
       </div>
+      {error && <div role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-600 dark:text-rose-400">{error}</div>}
 
       {/* Stats Cards */}
       <div className="grid gap-3.5 sm:grid-cols-4">

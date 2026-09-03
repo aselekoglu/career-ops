@@ -7,11 +7,13 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as yaml from "js-yaml";
 import {
+  isSafeScheduledId,
   readScheduledStore,
   withResourceLock,
   withScheduledStore,
   writeScheduledStoreAtomic,
 } from "../web/src/lib/scheduled-jobs-store.mjs";
+import { nextScheduledRun } from "../web/src/lib/scheduled-cadence.mjs";
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_RUNS = 100;
@@ -19,26 +21,11 @@ const MAX_NOTICES = 100;
 const MAX_ATTEMPTS = 3;
 const SCAN_TIMEOUT_MS = 25 * 60 * 1_000;
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+export const QUEUE_CLAIM_STALE_MS = 30 * 1_000;
 
 const nowIso = () => new Date().toISOString();
 
-function intervalMs(every, unit) {
-  const amount = Number(every);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  if (unit === "days") return amount * 86_400_000;
-  if (unit === "hours") return amount * 3_600_000;
-  if (unit === "minutes") return amount * 60_000;
-  return null;
-}
-
-export function nextFutureRun(startAt, every, unit, nowMs = Date.now()) {
-  const first = Date.parse(startAt);
-  const interval = intervalMs(every, unit);
-  if (!Number.isFinite(first) || !interval) return null;
-  if (first > nowMs) return new Date(first).toISOString();
-  const steps = Math.floor((nowMs - first) / interval) + 1;
-  return new Date(first + steps * interval).toISOString();
-}
+export const nextFutureRun = nextScheduledRun;
 
 export function enqueueDueJobs(store, nowMs = Date.now()) {
   let queued = 0;
@@ -53,11 +40,46 @@ export function enqueueDueJobs(store, nowMs = Date.now()) {
       queued += 1;
     }
 
-    const nextRunAt = nextFutureRun(dueAt, job.every, job.unit, nowMs);
+    const nextRunAt = nextScheduledRun(dueAt, job.every, job.unit, nowMs, job.timezone || "UTC");
     if (nextRunAt) job.nextRunAt = nextRunAt;
     job.updatedAt = new Date(nowMs).toISOString();
   }
   return queued;
+}
+
+function claimIsStale(item, nowMs) {
+  if (!item.claimToken || !item.claimedAt) return false;
+  const claimedMs = Date.parse(item.claimedAt);
+  return !Number.isFinite(claimedMs) || nowMs - claimedMs >= QUEUE_CLAIM_STALE_MS;
+}
+
+export function claimDueJob(store, nowMs = Date.now()) {
+  for (const item of store.queue) {
+    const job = store.jobs.find((candidate) => candidate.id === item.jobId && candidate.status === "active");
+    if (!job) continue;
+    if (item.claimToken && !claimIsStale(item, nowMs)) continue;
+    if (item.claimToken) {
+      const staleRun = item.runId && store.runs.find((run) => run.id === item.runId);
+      if (staleRun) {
+        staleRun.state = "queued";
+        staleRun.message = "Requeued after an interrupted worker.";
+      }
+    }
+    const claimToken = randomUUID();
+    item.claimToken = claimToken;
+    item.claimedAt = new Date(nowMs).toISOString();
+    if (!item.runId || !isSafeScheduledId(item.runId)) item.runId = randomUUID();
+    const run = store.runs.find((candidate) => candidate.id === item.runId);
+    if (run) {
+      run.state = "running";
+      run.at = new Date(nowMs).toISOString();
+      run.attempt = (run.attempt || 0) + 1;
+    } else {
+      store.runs.unshift({ id: item.runId, jobId: job.id, at: new Date(nowMs).toISOString(), state: "running", attempt: 1, engine: job.engine || "full" });
+    }
+    return { job: structuredClone(job), queueId: item.id, runId: item.runId, claimToken };
+  }
+  return null;
 }
 
 export function buildScanCommand(job) {
@@ -96,6 +118,7 @@ export function extractRolesFound(engine, stdout) {
 }
 
 function writeJobPortals(root, job) {
+  if (!isSafeScheduledId(job.id)) throw new Error("Invalid scheduled job identifier.");
   const portalsPath = path.join(root, "portals.yml");
   const base = yaml.load(fs.readFileSync(portalsPath, "utf8"));
   if (!base || typeof base !== "object") throw new Error("portals.yml must contain a mapping");
@@ -178,9 +201,14 @@ function executeJob(root, job) {
   };
 }
 
-async function recordCompletion(storePath, job, result) {
+export async function recordCompletion(storePath, claim, result, inMemoryStore = null) {
   const at = nowIso();
-  await withScheduledStore(storePath, (store) => {
+  const apply = (store) => {
+    const job = claim.job;
+    const queueItem = claim.queueId && store.queue.find((item) => item.id === claim.queueId && item.claimToken === claim.claimToken);
+    // A stale worker may finish after another worker reclaimed the item. Its
+    // result must not overwrite the newer claim's run or job metadata.
+    if (claim.queueId && !queueItem) return;
     const current = store.jobs.find((item) => item.id === job.id);
     if (current) {
       current.lastRunAt = at;
@@ -190,19 +218,14 @@ async function recordCompletion(storePath, job, result) {
       else delete current.lastError;
     }
 
-    store.runs.unshift({
-      id: randomUUID(),
-      jobId: job.id,
-      at,
-      durationMs: result.durationMs,
-      state: result.state,
-      attempt: result.attempt,
-      message: result.message,
-      rolesFound: result.rolesFound,
-      engine: job.engine || "full",
-    });
+    const run = store.runs.find((item) => item.id === claim.runId && item.jobId === job.id);
+    if (run) Object.assign(run, { at, durationMs: result.durationMs, state: result.state, attempt: result.attempt, message: result.message, rolesFound: result.rolesFound, engine: job.engine || "full" });
+    else store.runs.unshift({ id: claim.runId || randomUUID(), jobId: job.id, at, durationMs: result.durationMs, state: result.state, attempt: result.attempt, message: result.message, rolesFound: result.rolesFound, engine: job.engine || "full" });
+    store.queue = store.queue.filter((item) => !(item.id === claim.queueId && item.claimToken === claim.claimToken));
     if (store.runs.length > MAX_RUNS) store.runs = store.runs.slice(0, MAX_RUNS);
-  });
+  };
+  if (inMemoryStore) apply(inMemoryStore);
+  else await withScheduledStore(storePath, apply);
 }
 
 function appendFailureNotice(noticePath, job, message) {
@@ -227,12 +250,7 @@ function appendFailureNotice(noticePath, job, message) {
 async function takeDueJob(storePath) {
   return withScheduledStore(storePath, (store) => {
     enqueueDueJobs(store);
-    while (store.queue.length) {
-      const queued = store.queue.shift();
-      const job = store.jobs.find((item) => item.id === queued.jobId && item.status === "active");
-      if (job) return structuredClone(job);
-    }
-    return null;
+    return claimDueJob(store);
   });
 }
 
@@ -255,23 +273,24 @@ async function main() {
   return withResourceLock(
     runnerResource,
     async () => {
-      let job;
+      let claim;
       if (manualJobId) {
+        if (!isSafeScheduledId(manualJobId)) throw new Error("Invalid scheduled job identifier.");
         const store = readScheduledStore(storePath);
-        job = store.jobs.find((item) => item.id === manualJobId && item.status !== "deleted");
+        const job = store.jobs.find((item) => item.id === manualJobId && item.status !== "deleted");
         if (!job) throw new Error("Scheduled job not found.");
-        job = structuredClone(job);
+        claim = { job: structuredClone(job), queueId: null, runId: randomUUID(), claimToken: randomUUID() };
       } else {
-        job = await takeDueJob(storePath);
+        claim = await takeDueJob(storePath);
       }
 
-      if (!job) return { status: "idle" };
+      if (!claim) return { status: "idle" };
 
-      const result = executeJob(root, job);
-      await recordCompletion(storePath, job, result);
-      if (result.state === "failed") appendFailureNotice(noticePath, job, result.message);
+      const result = executeJob(root, claim.job);
+      await recordCompletion(storePath, claim, result);
+      if (result.state === "failed") appendFailureNotice(noticePath, claim.job, result.message);
       if (result.state === "failed") throw new Error(result.message);
-      return { status: "success", jobId: job.id, ...result };
+      return { status: "success", jobId: claim.job.id, ...result };
     },
     { timeoutMs: 1_000, staleMs: SCAN_TIMEOUT_MS * MAX_ATTEMPTS + 60_000 },
   );

@@ -29,6 +29,18 @@ export async function POST() {
       stdio: "ignore",
       windowsHide: true,
     });
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      child.once("spawn", () => {
+        settled = true;
+        resolve();
+      });
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      });
+    });
     child.unref();
     return NextResponse.json({ accepted: true }, { status: 202 });
   } catch {

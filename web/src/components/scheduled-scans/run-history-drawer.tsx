@@ -1,6 +1,7 @@
 "use client";
 
-import { CheckCircle2, XCircle, Clock, X, TerminalSquare } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, X, TerminalSquare, Loader2, Ban } from "lucide-react";
+import { useEffect } from "react";
 import type { JobRun } from "@/lib/scheduled-jobs";
 import { cn } from "@/lib/cn";
 
@@ -13,18 +14,27 @@ export function RunHistoryDrawer({
   onClose: () => void;
   runs: JobRun[];
 }) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [isOpen, onClose]);
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm transition-opacity">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm transition-opacity" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="run-history-title"
         onClick={(e) => e.stopPropagation()}
         className="relative flex h-full w-full max-w-md flex-col border-l border-border bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border p-4">
           <div className="flex items-center gap-2">
             <TerminalSquare className="size-5 text-brand" />
-            <h2 className="text-base font-semibold text-foreground">Execution Run History</h2>
+            <h2 id="run-history-title" className="text-base font-semibold text-foreground">Execution Run History</h2>
           </div>
           <button
             type="button"
@@ -43,6 +53,9 @@ export function RunHistoryDrawer({
           ) : (
             runs.map((run, i) => {
               const isSuccess = run.state === "success";
+              const isRunning = run.state === "running";
+              const isQueued = run.state === "queued";
+              const isCancelled = run.state === "cancelled";
               return (
                 <div
                   key={`${run.id || "run"}-${i}`}
@@ -52,11 +65,17 @@ export function RunHistoryDrawer({
                     <div className="flex items-center gap-1.5 font-medium">
                       {isSuccess ? (
                         <CheckCircle2 className="size-4 text-emerald-500" />
+                      ) : isRunning ? (
+                        <Loader2 className="size-4 animate-spin text-brand" />
+                      ) : isQueued ? (
+                        <Clock className="size-4 text-amber-500" />
+                      ) : isCancelled ? (
+                        <Ban className="size-4 text-muted" />
                       ) : (
                         <XCircle className="size-4 text-rose-500" />
                       )}
                       <span className={cn(isSuccess ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500")}>
-                        {isSuccess ? "Success" : "Failed"}
+                        {isSuccess ? "Success" : isRunning ? "Running" : isQueued ? "Queued" : isCancelled ? "Cancelled" : "Failed"}
                       </span>
                       {run.engine && (
                         <span className="rounded bg-surface-hover px-1.5 py-0.5 text-[10px] text-faint uppercase font-mono">

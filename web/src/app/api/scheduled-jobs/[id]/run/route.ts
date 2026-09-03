@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { getScheduledJob } from "@/lib/scheduled-jobs";
+import { isSafeScheduledId } from "@/lib/scheduled-jobs-store.mjs";
 import { careerOpsRoot } from "@/lib/career-ops";
 
 export const runtime = "nodejs";
@@ -47,9 +48,13 @@ function runJob(runner: string, id: string) {
 
 export async function POST(_req: Request, { params }: RouteContext) {
   const { id } = await params;
-  const job = getScheduledJob(id);
-  if (!job || job.status === "deleted") {
-    return NextResponse.json({ error: "Scheduled job not found" }, { status: 404 });
+  if (!isSafeScheduledId(id)) return NextResponse.json({ error: "Invalid scheduled job identifier." }, { status: 400 });
+  let job;
+  try {
+    job = getScheduledJob(id);
+    if (!job || job.status === "deleted") return NextResponse.json({ error: "Scheduled job not found" }, { status: 404 });
+  } catch {
+    return NextResponse.json({ error: "Could not read scheduled jobs." }, { status: 500 });
   }
 
   const runner = path.join(careerOpsRoot(), "scripts", "scheduled-jobs-runner.mjs");

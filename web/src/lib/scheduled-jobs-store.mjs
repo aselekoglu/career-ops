@@ -6,6 +6,11 @@ const OWNERLESS_GRACE_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 8_000;
 const DEFAULT_RETRY_MS = 80;
 const DEFAULT_STALE_MS = 30_000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isSafeScheduledId(value) {
+  return typeof value === "string" && UUID_RE.test(value);
+}
 
 export function emptyScheduledStore() {
   return { jobs: [], runs: [], queue: [] };
@@ -20,14 +25,49 @@ export function readScheduledStore(storePath) {
         throw new Error(key + " must be an array");
       }
     }
-    return {
+    const store = {
       jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       queue: Array.isArray(parsed.queue) ? parsed.queue : [],
     };
+    validateScheduledStore(store);
+    return store;
   } catch (error) {
     if (error?.code === "ENOENT") return emptyScheduledStore();
     throw new Error(`Invalid scheduled-jobs store at ${storePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function assertIso(value, label) {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
+    throw new Error(`${label} must be an ISO timestamp`);
+  }
+}
+
+export function validateScheduledStore(store) {
+  for (const job of store.jobs) {
+    if (!isObject(job) || !isSafeScheduledId(job.id)) throw new Error("Invalid scheduled job identifier");
+    if (!["active", "paused", "deleted"].includes(job.status)) throw new Error(`Invalid status for scheduled job ${job.id}`);
+    if (typeof job.name !== "string" || typeof job.startAt !== "string") throw new Error(`Invalid scheduled job ${job.id}`);
+    assertIso(job.startAt, `scheduled job ${job.id}.startAt`);
+    assertIso(job.createdAt, `scheduled job ${job.id}.createdAt`);
+    assertIso(job.updatedAt, `scheduled job ${job.id}.updatedAt`);
+    if (job.nextRunAt !== undefined) assertIso(job.nextRunAt, `scheduled job ${job.id}.nextRunAt`);
+  }
+  for (const run of store.runs) {
+    if (!isObject(run) || !isSafeScheduledId(run.id) || !isSafeScheduledId(run.jobId)) throw new Error("Invalid scheduled run identifier");
+    if (!["queued", "running", "success", "failed", "cancelled"].includes(run.state)) throw new Error(`Invalid state for scheduled run ${run.id}`);
+    assertIso(run.at, `scheduled run ${run.id}.at`);
+  }
+  for (const item of store.queue) {
+    if (!isObject(item) || !isSafeScheduledId(item.id) || !isSafeScheduledId(item.jobId)) throw new Error("Invalid scheduled queue identifier");
+    assertIso(item.queuedAt, `scheduled queue item ${item.id}.queuedAt`);
+    if (item.claimToken !== undefined && !isSafeScheduledId(item.claimToken)) throw new Error(`Invalid claim token for ${item.id}`);
+    if (item.claimedAt !== undefined) assertIso(item.claimedAt, `scheduled queue item ${item.id}.claimedAt`);
   }
 }
 
@@ -64,14 +104,44 @@ function processIsAlive(pid) {
   }
 }
 
-function lockCanRecover(lockDir, staleMs) {
+export function readLockStatus(resourcePath, options = {}) {
+  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
+  const lockDir = `${resourcePath}.lock`;
+  if (!fs.existsSync(lockDir)) return { exists: false, active: false, stale: false, owner: null };
   const owner = readOwner(lockDir);
-  if (owner?.pid) return !processIsAlive(owner.pid);
-  try {
-    return Date.now() - fs.statSync(lockDir).mtimeMs > Math.max(staleMs, OWNERLESS_GRACE_MS);
-  } catch {
-    return true;
+  if (owner?.pid) {
+    const active = processIsAlive(owner.pid);
+    return { exists: true, active, stale: !active, owner };
   }
+  try {
+    const stale = Date.now() - fs.statSync(lockDir).mtimeMs > Math.max(staleMs, OWNERLESS_GRACE_MS);
+    return { exists: true, active: false, stale, owner: null };
+  } catch {
+    return { exists: true, active: false, stale: true, owner: null };
+  }
+}
+
+function takeOverStaleLock(lockDir) {
+  const quarantine = `${lockDir}.recovery-${process.pid}-${randomUUID()}`;
+  try {
+    // Rename is atomic: if another process acquired the lock after our status
+    // read, this fails instead of recursively deleting its live lock.
+    fs.renameSync(lockDir, quarantine);
+  } catch (error) {
+    if (["ENOENT", "EEXIST", "ENOTEMPTY"].includes(error?.code)) return false;
+    throw error;
+  }
+  const movedOwner = readOwner(quarantine);
+  if (movedOwner?.pid && processIsAlive(movedOwner.pid)) {
+    try {
+      fs.renameSync(quarantine, lockDir);
+    } catch {
+      // A newer owner is already at lockDir; never remove it.
+    }
+    return false;
+  }
+  try { fs.rmSync(quarantine, { recursive: true, force: true }); } catch { /* retry next pass */ }
+  return true;
 }
 
 async function acquireResourceLock(resourcePath, options = {}) {
@@ -85,8 +155,10 @@ async function acquireResourceLock(resourcePath, options = {}) {
   fs.mkdirSync(path.dirname(lockDir), { recursive: true });
 
   for (;;) {
+    let created = false;
     try {
       fs.mkdirSync(lockDir);
+      created = true;
       fs.writeFileSync(
         path.join(lockDir, "owner.json"),
         JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }, null, 2),
@@ -95,15 +167,13 @@ async function acquireResourceLock(resourcePath, options = {}) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") {
-        try {
-          fs.rmSync(lockDir, { recursive: true, force: true });
-        } catch {
-          // Best effort after an owner-stamp failure.
+        if (created && readOwner(lockDir)?.token === token) {
+          try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best effort */ }
         }
         throw error;
       }
-      if (lockCanRecover(lockDir, staleMs)) {
-        fs.rmSync(lockDir, { recursive: true, force: true });
+      if (readLockStatus(resourcePath, { staleMs }).stale) {
+        takeOverStaleLock(lockDir);
         continue;
       }
       if (Date.now() >= deadline) throw new Error(`scheduled-jobs lock timeout: ${resourcePath}`);
@@ -139,6 +209,7 @@ export async function withScheduledStore(storePath, mutate, options = {}) {
     async () => {
       const store = readScheduledStore(storePath);
       const result = await mutate(store);
+      validateScheduledStore(store);
       writeScheduledStoreAtomic(storePath, store);
       return result;
     },

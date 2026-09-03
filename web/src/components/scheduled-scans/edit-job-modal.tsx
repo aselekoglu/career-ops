@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Edit3, Loader2, X } from "lucide-react";
 import type { ScheduledJob, ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
@@ -24,9 +24,11 @@ export function EditJobModal({
   const [filters, setFilters] = useState<ExploreFilters>({ ...DEFAULT_FILTERS, ats: [...DEFAULT_FILTERS.ats] });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (job) {
+      nameRef.current?.focus();
       setName(job.name || "");
       setEngine(job.engine || "full");
       setEvery(job.every || 6);
@@ -45,6 +47,13 @@ export function EditJobModal({
       });
     }
   }, [job]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [isOpen, onClose]);
 
   if (!isOpen || !job) return null;
 
@@ -67,7 +76,7 @@ export function EditJobModal({
       });
 
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to update scheduled scan");
       }
 
@@ -81,8 +90,11 @@ export function EditJobModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edit-scheduled-scan-title"
         onClick={(e) => e.stopPropagation()}
         className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
       >
@@ -92,7 +104,7 @@ export function EditJobModal({
               <Edit3 className="size-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-foreground">Edit Scheduled Scan</h2>
+              <h2 id="edit-scheduled-scan-title" className="text-lg font-semibold text-foreground">Edit Scheduled Scan</h2>
               <p className="text-xs text-muted">Update name, filters, schedule, and location scope.</p>
             </div>
           </div>
@@ -112,6 +124,7 @@ export function EditJobModal({
           <div>
             <label className="mb-1 block text-[13px] font-medium text-foreground">Scan Name</label>
             <input
+              ref={nameRef}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}

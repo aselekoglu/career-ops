@@ -60,10 +60,10 @@ The web UI can save scan definitions without installing an OS task. To check and
 run due jobs every 15 minutes, install the local worker from the repository root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install-scan-schedule.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-scan-schedule.ps1
 ```
 
-Remove it with `scripts/uninstall-scan-schedule.ps1`. The task runs only
+Remove it with `scripts/uninstall-scan-schedule.ps1`. It runs in the current user's interactive session, so the user must be logged in. The task runs only
 `scripts/scheduled-jobs-runner.mjs`; it never evaluates roles, applies, or invokes
 an AI model. Job definitions and run history stay in the gitignored `data/`
 directory.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CalendarPlus, Loader2, Sparkles, X } from "lucide-react";
 import type { ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
@@ -15,18 +15,27 @@ export function CreateJobModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [name, setName] = useState("AI & Automation Engineer Scan");
+  const [name, setName] = useState("Scheduled scan");
   const [engine, setEngine] = useState<ScanEngine>("full");
   const [every, setEvery] = useState(6);
   const [unit, setUnit] = useState<"minutes" | "hours" | "days">("hours");
   const [filters, setFilters] = useState<ExploreFilters>({
     ...DEFAULT_FILTERS,
     ats: [...DEFAULT_FILTERS.ats],
-    positive: ["AI", "Agentic", "LLM", "Automation", "Fullstack"],
-    negative: ["Manager", "Sales", "Contractor"],
+    positive: [],
+    negative: [],
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    nameRef.current?.focus();
+    const handleEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -49,7 +58,7 @@ export function CreateJobModal({
       });
 
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to create scheduled scan");
       }
 
@@ -63,8 +72,11 @@ export function CreateJobModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-scheduled-scan-title"
         onClick={(e) => e.stopPropagation()}
         className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
       >
@@ -74,7 +86,7 @@ export function CreateJobModal({
               <CalendarPlus className="size-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-foreground">Create Scheduled Scan</h2>
+              <h2 id="create-scheduled-scan-title" className="text-lg font-semibold text-foreground">Create Scheduled Scan</h2>
               <p className="text-xs text-muted">Configure a persistent background job for automatic role discovery.</p>
             </div>
           </div>
@@ -94,6 +106,7 @@ export function CreateJobModal({
           <div>
             <label className="mb-1 block text-[13px] font-medium text-foreground">Scan Name</label>
             <input
+              ref={nameRef}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}

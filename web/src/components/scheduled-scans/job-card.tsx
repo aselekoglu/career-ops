@@ -30,10 +30,17 @@ export function JobCard({
         setMenuOpen(false);
       }
     }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
     if (menuOpen) {
       document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleEscape);
     }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, [menuOpen]);
 
   const handleRunNow = async () => {
@@ -42,7 +49,7 @@ export function JobCard({
 
     try {
       const res = await fetch(`/api/scheduled-jobs/${job.id}/run`, { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Run failed");
 
       setRunMessage(` Completed! Found ${data.rolesFound || 0} matching roles.`);
@@ -82,6 +89,9 @@ export function JobCard({
             <button
               type="button"
               onClick={() => setMenuOpen((v) => !v)}
+              aria-label={`Options for ${job.name}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               className="rounded p-1 text-faint transition-colors hover:bg-surface-hover hover:text-foreground"
               title="Options"
             >
@@ -89,9 +99,10 @@ export function JobCard({
             </button>
 
             {menuOpen && (
-              <div className="absolute right-0 top-full z-20 mt-1 w-36 overflow-hidden rounded-xl border border-border bg-surface shadow-xl backdrop-blur-md animate-in fade-in zoom-in-95">
+              <div role="menu" className="absolute right-0 top-full z-20 mt-1 w-36 overflow-hidden rounded-xl border border-border bg-surface shadow-xl backdrop-blur-md animate-in fade-in zoom-in-95">
                 <button
                   type="button"
+                  role="menuitem"
                   onClick={() => {
                     setMenuOpen(false);
                     onEdit(job);
@@ -102,6 +113,7 @@ export function JobCard({
                 </button>
                 <button
                   type="button"
+                  role="menuitem"
                   onClick={() => {
                     setMenuOpen(false);
                     onDelete(job.id);

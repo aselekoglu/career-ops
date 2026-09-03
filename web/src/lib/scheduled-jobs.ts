@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { DEFAULT_FILTERS, parseExplorePatch, type ExploreFilters } from "@/lib/explore";
 import {
+  isSafeScheduledId,
   readScheduledStore,
   withScheduledStore,
 } from "./scheduled-jobs-store.mjs";
+import { nextScheduledRun } from "./scheduled-cadence.mjs";
 
 export type JobStatus = "active" | "paused" | "deleted";
 export type ScanEngine = "full" | "portals";
@@ -45,6 +47,13 @@ type QueueItem = { id: string; jobId: string; queuedAt: string };
 type Store = { jobs: ScheduledJob[]; runs: JobRun[]; queue: QueueItem[] };
 type JobFields = Pick<ScheduledJob, "name" | "engine" | "filters" | "timezone" | "startAt" | "every" | "unit">;
 
+export class ScheduledJobValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScheduledJobValidationError";
+  }
+}
+
 const storeFile = () => path.join(careerOpsRoot(), "data", "scheduled-jobs.json");
 
 function read(): Store {
@@ -52,34 +61,43 @@ function read(): Store {
 }
 
 function cleanUnit(value: unknown, fallback: ScheduleUnit): ScheduleUnit {
-  return value === "minutes" || value === "hours" || value === "days" ? value : fallback;
+  if (value === undefined) return fallback;
+  if (value === "minutes" || value === "hours" || value === "days") return value;
+  throw new ScheduledJobValidationError("Invalid schedule unit.");
 }
 
 function cleanEvery(value: unknown, unit: ScheduleUnit, fallback: number): number {
+  if (value === undefined) return fallback;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
+  if (!Number.isFinite(parsed)) throw new ScheduledJobValidationError("Invalid cadence.");
   const minimum = unit === "minutes" ? 15 : 1;
   return Math.min(10_000, Math.max(minimum, Math.round(parsed)));
 }
 
 function cleanStartAt(value: unknown, fallback: string): string {
+  if (value !== undefined && typeof value !== "string" && typeof value !== "number") throw new ScheduledJobValidationError("Invalid start time.");
   const parsed = new Date(typeof value === "string" || typeof value === "number" ? value : fallback);
-  if (Number.isNaN(parsed.getTime())) throw new Error("Invalid start time.");
+  if (Number.isNaN(parsed.getTime())) throw new ScheduledJobValidationError("Invalid start time.");
   return parsed.toISOString();
 }
 
+function validateTimezone(value: string): string {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value }).format(); } catch { throw new ScheduledJobValidationError("Invalid timezone."); }
+  return value;
+}
+
 export function parseScheduledJobInput(raw: unknown, base?: ScheduledJob): JobFields {
-  const input = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ScheduledJobValidationError("Scheduled job body must be an object.");
+  const input = raw as Record<string, unknown>;
   const fallbackName = base?.name || "Scheduled scan";
   const name = String(input.name ?? fallbackName).trim().slice(0, 80) || fallbackName;
-  const engine: ScanEngine = input.engine === "portals" || input.engine === "full"
-    ? input.engine
-    : base?.engine || "full";
+  if (input.engine !== undefined && input.engine !== "portals" && input.engine !== "full") throw new ScheduledJobValidationError("Invalid scan engine.");
+  const engine: ScanEngine = input.engine === "portals" || input.engine === "full" ? input.engine : base?.engine || "full";
   const unit = cleanUnit(input.unit, base?.unit || "hours");
   const every = cleanEvery(input.every, unit, base?.every || 1);
-  const timezone = String(input.timezone ?? base?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC")
+  const timezone = validateTimezone(String(input.timezone ?? base?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC")
     .trim()
-    .slice(0, 80) || "UTC";
+    .slice(0, 80) || "UTC");
   const startAt = cleanStartAt(input.startAt, base?.startAt || new Date().toISOString());
   const filters = parseExplorePatch(
     (input.filters && typeof input.filters === "object" ? input.filters : {}) as Record<string, unknown>,
@@ -95,6 +113,7 @@ export function listScheduledJobs(): Pick<Store, "jobs" | "runs"> {
 }
 
 export function getScheduledJob(id: string): ScheduledJob | undefined {
+  if (!isSafeScheduledId(id)) return undefined;
   return read().jobs.find((job) => job.id === id);
 }
 
@@ -127,10 +146,28 @@ export async function updateScheduledJob(
     if (startChanged) {
       job.nextRunAt = fields.startAt;
     } else if (cadenceChanged) {
-      const multiplier = fields.unit === "days" ? 86_400_000 : fields.unit === "hours" ? 3_600_000 : 60_000;
-      job.nextRunAt = new Date(Date.now() + fields.every * multiplier).toISOString();
+      job.nextRunAt = nextScheduledRun(new Date().toISOString(), fields.every, fields.unit, Date.now(), fields.timezone) || job.nextRunAt;
     }
     return job;
+  });
+}
+
+export async function patchScheduledJob(id: string, raw: unknown): Promise<ScheduledJob | null> {
+  if (!isSafeScheduledId(id)) return null;
+  return withScheduledStore(storeFile(), (store: Store) => {
+    const current = store.jobs.find((item) => item.id === id && item.status !== "deleted");
+    if (!current) return null;
+    const input = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    if (input.status !== undefined && input.status !== "active" && input.status !== "paused") {
+      throw new ScheduledJobValidationError("Invalid status.");
+    }
+    const fields = parseScheduledJobInput(input, current);
+    const startChanged = fields.startAt !== current.startAt;
+    const cadenceChanged = fields.every !== current.every || fields.unit !== current.unit || fields.timezone !== current.timezone;
+    Object.assign(current, fields, input.status ? { status: input.status } : {}, { updatedAt: new Date().toISOString() });
+    if (startChanged) current.nextRunAt = fields.startAt;
+    else if (cadenceChanged) current.nextRunAt = nextScheduledRun(new Date().toISOString(), fields.every, fields.unit, Date.now(), fields.timezone) || current.nextRunAt;
+    return current;
   });
 }
 

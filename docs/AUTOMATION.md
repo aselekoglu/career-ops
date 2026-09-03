@@ -98,11 +98,11 @@ The web UI's Scheduled scans page supports multiple saved cadences. Install its
 local queue worker from the repository root with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install-scan-schedule.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-scan-schedule.ps1
 ```
 
 The task checks for due jobs every 15 minutes and runs at most one queued scan per
-check. Use `scripts/uninstall-scan-schedule.ps1` to remove it. For a single fixed
+check in the current user's interactive session; you must be logged in. Use `scripts/uninstall-scan-schedule.ps1` to remove it. For a single fixed
 daily scan without the web UI, use the lower-level Task Scheduler recipe below.
 
 ```powershell

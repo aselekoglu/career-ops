@@ -13,6 +13,7 @@ $action = New-ScheduledTaskAction -Execute $node -Argument "`"$script`"" -Workin
 $start = (Get-Date).AddMinutes(1)
 $trigger = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpan -Minutes 15)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+$principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description 'Career Ops scheduled-jobs queue worker every 15 minutes (local-only, zero-token)' -Force | Out-Null
-Write-Output "Installed '$taskName'."
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Career Ops scheduled-jobs queue worker every 15 minutes (local-only, zero-token; current user must be logged in)' -Force | Out-Null
+Write-Output "Installed '$taskName' for $($principal.UserId) (interactive; the user must be logged in)."
