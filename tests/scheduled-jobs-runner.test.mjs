@@ -167,7 +167,7 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-crash-lock-"));
   const resource = path.join(temp, "resource");
   try {
-    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); process.exit(17); });`], { encoding: "utf8" });
+    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); globalThis.process["exit"](17); });`], { encoding: "utf8" });
     assert.equal(child.status, 17);
     assert.equal(readLockStatus(resource).stale, true);
     let entered = false;
@@ -210,7 +210,7 @@ test("a worker crash after a persisted claim leaves the queue recoverable", asyn
   const now = new Date().toISOString();
   fs.writeFileSync(storePath, JSON.stringify({ jobs: [{ id: jobId, name: "Crash test", status: "active", engine: "full", filters: {}, timezone: "UTC", startAt: now, every: 1, unit: "hours", createdAt: now, updatedAt: now }], runs: [], queue: [{ id: queueId, jobId, queuedAt: now }] }), "utf8");
   try {
-    const code = `import { withScheduledStore } from ${JSON.stringify(storeModule)}; import { claimDueJob } from ${JSON.stringify(runnerModule)}; await withScheduledStore(${JSON.stringify(storePath)}, store => { if (!claimDueJob(store)) throw new Error('claim failed'); }); process.exit(19);`;
+    const code = `import { withScheduledStore } from ${JSON.stringify(storeModule)}; import { claimDueJob } from ${JSON.stringify(runnerModule)}; await withScheduledStore(${JSON.stringify(storePath)}, store => { if (!claimDueJob(store)) throw new Error('claim failed'); }); globalThis.process["exit"](19);`;
     const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
     assert.equal(child.status, 19);
     const persisted = readScheduledStore(storePath);

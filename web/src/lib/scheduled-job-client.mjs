@@ -14,4 +14,3 @@ export async function createScheduledJobRequest(payload, fetcher = fetch) {
   if (!response.ok) throw new Error(body.error || "Could not create the scheduled scan.");
   return body;
 }
-

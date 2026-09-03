@@ -20,4 +20,3 @@ test("only failed runs use the failure tone", () => {
   assert.equal(runStatusTone("failed"), "failed");
   for (const state of ["queued", "running", "cancelled", "success"]) assert.notEqual(runStatusTone(state), "failed");
 });
-

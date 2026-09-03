@@ -3,4 +3,3 @@ export function runStatusTone(state) {
   if (state === "failed") return "failed";
   return "neutral";
 }
-

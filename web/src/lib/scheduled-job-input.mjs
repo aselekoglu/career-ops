@@ -4,4 +4,3 @@ export function assertScheduledJobBody(value) {
   }
   return value;
 }
-
