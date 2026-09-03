@@ -38,7 +38,7 @@ export async function POST(req: Request) {
   // root is incomplete instead of faking it.
   const needsScript: Record<string, string> = { evaluate: "modes/oferta.md", "fix-portal": "verify-portals.mjs", pdf: "generate-pdf.mjs" };
   const required = needsScript[kind];
-  if (required && !fs.existsSync(path.join(careerOpsRoot(), required))) {
+  if (required && !fs.existsSync(path.join(/* turbopackIgnore: true */ careerOpsRoot(), required))) {
     return new Response(
       JSON.stringify({
         error: `This needs a complete career-ops checkout (${required}). CAREER_OPS_ROOT has data only — point it at a full checkout.`,

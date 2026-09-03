@@ -23,7 +23,7 @@ export function careerOpsRoot(): string {
  * as module imports and fails the production build otherwise.
  */
 export function rootScript(nameNoExt: string): string {
-  return path.join(careerOpsRoot(), `${nameNoExt}.mjs`);
+  return path.join(/* turbopackIgnore: true */ careerOpsRoot(), `${nameNoExt}.mjs`);
 }
 
 // Feature-detect the core's `tracker.mjs delete --num` row-delete (#1200) by probing
@@ -281,7 +281,7 @@ export function readReport(n: string): ReportData | null {
   const file = findReportFile(n);
   if (!file) return null;
   try {
-    return { content: fs.readFileSync(file, "utf8"), file: path.basename(file) };
+    return { content: fs.readFileSync(/* turbopackIgnore: true */ file, "utf8"), file: path.basename(file) };
   } catch {
     return null;
   }
