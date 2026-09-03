@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import * as yaml from "js-yaml";
 import {
   isSafeScheduledId,
@@ -14,6 +14,7 @@ import {
   writeScheduledStoreAtomic,
 } from "../web/src/lib/scheduled-jobs-store.mjs";
 import { nextScheduledRun } from "../web/src/lib/scheduled-cadence.mjs";
+import { isMainModule } from "../lib/is-main-module.mjs";
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const MAX_RUNS = 100;
@@ -297,7 +298,7 @@ async function main() {
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((result) => {
       process.stdout.write(`${JSON.stringify(result)}\n`);
