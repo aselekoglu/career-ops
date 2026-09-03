@@ -14,7 +14,7 @@ import {
 } from "../web/src/lib/scheduled-jobs-store.mjs";
 import { nextScheduledRun } from "../web/src/lib/scheduled-cadence.mjs";
 import { isMainModule } from "../lib/is-main-module.mjs";
-import { scheduledRunnerResourcePath, scheduledStorePath } from "../lib/scheduled-runner-path.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "../web/src/lib/scheduled-runner-path.mjs";
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const MAX_RUNS = 100;

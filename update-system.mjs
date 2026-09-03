@@ -283,7 +283,6 @@ const SYSTEM_PATHS = [
   'web/src/lib/scheduled-jobs-store.mjs',
   'web/src/lib/scheduled-cadence.mjs',
   'web/src/lib/scheduled-runner-path.mjs',
-  'lib/scheduled-runner-path.mjs',
   'scripts/uninstall-scan-schedule.ps1',
   'pipeline-lock.mjs',
   'portal-health-lock.mjs',

@@ -1,8 +1,8 @@
 import path from "node:path";
 
-// Keep this web-boundary copy in runtime parity with ../../../lib/scheduled-runner-path.mjs.
-// The app intentionally pins Turbopack's root to web/ for the Windows worker
-// stability workaround, so web code cannot import the checkout-level helper.
+// This is the single resolver shared by the web app and local scheduler runner.
+// It stays under web/ because the app pins Turbopack's root there for the
+// Windows worker stability workaround.
 export function scheduledStorePath(root, configuredPath = process.env.CAREER_OPS_SCHEDULED_JOBS_PATH) {
   if (configuredPath) return path.isAbsolute(configuredPath) ? configuredPath : path.resolve(root, configuredPath);
   return path.join(root, "data", "scheduled-jobs.json");
