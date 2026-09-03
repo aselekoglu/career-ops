@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { readLockStatus } from "./scheduled-jobs-store.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "./scheduled-runner-path.mjs";
 
 const execFileAsync = promisify(execFile);
 const TASK_NAME = "career-ops recurring scan";
@@ -61,7 +62,7 @@ async function readTask(): Promise<SchedulerStatus["task"]> {
 export async function schedulerStatus(): Promise<SchedulerStatus> {
   const root = careerOpsRoot();
   const runner = path.join(root, "scripts", "scheduled-jobs-runner.mjs");
-  const runnerLock = path.join(root, "data", "scheduled-jobs-runner");
+  const runnerLock = scheduledRunnerResourcePath(scheduledStorePath(root));
   const lock = readLockStatus(runnerLock, { staleMs: 25 * 60 * 1_000 * 3 + 60_000 });
   return {
     available: fs.existsSync(runner),

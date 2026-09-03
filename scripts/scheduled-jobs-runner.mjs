@@ -14,6 +14,7 @@ import {
 } from "../web/src/lib/scheduled-jobs-store.mjs";
 import { nextScheduledRun } from "../web/src/lib/scheduled-cadence.mjs";
 import { isMainModule } from "../lib/is-main-module.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "../web/src/lib/scheduled-runner-path.mjs";
 
 const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const MAX_RUNS = 100;
@@ -88,7 +89,7 @@ export function claimDueJob(store, nowMs = Date.now()) {
 }
 
 export function claimManualJob(store, jobId, nowMs = Date.now()) {
-  const job = store.jobs.find((candidate) => candidate.id === jobId && candidate.status === "active");
+  const job = store.jobs.find((candidate) => candidate.id === jobId && candidate.status !== "deleted");
   if (!job) return null;
   let item = store.queue.find((candidate) => candidate.jobId === jobId);
   if (!item) {
@@ -98,9 +99,7 @@ export function claimManualJob(store, jobId, nowMs = Date.now()) {
   return claimQueueItem(store, item, job, nowMs);
 }
 
-export function runnerResourcePath(storePath) {
-  return `${storePath}.runner`;
-}
+export const runnerResourcePath = scheduledRunnerResourcePath;
 
 function numericFilter(value, fallback, minimum, maximum = Number.POSITIVE_INFINITY) {
   if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) return fallback;
@@ -128,12 +127,6 @@ export function buildScanCommand(job) {
     args: ["--since", String(sinceDays), "--ats", ats, "--limit", String(limit), "--json"],
   };
 }
-
-/*
- * Keep the temporary portal overlay scoped to each retry. A thrown setup or
- * spawn error is retryable just like a non-zero scanner exit, while cleanup
- * still runs before the next attempt.
- */
 
 export function extractRolesFound(engine, stdout) {
   if (engine === "full") {
@@ -178,6 +171,12 @@ function firstErrorLine(result) {
   const raw = result.stderr || result.error?.message || `scanner exit ${result.status ?? "unknown"}`;
   return String(raw).split(/\r?\n/).find(Boolean)?.slice(0, 300) || "Scan failed";
 }
+
+/*
+ * Keep the temporary portal overlay scoped to each retry. A thrown setup or
+ * spawn error is retryable just like a non-zero scanner exit, while cleanup
+ * still runs before the next attempt.
+ */
 
 export function executeJob(root, job, options = {}) {
   const spawnFn = options.spawnFn || spawnSync;
@@ -297,9 +296,7 @@ async function main() {
   const root = process.env.CAREER_OPS_ROOT
     ? path.resolve(process.env.CAREER_OPS_ROOT)
     : DEFAULT_ROOT;
-  const storePath = process.env.CAREER_OPS_SCHEDULED_JOBS_PATH
-    ? path.resolve(process.env.CAREER_OPS_SCHEDULED_JOBS_PATH)
-    : path.join(root, "data", "scheduled-jobs.json");
+  const storePath = scheduledStorePath(root);
   const noticePath = path.join(root, "data", "scheduled-job-notifications.json");
   const runnerResource = runnerResourcePath(storePath);
   const manualJobId = requestedJobId(process.argv.slice(2));

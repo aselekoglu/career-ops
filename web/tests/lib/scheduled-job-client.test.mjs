@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { cadenceMinimum, createScheduledJobRequest, MIN_SCHEDULE_MINUTES, updateScheduledJobRequest } from "../../src/lib/scheduled-job-client.mjs";
 import { runStatusTone } from "../../src/lib/scheduled-run-status.mjs";
 import { isSchedulerStatusPayload } from "../../src/lib/scheduled-scheduler-status.mjs";
 import { cycleFocusIndex } from "../../src/lib/scheduled-overlay-focus.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "../../src/lib/scheduled-runner-path.mjs";
 
 test("scheduled-job client keeps one cadence minimum and preserves payload", async () => {
   assert.equal(cadenceMinimum("minutes"), MIN_SCHEDULE_MINUTES);
@@ -41,4 +43,12 @@ test("scheduler payload and overlay focus helpers fail closed and wrap", () => {
   assert.equal(cycleFocusIndex(0, 2, true), 1);
   assert.equal(cycleFocusIndex(1, 2, false), 0);
   assert.equal(cycleFocusIndex(0, 0), -1);
+});
+
+test("runner and scheduler-status derive the same default and custom lock path", () => {
+  const root = "C:/career-ops";
+  const defaultStore = scheduledStorePath(root, null);
+  assert.equal(scheduledRunnerResourcePath(defaultStore), `${defaultStore}.runner`);
+  const customStore = scheduledStorePath(root, "C:/profile/scheduled-jobs.json");
+  assert.equal(scheduledRunnerResourcePath(customStore), `${path.resolve("C:/profile/scheduled-jobs.json")}.runner`);
 });

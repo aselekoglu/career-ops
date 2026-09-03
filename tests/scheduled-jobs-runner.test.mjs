@@ -145,6 +145,16 @@ test("manual claims persist a running record and reject duplicate runs", async (
   }
 });
 
+test("manual claims allow paused jobs but exclude deleted and unknown jobs", () => {
+  const now = Date.parse("2026-08-08T12:00:00.000Z");
+  const base = { id: "11111111-1111-4111-8111-111111111111", name: "Manual", engine: "full", filters: {}, timezone: "UTC", startAt: new Date(now).toISOString(), every: 1, unit: "hours", createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString() };
+  const paused = { jobs: [{ ...base, status: "paused" }], runs: [], queue: [] };
+  assert.ok(claimManualJob(paused, base.id, now));
+  assert.equal(claimManualJob(paused, base.id, now + 1_000), null);
+  assert.equal(claimManualJob({ jobs: [{ ...base, status: "deleted" }], runs: [], queue: [] }, base.id, now), null);
+  assert.equal(claimManualJob({ jobs: [], runs: [], queue: [] }, base.id, now), null);
+});
+
 test("lock creation cleans directories when owner metadata writes fail", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-lock-write-failure-"));
   const resource = path.join(temp, "resource");
