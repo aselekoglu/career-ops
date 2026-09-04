@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { pipelineSummary } from "@/lib/career-ops";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudPipelineSummary } from "@/lib/cloud-career-ops";
 import { canonStatus, scoreNum } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +17,8 @@ const STAGES: { key: string; label: string }[] = [
   { key: "DISCARDED", label: "Discarded" },
 ];
 
-export default function Analytics() {
-  const { applications } = pipelineSummary();
+export default async function Analytics() {
+  const { applications } = cloudDataEnabled() ? await cloudPipelineSummary() : pipelineSummary();
   const total = applications.length;
 
   const stageCounts = STAGES.map((s) => ({

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CLOUD_EXECUTION_MESSAGE, isCloudRuntime } from "@/lib/deployment";
 
-const SAFE_CLOUD_API_PATHS = new Set(["/api/health", "/api/version"]);
+const SAFE_CLOUD_API_PATHS = new Set(["/api/health", "/api/version", "/api/pipeline", "/api/cv", "/api/memory", "/api/whats-new", "/api/report/shape"]);
 
 function configuredCredentials() {
   const username = process.env.CAREER_OPS_WEB_AUTH_USER;
@@ -49,7 +49,7 @@ export function proxy(request: NextRequest) {
     });
   }
 
-  if (request.nextUrl.pathname.startsWith("/api/") && !SAFE_CLOUD_API_PATHS.has(request.nextUrl.pathname)) {
+  if (request.nextUrl.pathname.startsWith("/api/") && (!SAFE_CLOUD_API_PATHS.has(request.nextUrl.pathname) || !["GET", "HEAD"].includes(request.method))) {
     return NextResponse.json(
       { error: CLOUD_EXECUTION_MESSAGE, code: "CLOUD_EXECUTION_DISABLED" },
       { status: 501, headers: { "Cache-Control": "no-store" } },

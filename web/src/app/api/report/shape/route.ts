@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { careerOpsRoot, doctorState, readApplications, readInbox, trackerCanDelete } from "@/lib/career-ops";
 import { scannerSupportsJson } from "@/lib/core/scan";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudDoctorState, cloudReadApplications, cloudReadInbox } from "@/lib/cloud-career-ops";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,11 +33,14 @@ function dirCount(rel: string, ext: string): number {
 }
 
 export async function GET() {
-  const doctor = doctorState();
+  const cloud = cloudDataEnabled();
+  const doctor = cloud ? await cloudDoctorState() : doctorState();
   // "candidate" = a line that LOOKS like a row; parsed = what the tolerant
   // reader accepted. A gap between the two is the data-contract fingerprint.
-  const inboxCandidates = lineCount("data/pipeline.md", (l) => /^\s*-\s*\[[ xX]\]/.test(l));
-  const trackerCandidates = lineCount(
+  const cloudInbox = cloud ? await cloudReadInbox() : null;
+  const cloudApps = cloud ? await cloudReadApplications() : null;
+  const inboxCandidates = cloud ? (cloudInbox?.length ?? 0) : lineCount("data/pipeline.md", (l) => /^\s*-\s*\[[ xX]\]/.test(l));
+  const trackerCandidates = cloud ? cloudApps!.length : lineCount(
     "data/applications.md",
     (l) => l.trim().startsWith("|") && !/^\|\s*#\s*\|/.test(l.trim()) && !/^\|\s*:?-{2,}/.test(l.trim()),
   );
@@ -48,8 +53,8 @@ export async function GET() {
       hasData: doctor.hasData,
     },
     data: {
-      inbox: { candidates: inboxCandidates, parsed: readInbox().length },
-      tracker: { candidates: trackerCandidates, parsed: readApplications().length },
+      inbox: { candidates: inboxCandidates, parsed: cloud ? cloudInbox!.length : readInbox().length },
+      tracker: { candidates: trackerCandidates, parsed: cloud ? cloudApps!.length : readApplications().length },
       reports: dirCount("reports", ".md"),
       pdfs: dirCount("output", ".pdf"),
       followupsFile: fs.existsSync(path.join(careerOpsRoot(), "data", "follow-ups.md")),

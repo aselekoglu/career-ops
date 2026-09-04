@@ -3,12 +3,14 @@ import { ExplorerView } from "@/components/explore/explorer-view";
 import { seedExploreFilters } from "@/lib/core/portals";
 import { readInbox, readApplications, careerOpsRoot } from "@/lib/career-ops";
 import { DEFAULT_FILTERS } from "@/lib/explore";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudReadApplications, cloudReadInbox } from "@/lib/cloud-career-ops";
 
 // Read live data at request time so a bare checkout (or `next build` with no
 // CAREER_OPS_ROOT) never fails — discovery seeds are best-effort.
 export const dynamic = "force-dynamic";
 
-export default function ExplorePage() {
+export default async function ExplorePage() {
   let seed: { filters: typeof DEFAULT_FILTERS; seededFrom: string[] } = { filters: DEFAULT_FILTERS, seededFrom: [] };
   try {
     seed = seedExploreFilters();
@@ -22,6 +24,6 @@ export default function ExplorePage() {
     /* ignore */
   }
   return (
-    <ExplorerView seed={seed} inboxSnapshot={readInbox()} appsSnapshot={readApplications()} rootExists={rootExists} />
+    <ExplorerView seed={seed} inboxSnapshot={cloudDataEnabled() ? await cloudReadInbox() : readInbox()} appsSnapshot={cloudDataEnabled() ? await cloudReadApplications() : readApplications()} rootExists={cloudDataEnabled() || rootExists} />
   );
 }
