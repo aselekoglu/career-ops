@@ -1,5 +1,7 @@
 import { parseApplications } from "@/lib/tracker-table.mjs";
 import type { Application, InboxJob, LifecyclePhase, PipelineSummary, ReportData } from "@/lib/career-ops";
+import type { JobRun, ScheduledJob } from "@/lib/scheduled-jobs";
+import yaml from "js-yaml";
 import { getCloudDocument } from "@/lib/cloud-store";
 
 async function text(path: string): Promise<string | null> {
@@ -82,4 +84,97 @@ export async function cloudReadReport(n: string): Promise<ReportData | null> {
     if (body) return { content: body, file: candidates.slice("reports/".length) };
   }
   return null;
+}
+
+
+type CloudScheduledStore = { jobs: ScheduledJob[]; runs: JobRun[]; queue?: unknown[] };
+
+/** Read the last local scheduler snapshot. Cloud never mutates or executes it. */
+export async function cloudReadScheduledJobs(): Promise<{
+  jobs: ScheduledJob[];
+  runs: JobRun[];
+  cloud: true;
+  readOnly: true;
+  source: "neon";
+}> {
+  const raw = await text("data/scheduled-jobs.json");
+  if (!raw) return { jobs: [], runs: [], cloud: true, readOnly: true, source: "neon" };
+  try {
+    const parsed = JSON.parse(raw) as Partial<CloudScheduledStore>;
+    return {
+      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      cloud: true,
+      readOnly: true,
+      source: "neon",
+    };
+  } catch {
+    return { jobs: [], runs: [], cloud: true, readOnly: true, source: "neon" };
+  }
+}
+
+type PortalConfig = { tracked_companies?: Array<{ name?: string; provider?: string; enabled?: boolean }> };
+type PortalCompany = { name: string; status: "live" | "empty" | "broken" | "skipped"; detail: string };
+
+/** Return imported portal configuration and latest health snapshot; no live probing in cloud. */
+export async function cloudVerifyPortals(): Promise<{
+  available: true;
+  configured: boolean;
+  companies: PortalCompany[];
+  cloud: true;
+  readOnly: true;
+  source: "neon";
+  note: string;
+}> {
+  const configText = await text("portals.yml");
+  if (!configText) {
+    return { available: true, configured: false, companies: [], cloud: true, readOnly: true, source: "neon", note: "No portals.yml snapshot is available in Neon." };
+  }
+  let config: PortalConfig = {};
+  try {
+    config = (yaml.load(configText) as PortalConfig) || {};
+  } catch {
+    return { available: true, configured: false, companies: [], cloud: true, readOnly: true, source: "neon", note: "The imported portals.yml snapshot could not be parsed." };
+  }
+
+  const healthText = await text("data/portal-health.tsv");
+  const latest = new Map<string, { timestamp: string; status: string }>();
+  if (healthText) {
+    for (const [index, line] of healthText.split("\n").entries()) {
+      if (index === 0 || !line.trim()) continue;
+      const [timestamp, company, status] = line.split("\t").map((part) => part.trim());
+      if (timestamp && company && status) latest.set(company, { timestamp, status });
+    }
+  }
+
+  const companies: PortalCompany[] = (config.tracked_companies || [])
+    .filter((company) => typeof company.name === "string" && company.name.trim())
+    .map((company) => {
+      const name = company.name!.trim();
+      const health = latest.get(name);
+      if (company.enabled === false) return { name, status: "skipped", detail: "disabled in portals.yml" };
+      if (!health) return { name, status: "skipped", detail: `${company.provider || "no ATS"} · no imported health result` };
+      const normalized = health.status.toLowerCase();
+      const status: PortalCompany["status"] = normalized === "reachable" || normalized === "live"
+        ? "live"
+        : normalized === "empty"
+          ? "empty"
+          : normalized === "broken" || normalized === "unreachable" || normalized === "error"
+            ? "broken"
+            : "skipped";
+      return { name, status, detail: `${health.status} · snapshot ${health.timestamp}` };
+    });
+
+  return { available: true, configured: companies.length > 0, companies, cloud: true, readOnly: true, source: "neon", note: "Production shows the latest Neon snapshot. Live ATS checks remain local-only." };
+}
+
+export async function cloudSchedulerStatus() {
+  return {
+    available: false,
+    running: false,
+    task: { exists: false, enabled: false, nextRun: null, lastRun: null },
+    cloud: true,
+    readOnly: true,
+    note: "Windows Task Scheduler is local-only; production exposes the imported job snapshot.",
+  };
 }
