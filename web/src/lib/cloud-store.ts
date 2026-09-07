@@ -39,6 +39,21 @@ export async function getCloudDocument(relativePath: string): Promise<DocumentRo
   return row;
 }
 
+export type DocumentRef = Pick<DocumentRow, "path" | "updated_at">;
+
+export async function listCloudDocumentPaths(prefix = ""): Promise<DocumentRef[]> {
+  const sql = getClient();
+  if (!sql) return [];
+  const normalizedPrefix = prefix.replaceAll("\\", "/");
+  const rows = await sql`
+    SELECT path, updated_at
+    FROM career_ops_documents
+    WHERE path LIKE ${normalizedPrefix + "%"}
+    ORDER BY updated_at DESC, path ASC
+  `;
+  return Array.from(rows as unknown as Array<unknown>) as DocumentRef[];
+}
+
 export async function listCloudDocuments(prefix = ""): Promise<DocumentRow[]> {
   const sql = getClient();
   if (!sql) return [];
