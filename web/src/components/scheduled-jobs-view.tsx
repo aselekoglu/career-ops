@@ -165,7 +165,14 @@ export function ScheduledJobsView() {
         </div>
       </div>
 
-      {cloudReadOnly && (\n        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-muted">\n          Production is showing the latest scheduled-scan snapshot from <code className="text-foreground">Neon</code>.\n          Creating, editing, deleting, and running jobs stays local-only until a durable cloud worker is connected.\n        </div>\n      )}\n\n      {/* Stats Cards */}
+      {cloudReadOnly && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-muted">
+          Production is showing the latest scheduled-scan snapshot from <code className="text-foreground">Neon</code>.
+          Creating, editing, deleting, and running jobs stays local-only until a durable cloud worker is connected.
+        </div>
+      )}
+
+      {/* Stats Cards */}
       <div className="grid gap-3.5 sm:grid-cols-4">
         <StatCard label="Active Scans" value={activeJobs.length} subtitle={`${jobsList.length} total jobs`} icon={<Zap className="size-4 text-emerald-500" />} />
         <StatCard label="Executed Runs" value={totalRuns} subtitle={`${successRuns} successful`} icon={<Layers className="size-4 text-brand" />} />
