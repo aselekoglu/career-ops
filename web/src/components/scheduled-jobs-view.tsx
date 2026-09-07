@@ -21,7 +21,7 @@ import { RunHistoryDrawer } from "./scheduled-scans/run-history-drawer";
 import type { ScheduledJob, JobRun } from "@/lib/scheduled-jobs";
 import { instrumentSerif } from "@/lib/fonts";
 
-type Store = { jobs: ScheduledJob[]; runs: JobRun[] };
+type Store = { jobs: ScheduledJob[]; runs: JobRun[]; cloud?: boolean; readOnly?: boolean; source?: string };
 type SchedulerStatus = {
   available: boolean;
   running: boolean;
@@ -43,7 +43,7 @@ export function ScheduledJobsView() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ScheduledJob | null>(null);
-  const [osRunning, setOsRunning] = useState(false);
+  const [osRunning, setOsRunning] = useState(false);\n  const [cloudReadOnly, setCloudReadOnly] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
@@ -164,7 +164,7 @@ export function ScheduledJobsView() {
         </div>
       </div>
 
-      {/* Stats Cards */}
+      {cloudReadOnly && (\n        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-muted">\n          Production is showing the latest scheduled-scan snapshot from <code className="text-foreground">Neon</code>.\n          Creating, editing, deleting, and running jobs stays local-only until a durable cloud worker is connected.\n        </div>\n      )}\n\n      {/* Stats Cards */}
       <div className="grid gap-3.5 sm:grid-cols-4">
         <StatCard label="Active Scans" value={activeJobs.length} subtitle={`${jobsList.length} total jobs`} icon={<Zap className="size-4 text-emerald-500" />} />
         <StatCard label="Executed Runs" value={totalRuns} subtitle={`${successRuns} successful`} icon={<Layers className="size-4 text-brand" />} />
@@ -205,7 +205,7 @@ export function ScheduledJobsView() {
             <button
               type="button"
               onClick={handleTriggerOsScheduler}
-              disabled={osRunning || scheduler.running || !scheduler.available}
+              disabled={cloudReadOnly || osRunning || scheduler.running || !scheduler.available}
               className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-hover disabled:opacity-50"
             >
               {osRunning ? <Loader2 className="size-3.5 animate-spin text-brand" /> : <Zap className="size-3.5 text-brand" />}
