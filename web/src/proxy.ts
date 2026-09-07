@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CLOUD_EXECUTION_MESSAGE, isCloudRuntime } from "@/lib/deployment";
 
-const SAFE_CLOUD_API_PATHS = new Set(["/api/health", "/api/version", "/api/pipeline", "/api/cv", "/api/memory", "/api/whats-new", "/api/report/shape", "/api/scheduled-jobs", "/api/scheduler", "/api/portals/verify"]);
+const SAFE_CLOUD_API_PATHS = new Set(["/api/health", "/api/version", "/api/pipeline", "/api/cv", "/api/memory", "/api/whats-new", "/api/report/shape", "/api/scheduled-jobs", "/api/scheduler", "/api/portals/verify", "/api/cv-pdf"]);
 
 function configuredCredentials() {
   const username = process.env.CAREER_OPS_WEB_AUTH_USER;
