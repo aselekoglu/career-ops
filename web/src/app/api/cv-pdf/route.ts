@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
 import { careerOpsRoot } from "@/lib/career-ops";
-import { cloudDataEnabled, listCloudDocuments } from "@/lib/cloud-store";
+import { cloudDataEnabled, getCloudDocument, listCloudDocumentPaths } from "@/lib/cloud-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,17 +24,24 @@ export async function GET(req: NextRequest) {
   const re = new RegExp("(^|[^a-z0-9])" + slug + "([^a-z0-9]|$)", "i");
 
   if (cloudDataEnabled()) {
-    let documents;
+    let documentRef;
     try {
-      documents = await listCloudDocuments("output/");
+      const documentRefs = await listCloudDocumentPaths("output/");
+      documentRef = documentRefs.find((document) => {
+        const filename = path.basename(document.path);
+        return filename.toLowerCase().endsWith(".pdf") && re.test(filename.toLowerCase());
+      });
     } catch {
       return new Response("cloud document store unavailable", { status: 503, headers: { "Cache-Control": "no-store" } });
     }
+    if (!documentRef) return new Response("no tailored CV found for this offer", { status: 404 });
 
-    const row = documents.find((document) => {
-      const filename = path.basename(document.path);
-      return filename.toLowerCase().endsWith(".pdf") && re.test(filename.toLowerCase());
-    });
+    let row;
+    try {
+      row = await getCloudDocument(documentRef.path);
+    } catch {
+      return new Response("cloud document store unavailable", { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
     if (!row) return new Response("no tailored CV found for this offer", { status: 404 });
 
     if (row.content_encoding !== "base64") {
