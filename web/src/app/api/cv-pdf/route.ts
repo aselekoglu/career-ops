@@ -15,14 +15,13 @@ export async function GET(req: NextRequest) {
   const company = (req.nextUrl.searchParams.get("company") ?? "").trim();
   if (!company) return new Response("company required", { status: 400 });
 
-  // Token-extract instead of replace-then-trim: same slug, and no -+$ style
-  // pattern that backtracks polynomially on adversarial input (CodeQL).
+  // Token extraction keeps the lookup bounded and produces only [a-z0-9-].
   const slug = (company.toLowerCase().match(/[a-z0-9]+/g) ?? []).join("-");
   if (!slug) return new Response("company required", { status: 400 });
 
   // Match the slug at a token boundary (delimited by non-alphanumerics) so
   // "Meta" does not serve "Metabase"'s tailored CV.
-  const re = new RegExp(`(^|[^a-z0-9])${slug.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}([^a-z0-9]|$)`, "i");
+  const re = new RegExp("(^|[^a-z0-9])" + slug + "([^a-z0-9]|$)", "i");
 
   if (cloudDataEnabled()) {
     let documents;
@@ -47,12 +46,12 @@ export async function GET(req: NextRequest) {
       return new Response("stored PDF is incomplete", { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
-    const filename = path.basename(row.path).replace(/["\\r\\n]/g, "_");
+    const filename = path.basename(row.path).replace(/["\r\n]/g, "_");
     return new Response(new Uint8Array(buf), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${filename}"`,
+        "Content-Disposition": "inline; filename=\"" + filename + "\"",
         "Cache-Control": "no-store",
         "X-Career-Ops-Source": "neon",
       },
@@ -79,7 +78,7 @@ export async function GET(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${files[0].replace(/["\\r\\n]/g, "_")}"`,
+        "Content-Disposition": "inline; filename=\"" + files[0].replace(/["\r\n]/g, "_") + "\"",
         "Cache-Control": "no-store",
       },
     });
