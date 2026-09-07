@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { careerOpsRoot, rootScript } from "@/lib/career-ops";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudVerifyPortals } from "@/lib/cloud-career-ops";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +21,7 @@ const STATUS: Record<string, "live" | "empty" | "broken" | "skipped"> = {
 };
 
 export async function GET() {
+  if (cloudDataEnabled()) return Response.json(await cloudVerifyPortals(), { headers: { "Cache-Control": "no-store" } });
   const root = careerOpsRoot();
   const verifyPortals = rootScript("verify-portals");
   if (!fs.existsSync(verifyPortals)) {
