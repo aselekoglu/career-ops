@@ -43,7 +43,8 @@ export function ScheduledJobsView() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ScheduledJob | null>(null);
-  const [osRunning, setOsRunning] = useState(false);\n  const [cloudReadOnly, setCloudReadOnly] = useState(false);
+  const [osRunning, setOsRunning] = useState(false);
+  const [cloudReadOnly, setCloudReadOnly] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
