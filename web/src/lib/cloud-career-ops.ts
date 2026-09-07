@@ -1,7 +1,7 @@
 import { parseApplications } from "@/lib/tracker-table.mjs";
 import type { Application, InboxJob, LifecyclePhase, PipelineSummary, ReportData } from "@/lib/career-ops";
 import type { JobRun, ScheduledJob } from "@/lib/scheduled-jobs";
-import yaml from "js-yaml";
+import { load as parseYaml } from "js-yaml";
 import { getCloudDocument } from "@/lib/cloud-store";
 
 async function text(path: string): Promise<string | null> {
@@ -132,7 +132,7 @@ export async function cloudVerifyPortals(): Promise<{
   }
   let config: PortalConfig = {};
   try {
-    config = (yaml.load(configText) as PortalConfig) || {};
+    config = (parseYaml(configText) as PortalConfig) || {};
   } catch {
     return { available: true, configured: false, companies: [], cloud: true, readOnly: true, source: "neon", note: "The imported portals.yml snapshot could not be parsed." };
   }
