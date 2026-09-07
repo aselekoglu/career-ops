@@ -4,6 +4,8 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { schedulerStatus } from "@/lib/scheduler-status";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudSchedulerStatus } from "@/lib/cloud-career-ops";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +15,7 @@ function runnerScript() {
 }
 
 export async function GET() {
+  if (cloudDataEnabled()) return NextResponse.json(await cloudSchedulerStatus(), { headers: { "Cache-Control": "no-store" } });
   return NextResponse.json(await schedulerStatus(), { headers: { "Cache-Control": "no-store" } });
 }
 
