@@ -1,6 +1,13 @@
 import { neon } from "@neondatabase/serverless";
 
-type DocumentRow = { path: string; content: string; content_encoding: string; byte_size: number; sha256: string };
+export type DocumentRow = {
+  path: string;
+  content: string;
+  content_encoding: string;
+  byte_size: number;
+  sha256: string;
+  updated_at?: string;
+};
 
 let client: ReturnType<typeof neon> | null | undefined;
 const cache = new Map<string, DocumentRow | null>();
@@ -22,7 +29,7 @@ export async function getCloudDocument(relativePath: string): Promise<DocumentRo
   const sql = getClient();
   if (!sql) return null;
   const rows = await sql`
-    SELECT path, content, content_encoding, byte_size, sha256
+    SELECT path, content, content_encoding, byte_size, sha256, updated_at
     FROM career_ops_documents
     WHERE path = ${key}
     LIMIT 1
@@ -30,6 +37,19 @@ export async function getCloudDocument(relativePath: string): Promise<DocumentRo
   const row = (Array.from(rows as unknown as Array<unknown>)[0] as DocumentRow | undefined) ?? null;
   cache.set(key, row);
   return row;
+}
+
+export async function listCloudDocuments(prefix = ""): Promise<DocumentRow[]> {
+  const sql = getClient();
+  if (!sql) return [];
+  const normalizedPrefix = prefix.replaceAll("\\", "/");
+  const rows = await sql`
+    SELECT path, content, content_encoding, byte_size, sha256, updated_at
+    FROM career_ops_documents
+    WHERE path LIKE ${normalizedPrefix + "%"}
+    ORDER BY updated_at DESC, path ASC
+  `;
+  return Array.from(rows as unknown as Array<unknown>) as DocumentRow[];
 }
 
 export function clearCloudDocumentCache() {
