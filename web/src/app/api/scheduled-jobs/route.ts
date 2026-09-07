@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudReadScheduledJobs } from "@/lib/cloud-career-ops";
 import {
   createScheduledJob,
   listScheduledJobs,
@@ -9,6 +11,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  if (cloudDataEnabled()) return NextResponse.json(await cloudReadScheduledJobs(), { headers: { "Cache-Control": "no-store" } });
   try {
     return NextResponse.json(listScheduledJobs(), { headers: { "Cache-Control": "no-store" } });
   } catch {
