@@ -8,7 +8,7 @@ import { useJobs, type Job } from "@/components/jobs/job-store";
 import { cn } from "@/lib/cn";
 
 type Company = { name: string; status: string; detail: string };
-type Result = { available: boolean; configured: boolean; companies: Company[] };
+type Result = { available: boolean; configured: boolean; companies: Company[]; cloud?: boolean; readOnly?: boolean; source?: string; note?: string };
 
 const TONE: Record<string, { dot: string; label: string; chip: string }> = {
   live: { dot: "bg-emerald-500", label: "live", chip: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400" },
@@ -53,7 +53,7 @@ export function PortalsView() {
       <div className="flex items-center gap-3">
         <button
           onClick={check}
-          disabled={loading}
+          disabled={loading || res?.readOnly === true}
           className="inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200 disabled:opacity-50 max-sm:min-h-[44px]"
         >
           {loading ? <Loader2 className="size-4 animate-spin" /> : <Radar className="size-4" />}
@@ -62,7 +62,7 @@ export function PortalsView() {
         {loading && <span className="text-xs text-faint">Probing each company&apos;s ATS… (~30–60s)</span>}
       </div>
 
-      {res && !res.available && (
+      {res?.readOnly && (\n        <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">\n          {res.note || "Production is showing the latest imported portal snapshot from Neon."} Live ATS checks and portal edits remain local-only.\n        </p>\n      )}\n\n      {res && !res.available && (
         <p className="mt-4 rounded-xl border border-dashed border-border bg-surface/30 p-4 text-sm text-muted">
           <code className="text-foreground">verify-portals.mjs</code> not found — this needs a complete career-ops
           checkout (the web orchestrates the core&apos;s validator).
@@ -103,7 +103,7 @@ export function PortalsView() {
                   <span className="shrink-0 text-sm font-medium">{c.name}</span>
                   <span className="truncate font-mono text-xs text-faint">{c.detail}</span>
                   <div className="ml-auto flex shrink-0 items-center gap-2">
-                    {c.status === "broken" && <FixAffordance company={c.name} job={fixByCompany.get(c.name)} onFix={() => startJob({ title: `Fix · ${c.name}`, subtitle: "repair portal slug", kind: "fix-portal", input: c.name, page: "/portals" })} />}
+                    {c.status === "broken" && !res.readOnly && <FixAffordance company={c.name} job={fixByCompany.get(c.name)} onFix={() => startJob({ title: `Fix · ${c.name}`, subtitle: "repair portal slug", kind: "fix-portal", input: c.name, page: "/portals" })} />}
                     <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold", t.chip)}>{t.label}</span>
                   </div>
                 </li>
