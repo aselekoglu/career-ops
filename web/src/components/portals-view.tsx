@@ -62,7 +62,13 @@ export function PortalsView() {
         {loading && <span className="text-xs text-faint">Probing each company&apos;s ATS… (~30–60s)</span>}
       </div>
 
-      {res?.readOnly && (\n        <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">\n          {res.note || "Production is showing the latest imported portal snapshot from Neon."} Live ATS checks and portal edits remain local-only.\n        </p>\n      )}\n\n      {res && !res.available && (
+      {res?.readOnly && (
+        <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">
+          {res.note || "Production is showing the latest imported portal snapshot from Neon."} Live ATS checks and portal edits remain local-only.
+        </p>
+      )}
+
+      {res && !res.available && (
         <p className="mt-4 rounded-xl border border-dashed border-border bg-surface/30 p-4 text-sm text-muted">
           <code className="text-foreground">verify-portals.mjs</code> not found — this needs a complete career-ops
           checkout (the web orchestrates the core&apos;s validator).
