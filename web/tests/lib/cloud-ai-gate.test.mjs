@@ -7,10 +7,13 @@ const request = (pathname, method = "POST", extra = {}) => ({
   pathname,
   method,
   origin: "https://career-ops.example",
+  requestOrigin: "https://career-ops.example",
   host: "career-ops.example",
+  requestHost: "career-ops.example",
   secFetchSite: "same-origin",
   ...extra,
 });
+const readyHandlers = { assistant: true, explore: true, exploreKnown: true };
 
 test("public hosted AI status exposes booleans only and never provider credentials", () => {
   const secret = "gemini-secret-that-must-not-escape";
@@ -24,29 +27,38 @@ test("public hosted AI status exposes booleans only and never provider credentia
   });
 });
 
-test("authenticated read-only status and known-URL GETs are allowed without a Gemini key", () => {
+test("only status GET is enabled by default; known URLs require an adapted hosted handler", () => {
   const missingKey = { hosted: true, ready: false, geminiConfigured: false };
   assert.equal(isAllowedCloudAiRequest(request("/api/ai/status", "GET"), missingKey).allowed, true);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), missingKey).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), missingKey).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), missingKey, { exploreKnown: true }).allowed, true);
 });
 
-test("Gemini provider POSTs are allowed only when configured and same-origin", () => {
-  assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready).allowed, true);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready).allowed, true);
-  assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), { ...ready, geminiConfigured: false, ready: false }).allowed, false);
+test("Gemini POSTs require both an adapted hosted handler and configured same-origin provider", () => {
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready, readyHandlers).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, readyHandlers).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), { ...ready, geminiConfigured: false, ready: false }, readyHandlers).allowed, false);
 });
 
 test("cross-origin or unverifiable provider POSTs are denied", () => {
-  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { origin: "https://evil.example" }), ready).allowed, false);
-  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { secFetchSite: "cross-site" }), ready).allowed, false);
-  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { origin: null }), ready).allowed, false);
-  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { secFetchSite: null }), ready).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { origin: "https://evil.example" }), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { secFetchSite: "cross-site" }), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { origin: null }), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { secFetchSite: null }), ready, readyHandlers).allowed, false);
+});
+
+test("provider POSTs deny a missing Host and a scheme-mismatched Origin", () => {
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { host: null }), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { host: "other.example" }), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { origin: "http://career-ops.example" }), ready, readyHandlers).allowed, false);
 });
 
 test("wrong methods, local execution, and data mutation routes stay denied", () => {
   assert.equal(isAllowedCloudAiRequest(request("/api/ai/status", "POST"), ready).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "POST"), ready).allowed, false);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai", "GET"), ready).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai", "GET"), ready, readyHandlers).allowed, false);
   for (const pathname of ["/api/run", "/api/pipeline", "/api/profile", "/api/scheduled-jobs", "/api/assistant/extra", "/api/explore/ai/known/extra"]) {
     assert.equal(isAllowedCloudAiRequest(request(pathname), ready).allowed, false, `${pathname} must stay blocked`);
   }

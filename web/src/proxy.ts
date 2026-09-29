@@ -18,6 +18,14 @@ const SAFE_CLOUD_API_PATHS = new Set([
   "/api/followups/cadence",
 ]);
 
+// Fail closed until each route has a hosted Gemini implementation. Task 3 may
+// enable Assistant after its server branch exists; Task 4 owns Explore + Neon URLs.
+const HOSTED_AI_HANDLERS = {
+  assistant: false,
+  explore: false,
+  exploreKnown: false,
+};
+
 function configuredCredentials() {
   const username = process.env.CAREER_OPS_WEB_AUTH_USER;
   const password = process.env.CAREER_OPS_WEB_AUTH_PASSWORD;
@@ -75,19 +83,34 @@ export function proxy(request: NextRequest) {
       pathname,
       method: request.method,
       origin: request.headers.get("origin"),
-      host: request.headers.get("host") ?? request.nextUrl.host,
+      requestOrigin: request.nextUrl.origin,
+      host: request.headers.get("host"),
+      requestHost: request.nextUrl.host,
       secFetchSite: request.headers.get("sec-fetch-site"),
-    }, hostedStatus);
+    }, hostedStatus, HOSTED_AI_HANDLERS);
     if (decision.allowed) return NextResponse.next();
 
     const unavailable = decision.reason === "gemini_unavailable";
     const crossOrigin = decision.reason === "same_origin_required";
+    const handlerUnavailable = decision.reason === "hosted_handler_unavailable";
     return NextResponse.json(
       {
-        error: unavailable ? "Hosted Gemini is not configured." : crossOrigin ? "This request must come from the same origin." : "This method is not allowed for this hosted AI endpoint.",
-        code: unavailable ? "HOSTED_AI_UNAVAILABLE" : crossOrigin ? "CLOUD_AI_ORIGIN_DENIED" : "CLOUD_AI_REQUEST_DENIED",
+        error: unavailable
+          ? "Hosted Gemini is not configured."
+          : crossOrigin
+            ? "This request must come from the same origin."
+            : handlerUnavailable
+              ? "This hosted AI handler is not enabled in this deployment."
+              : "This method is not allowed for this hosted AI endpoint.",
+        code: unavailable
+          ? "HOSTED_AI_UNAVAILABLE"
+          : crossOrigin
+            ? "CLOUD_AI_ORIGIN_DENIED"
+            : handlerUnavailable
+              ? "CLOUD_AI_HANDLER_UNAVAILABLE"
+              : "CLOUD_AI_REQUEST_DENIED",
       },
-      { status: unavailable ? 503 : crossOrigin ? 403 : 405, headers: { "Cache-Control": "no-store" } },
+      { status: unavailable ? 503 : crossOrigin ? 403 : handlerUnavailable ? 501 : 405, headers: { "Cache-Control": "no-store" } },
     );
   }
 
