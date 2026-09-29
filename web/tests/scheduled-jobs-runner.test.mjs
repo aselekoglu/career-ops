@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import * as yaml from "js-yaml";
 
 import {
   emptyScheduledStore,
@@ -13,7 +14,7 @@ import {
   readScheduledStore,
   withResourceLock,
   withScheduledStore,
-} from "../web/src/lib/scheduled-jobs-store.mjs";
+} from "../src/lib/scheduled-jobs-store.mjs";
 import {
   buildScanCommand,
   claimDueJob,
@@ -27,7 +28,7 @@ import {
   recordCompletion,
   runnerResourcePath,
 } from "../scripts/scheduled-jobs-runner.mjs";
-import { assertScheduledJobBody } from "../web/src/lib/scheduled-job-input.mjs";
+import { assertScheduledJobBody } from "../src/lib/scheduled-job-input.mjs";
 
 test("scheduled-jobs store starts empty and never seeds candidate-specific targeting", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-store-"));
@@ -107,6 +108,51 @@ test("scan command honors the selected engine and bounded filters", () => {
     script: "scan-ats-full.mjs",
     args: ["--since", "5", "--ats", "lever,ashby", "--limit", "500", "--json"],
   });
+});
+
+test("scheduled overlay falls back to portal title keywords and preserves hard location blocks", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-filters-"));
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter:\n  positive: [engineer]\nlocation_filter: {}\n", "utf8");
+  const job = {
+    id: "11111111-1111-4111-8111-111111111111",
+    engine: "full",
+    filters: { positive: [], blockHard: ["Brazil"], alwaysAllow: ["Porto"] },
+  };
+  try {
+    let overlay;
+    const result = executeJob(temp, job, {
+      spawnFn: (_node, _args, options) => {
+        overlay = yaml.load(fs.readFileSync(options.env.CAREER_OPS_PORTALS, "utf8"));
+        return { status: 0, stdout: JSON.stringify({ postingsKept: 0 }), stderr: "" };
+      },
+    });
+    assert.equal(result.state, "success");
+    assert.deepEqual(overlay.title_filter.positive, ["engineer"]);
+    assert.deepEqual(overlay.location_filter.block_hard, ["Brazil"]);
+    assert.deepEqual(overlay.location_filter.always_allow, ["Porto"]);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("scheduled scan never starts without title keywords", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-no-titles-"));
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter: {}\n", "utf8");
+  try {
+    let spawned = false;
+    const result = executeJob(temp, {
+      id: "11111111-1111-4111-8111-111111111111",
+      engine: "full",
+      filters: { positive: [] },
+    }, {
+      spawnFn: () => { spawned = true; throw new Error("scanner must not run"); },
+    });
+    assert.equal(spawned, false);
+    assert.equal(result.state, "failed");
+    assert.match(result.message, /require title keywords/);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test("scan command treats null and empty numeric filters as absent", () => {
@@ -239,7 +285,7 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
   try {
     // Use dynamic exit access so the real crash remains covered without tripping
     // test-all's guard that rejects direct process termination in discovered suites.
-    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); globalThis.process["exit"](17); });`], { encoding: "utf8" });
+    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.resolve("src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); globalThis.process["exit"](17); });`], { encoding: "utf8" });
     assert.equal(child.status, 17);
     assert.equal(readLockStatus(resource).stale, true);
     let entered = false;
@@ -253,7 +299,7 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
 test("concurrent real contenders never overlap while taking over or releasing a lock", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-race-"));
   const resource = path.join(temp, "resource");
-  const moduleUrl = pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href;
+  const moduleUrl = pathToFileURL(path.resolve("src/lib/scheduled-jobs-store.mjs")).href;
   const runChild = (index) => new Promise((resolve, reject) => {
     const marker = path.join(temp, `${index}.json`);
     const code = `import fs from 'node:fs'; import { withResourceLock } from ${JSON.stringify(moduleUrl)}; const marker=${JSON.stringify(marker)}; await withResourceLock(${JSON.stringify(resource)}, async()=>{ const start=Date.now(); await new Promise(r=>setTimeout(r,35)); fs.writeFileSync(marker, JSON.stringify({start,end:Date.now()})); });`;
@@ -275,7 +321,7 @@ test("concurrent real contenders never overlap while taking over or releasing a 
 test("a worker crash after a persisted claim leaves the queue recoverable", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-claim-crash-"));
   const storePath = path.join(temp, "scheduled-jobs.json");
-  const storeModule = pathToFileURL(path.resolve("web/src/lib/scheduled-jobs-store.mjs")).href;
+  const storeModule = pathToFileURL(path.resolve("src/lib/scheduled-jobs-store.mjs")).href;
   const runnerModule = pathToFileURL(path.resolve("scripts/scheduled-jobs-runner.mjs")).href;
   const jobId = "11111111-1111-4111-8111-111111111111";
   const queueId = "22222222-2222-4222-8222-222222222222";
@@ -299,7 +345,7 @@ test("a worker crash after a persisted claim leaves the queue recoverable", asyn
 test("executeJob retries exactly three times and converts scanner timeouts to a final failure", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-retry-"));
   const job = { id: "11111111-1111-4111-8111-111111111111", engine: "full", filters: {}, timezone: "UTC" };
-  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter: {}\nlocation_filter: {}\n", "utf8");
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter:\n  positive: [engineer]\nlocation_filter: {}\n", "utf8");
   try {
     let attempts = 0;
     const recovered = executeJob(temp, job, {
@@ -327,7 +373,7 @@ test("executeJob retries exactly three times and converts scanner timeouts to a 
 test("executeJob retries thrown setup and spawn failures before succeeding", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-thrown-retry-"));
   const job = { id: "11111111-1111-4111-8111-111111111111", engine: "full", filters: {}, timezone: "UTC" };
-  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter: {}\nlocation_filter: {}\n", "utf8");
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter:\n  positive: [engineer]\nlocation_filter: {}\n", "utf8");
   try {
     let attempts = 0;
     const result = executeJob(temp, job, {

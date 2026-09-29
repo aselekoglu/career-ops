@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function runnerScript() {
-  return path.join(careerOpsRoot(), "scripts", "scheduled-jobs-runner.mjs");
+  return path.join(careerOpsRoot(), "web", "scripts", "scheduled-jobs-runner.mjs");
 }
 
 export async function GET() {

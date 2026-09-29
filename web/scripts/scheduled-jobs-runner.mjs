@@ -10,15 +10,13 @@ import {
   isSafeScheduledId,
   withResourceLock,
   withScheduledStore,
-  writeScheduledStoreAtomic,
-} from "../web/src/lib/scheduled-jobs-store.mjs";
-import { nextScheduledRun } from "../web/src/lib/scheduled-cadence.mjs";
-import { isMainModule } from "../lib/is-main-module.mjs";
-import { scheduledRunnerResourcePath, scheduledStorePath } from "../web/src/lib/scheduled-runner-path.mjs";
+} from "../src/lib/scheduled-jobs-store.mjs";
+import { nextScheduledRun } from "../src/lib/scheduled-cadence.mjs";
+import { isMainModule } from "../../lib/is-main-module.mjs";
+import { scheduledRunnerResourcePath, scheduledStorePath } from "../src/lib/scheduled-runner-path.mjs";
 
-const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const MAX_RUNS = 100;
-const MAX_NOTICES = 100;
 export const MAX_ATTEMPTS = 3;
 export const SCAN_TIMEOUT_MS = 25 * 60 * 1_000;
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
@@ -148,15 +146,26 @@ function writeJobPortals(root, job) {
   if (!base || typeof base !== "object") throw new Error("portals.yml must contain a mapping");
 
   const filters = job.filters || {};
+  const positive = Array.isArray(filters.positive)
+    ? filters.positive.filter((value) => typeof value === "string" && value.trim())
+    : [];
+  const fallbackPositive = Array.isArray(base.title_filter?.positive)
+    ? base.title_filter.positive.filter((value) => typeof value === "string" && value.trim())
+    : [];
+  if (!positive.length && !fallbackPositive.length) {
+    throw new Error("Scheduled scans require title keywords in the job or portals.yml title_filter.positive.");
+  }
   base.title_filter = {
     ...(base.title_filter || {}),
-    positive: Array.isArray(filters.positive) ? filters.positive : [],
+    positive: positive.length ? positive : fallbackPositive,
     negative: Array.isArray(filters.negative) ? filters.negative : [],
   };
+  if (base.title_filter_full) base.title_filter_full = { ...base.title_filter_full, ...base.title_filter };
   base.location_filter = {
     ...(base.location_filter || {}),
     allow: Array.isArray(filters.allow) ? filters.allow : [],
     block: Array.isArray(filters.block) ? filters.block : [],
+    block_hard: Array.isArray(filters.blockHard) ? filters.blockHard : [],
     always_allow: Array.isArray(filters.alwaysAllow) ? filters.alwaysAllow : [],
   };
 
@@ -261,25 +270,6 @@ export async function recordCompletion(storePath, claim, result, inMemoryStore =
   else await withScheduledStore(storePath, apply);
 }
 
-function appendFailureNotice(noticePath, job, message) {
-  let notices = [];
-  try {
-    const parsed = JSON.parse(fs.readFileSync(noticePath, "utf8"));
-    if (Array.isArray(parsed)) notices = parsed;
-  } catch {
-    // A missing or malformed notification file starts a fresh bounded list.
-  }
-  notices.push({
-    id: randomUUID(),
-    jobId: job.id,
-    at: nowIso(),
-    kind: "scheduled-job-failed",
-    message,
-    read: false,
-  });
-  writeScheduledStoreAtomic(noticePath, notices.slice(-MAX_NOTICES));
-}
-
 async function takeDueJob(storePath) {
   return withScheduledStore(storePath, (store) => {
     enqueueDueJobs(store);
@@ -297,7 +287,6 @@ async function main() {
     ? path.resolve(process.env.CAREER_OPS_ROOT)
     : DEFAULT_ROOT;
   const storePath = scheduledStorePath(root);
-  const noticePath = path.join(root, "data", "scheduled-job-notifications.json");
   const runnerResource = runnerResourcePath(storePath);
   const manualJobId = requestedJobId(process.argv.slice(2));
 
@@ -322,7 +311,6 @@ async function main() {
 
       const result = executeJob(root, claim.job);
       await recordCompletion(storePath, claim, result);
-      if (result.state === "failed") appendFailureNotice(noticePath, claim.job, result.message);
       if (result.state === "failed") throw new Error(result.message);
       return { status: "success", jobId: claim.job.id, ...result };
     },

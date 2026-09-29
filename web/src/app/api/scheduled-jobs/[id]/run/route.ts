@@ -79,7 +79,7 @@ export async function POST(_req: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "Could not read scheduled jobs." }, { status: 500 });
   }
 
-  const runner = path.join(careerOpsRoot(), "scripts", "scheduled-jobs-runner.mjs");
+  const runner = path.join(careerOpsRoot(), "web", "scripts", "scheduled-jobs-runner.mjs");
   if (!fs.existsSync(runner)) {
     return NextResponse.json({ error: "Scheduled job runner is not installed." }, { status: 404 });
   }

@@ -25,6 +25,7 @@ import { isSchedulerStatusPayload } from "@/lib/scheduled-scheduler-status.mjs";
 
 type Store = { jobs: ScheduledJob[]; runs: JobRun[] };
 type SchedulerStatus = {
+  platform: "win32" | "darwin" | "linux" | string;
   available: boolean;
   running: boolean;
   task: { exists: boolean; enabled: boolean; nextRun: string | null; lastRun: string | null };
@@ -202,7 +203,7 @@ export function ScheduledJobsView() {
               </div>
               <div>
                 <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                  Windows Task Scheduler Integration
+                  {scheduler.platform === "win32" ? "Windows Task Scheduler Integration" : "Manual scans"}
                   <span
                     className={
                       scheduler.task.exists && scheduler.task.enabled
@@ -210,19 +211,23 @@ export function ScheduledJobsView() {
                         : "rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300"
                     }
                   >
-                    {scheduler.task.exists
-                      ? scheduler.task.enabled ? "Task enabled" : "Task disabled"
-                      : "Task not installed"}
+                    {scheduler.platform !== "win32"
+                      ? "No automatic schedule"
+                      : scheduler.task.exists
+                        ? scheduler.task.enabled ? "Task enabled" : "Task disabled"
+                        : "Task not installed"}
                   </span>
                 </div>
                 <div className="mt-0.5 text-xs text-muted">
-                  {scheduler.task.exists
-                    ? "Next OS check: " + formatTaskTime(scheduler.task.nextRun) + " · Last OS check: " + formatTaskTime(scheduler.task.lastRun)
-                    : "Install the local task with scripts/install-scan-schedule.ps1 to run due jobs automatically."}
+                  {scheduler.platform !== "win32"
+                    ? "On macOS and Linux, saved scans only run when you choose Run now."
+                    : scheduler.task.exists
+                      ? "Next OS check: " + formatTaskTime(scheduler.task.nextRun) + " · Last OS check: " + formatTaskTime(scheduler.task.lastRun)
+                      : "Install the Windows task with web/scripts/install-scan-schedule.ps1 to run due jobs automatically."}
                 </div>
               </div>
             </div>
-            <button
+            {scheduler.platform === "win32" && <button
               type="button"
               onClick={handleTriggerOsScheduler}
               disabled={osRunning || scheduler.running || !scheduler.available}
@@ -230,7 +235,7 @@ export function ScheduledJobsView() {
             >
               {osRunning ? <Loader2 className="size-3.5 animate-spin text-brand" /> : <Zap className="size-3.5 text-brand" />}
               {osRunning ? "Checking..." : "Check due jobs now"}
-            </button>
+            </button>}
           </div>
         </div>
       )}

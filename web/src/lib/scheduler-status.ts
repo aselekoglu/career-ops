@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const TASK_NAME = "career-ops recurring scan";
 
 export type SchedulerStatus = {
+  platform: NodeJS.Platform;
   available: boolean;
   running: boolean;
   task: {
@@ -61,10 +62,11 @@ async function readTask(): Promise<SchedulerStatus["task"]> {
 
 export async function schedulerStatus(): Promise<SchedulerStatus> {
   const root = careerOpsRoot();
-  const runner = path.join(root, "scripts", "scheduled-jobs-runner.mjs");
+  const runner = path.join(root, "web", "scripts", "scheduled-jobs-runner.mjs");
   const runnerLock = scheduledRunnerResourcePath(scheduledStorePath(root));
   const lock = readLockStatus(runnerLock, { staleMs: 25 * 60 * 1_000 * 3 + 60_000 });
   return {
+    platform: process.platform,
     available: fs.existsSync(runner),
     running: lock.active && !lock.stale,
     task: await readTask(),

@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
-$root = Resolve-Path (Join-Path $PSScriptRoot '..')
+$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $taskName = 'career-ops recurring scan'
 $node = (Get-Command node.exe -ErrorAction Stop).Source
-$script = Join-Path $root 'scripts\scheduled-jobs-runner.mjs'
+$script = Join-Path $PSScriptRoot 'scheduled-jobs-runner.mjs'
 
 if (-not (Test-Path -LiteralPath $script)) {
   throw "Scheduled job runner not found: $script"

@@ -56,15 +56,17 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
 
 ## Scheduled scans on Windows
 
+Automatic recurring scans through Task Scheduler are Windows-only. On macOS and Linux,
+saved scans run only when you choose **Run now** on the Scheduled scans page.
 The web UI can save scan definitions without installing an OS task. To check and
 run due jobs every 15 minutes, install the local worker from the repository root:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-scan-schedule.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File web/scripts/install-scan-schedule.ps1
 ```
 
-Remove it with `scripts/uninstall-scan-schedule.ps1`. It runs in the current user's interactive session, so the user must be logged in. The task runs only
-`scripts/scheduled-jobs-runner.mjs`; it never evaluates roles, applies, or invokes
+Remove it with `web/scripts/uninstall-scan-schedule.ps1`. It runs in the current user's interactive session, so the user must be logged in. The task runs only
+`web/scripts/scheduled-jobs-runner.mjs`; it never evaluates roles, applies, or invokes
 an AI model. Job definitions and run history stay in the gitignored `data/`
 directory.
 

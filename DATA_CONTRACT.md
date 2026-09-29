@@ -34,8 +34,7 @@ These files contain your personal data, customizations, and work product. Update
 | `data/pipeline.md` | Your URL inbox |
 | `data/scan-history.tsv` | Your scan history (tab-separated, append-only trailing columns; col 8: local SimHash JD fingerprint for cross-listing detection, col 9: posting date, cols 10-11: trust score/flags, col 12: normalized company key for repost/name matching). Older rows may have fewer columns — readers index by position and tolerate the absence. |
 | `data/scan-runs.tsv` | Your per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
-| `data/scheduled-jobs.json` | Your local scheduled-scan definitions, queue, and bounded run history (written by the web UI and `scripts/scheduled-jobs-runner.mjs`) |
-| `data/scheduled-job-notifications.json` | Local failure notifications emitted by the scheduled-jobs runner |
+| `data/scheduled-jobs.json` | Your local scheduled-scan definitions, queue, and bounded run history (written by the web UI and `web/scripts/scheduled-jobs-runner.mjs`) |
 | `data/portal-health.tsv` | Consecutive reachability status for scanned portals (appended by `scan.mjs`; statuses: `reachable`, `empty`, `slug_gone`, `network`, `auth`, `server`, `unknown` — the last three joined the vocabulary later, so older files carry only the first four) |
 | `data/dead-boards.tsv` | Boards that returned three consecutive 404s during mass reverse ATS sweeps (written by `scan-ats-full.mjs`; unlike `data/portal-health.tsv`, this does not track the user's configured portals; re-probed after 30 days — safe to delete, the next sweep rebuilds it) |
 | `data/follow-ups.md` | Your follow-up history |
@@ -194,5 +193,4 @@ When resolved, all User Layer files/directories (e.g. `cv.md`, `config/profile.y
 - **`CAREER_OPS_TRACKER`** can be set to override the applications tracker file path directly (relative paths are resolved relative to the repository root).
 - **Read Resolution:** If no tracker override is set, reading resolves to `{DATA_ROOT}/data/applications.md` if it exists; otherwise falls back to `{DATA_ROOT}/applications.md`.
 - **Write Resolution:** All writes (including merge operations and first-run creation) target the canonical location `{DATA_ROOT}/data/applications.md`.
-
 
