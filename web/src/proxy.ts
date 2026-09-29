@@ -65,7 +65,7 @@ export function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   const aiAction = pathname === "/api/assistant" || pathname === "/api/run" || pathname.startsWith("/api/explore/ai");
-  if (aiAction && !["GET", "HEAD"].includes(request.method)) {
+  if (aiAction) {
     return NextResponse.json(
       { error: "AI actions are not configured for this Vercel deployment. Local AI CLIs run on your computer; hosted AI needs a server-side provider or worker.", code: "CLOUD_AI_UNAVAILABLE" },
       { status: 501, headers: { "Cache-Control": "no-store" } },

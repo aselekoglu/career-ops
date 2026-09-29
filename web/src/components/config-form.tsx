@@ -127,9 +127,11 @@ export function ConfigForm() {
         {mode === "cli" && (
           <div>
             <p className="mb-1 text-sm text-muted">
-              career-ops uses an AI tool you already have — signed in, your own usage, nothing to paste.
+              {hosted
+                ? "This hosted app runs on a remote Vercel server and cannot access tools installed on your computer."
+                : "career-ops uses an AI tool you already have — signed in, your own usage, nothing to paste."}
             </p>
-            <p className="mb-3 text-xs text-faint">Works with Claude Code, Codex, OpenCode and more — free ones work great.</p>
+            {!hosted && <p className="mb-3 text-xs text-faint">Works with Claude Code, Codex, OpenCode and more — free ones work great.</p>}
             {hosted ? (
               <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">
                 This app is running on Vercel. It cannot see or install Claude Code, Codex, OpenCode, or other tools on your computer.

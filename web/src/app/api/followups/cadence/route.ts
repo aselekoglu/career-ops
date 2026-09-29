@@ -76,7 +76,7 @@ export async function GET() {
     let profile: Record<string, unknown>;
     try {
       const parsed = yaml.load(storedProfile.content);
-      if (!isMapping(parsed)) return Response.json({ error: "The imported profile is not a mapping." }, { status: 409 });
+      if (!isObj(parsed)) return Response.json({ error: "The imported profile is not a mapping." }, { status: 409 });
       profile = parsed as Record<string, unknown>;
     } catch {
       return Response.json({ error: "The imported profile could not be parsed." }, { status: 409 });
