@@ -18,6 +18,7 @@
 - Set provider-side conversation storage off where supported.
 - Hosted Assistant exposes only navigate and filterPipeline actions. Hosted Explore AI displays results but cannot add them to the pipeline.
 - Keep /api/run, file writes, CV/PDF generation, evaluation, tracker/profile/portal writes, and scheduled scan execution blocked in cloud mode.
+- Cap request bodies at 64 KiB, history at 20 messages, each user message at 8,000 characters, retrieved context at 16,000 characters, Assistant output at 2,048 tokens, and Explore output at 4,096 tokens. Provider timeout is 60 seconds; fallback limit is one.
 - Vercel Preview and Production require their own secrets. Do not ask the user to paste secret values into chat.
 
 ## Review Focus
@@ -40,10 +41,11 @@
 - Modify: web/package-lock.json
 
 **Interfaces:**
-- getHostedAiStatus(env = process.env) returns { geminiConfigured, openaiConfigured, ready, primary }, where primary is gemini, openai, or null.
-- createHostedAiService(options) returns { status(), stream(input) }; options injects environment and mockable provider clients.
-- HostedAiInput is { task: assistant | explore; system: string; messages: Array<{ role: user | assistant; content: string }>; webSearch: boolean; signal?: AbortSignal }.
-- HostedAiEvent is { type: text; text: string } or { type: source; url: string; title?: string }.
+- HostedAiStatus is { geminiConfigured: boolean; openaiConfigured: boolean; ready: boolean; primary: "gemini" | "openai" | null }.
+- HostedAiInput is { task: "assistant" | "explore"; system: string; messages: Array<{ role: "user" | "assistant"; content: string }>; webSearch: boolean; signal?: AbortSignal }.
+- HostedAiEvent is { type: "text"; text: string } or { type: "source"; url: string; title?: string }.
+- HostedAiProvider is { stream(input: HostedAiInput): AsyncIterable<HostedAiEvent> }.
+- createHostedAiService(options?) returns { status(): HostedAiStatus; stream(input: HostedAiInput): AsyncGenerator<HostedAiEvent> }. Options are { env?: NodeJS.ProcessEnv; providers?: Partial<Record<"gemini" | "openai", HostedAiProvider>>; timeoutMs?: number }; tests inject fake provider streams.
 
 - [ ] Step 1: Write Node tests for missing keys, Gemini primary, OpenAI-only readiness, one fallback before first text on retryable errors, no fallback on invalid credentials/refusal, no fallback after text, store=false, and request/output bounds.
 - [ ] Step 2: Run node --test tests/lib/hosted-ai.test.mjs from web and confirm the new tests fail.
