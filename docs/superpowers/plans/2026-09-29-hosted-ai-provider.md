@@ -91,7 +91,7 @@
 **Interfaces:**
 - hostedAssistantPrompt(context) returns the hosted system prompt with only navigate and filterPipeline capabilities.
 - isHostedAssistantActionAllowed(actionId) returns true only for navigate and filterPipeline.
-- The route calls streamHostedAi({ task: "assistant", system, messages, webSearch: false, signal }) and returns the same text stream consumed by assistant-console.
+- The route calls createHostedAiService().stream({ task: "assistant", system, messages, webSearch: false, signal }) and returns the same text stream consumed by assistant-console.
 
 - [ ] Step 1: Write tests for allowed navigation/filter envelopes and blocked evaluate, research, generatePdf, status/profile/portal writes, remember, and apply envelopes.
 - [ ] Step 2: Run node --test tests/lib/hosted-assistant-actions.test.mjs and confirm it fails.
@@ -113,7 +113,7 @@
 - Create: web/tests/lib/hosted-explore.test.mjs
 
 **Interfaces:**
-- The route calls streamHostedAi({ task: "explore", system, messages, webSearch: true, signal }).
+- The route calls createHostedAiService().stream({ task: "explore", system, messages, webSearch: true, signal }).
 - Existing offer events and result schema remain unchanged; validated source URLs stay in DiscoveredOffer.url and retain the unconfirmed badge.
 - Hosted AI discovery results are view-only; adding them to the pipeline is disabled.
 
