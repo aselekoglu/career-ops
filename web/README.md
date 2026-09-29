@@ -11,7 +11,7 @@ database, no server. If you never run it, nothing about your CLI workflow change
 
 ## Quick start
 
-Requires Node 22+ (see [Tests](#tests) — `npm test`'s glob discovery needs it).
+Requires Node 22.6+ (see [Tests](#tests) — `npm test` needs glob discovery, and `--experimental-strip-types` for the suites that import `.ts` modules directly; the flag landed in 22.6.0).
 
 ```bash
 cd web
@@ -32,8 +32,8 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
   jobs through an optional Windows Task Scheduler worker.
 - **Apply** — assisted form prefill with a hard rule inherited from the core:
   **it never submits for you** — you always press the button.
-- **Today / Analytics / CV / Config** — action queue, funnel, CV editing with
-  preview, settings.
+- **Today / Analytics / CV / Config** — action queue, funnel + pipeline Sankey,
+  CV editing with preview, settings.
 
 ## Safety
 
@@ -81,6 +81,18 @@ npm run build        # production build
 
 Set `CAREER_OPS_ROOT=/path/to/checkout` in `web/.env.local` to point the app at
 a different career-ops directory (useful for testing against sample data).
+Root scripts such as `doctor.mjs` run from the checkout that holds `web/`, not
+from `CAREER_OPS_ROOT`; set `CAREER_OPS_CODE_ROOT` when the app runs outside it.
+
+`/api` is gated by the same-origin + loopback guard in `src/lib/origin-guard.mjs`.
+Two opt-ins widen it, both unset by default and both in `web/.env.local`:
+`CAREER_OPS_WEB_ALLOWED_HOSTS` names extra non-loopback hosts the dashboard may
+answer on, and `CAREER_OPS_ALLOWED_ORIGINS` names origins allowed to call the
+API from outside the app — a comma- or space-separated list, no trailing slash.
+The second is what a local companion client needs: a browser extension calls
+from a `chrome-extension://` origin, which Fetch Metadata always reports as
+`cross-site`, so the guard refuses it unless the id is named here. The host
+layer still applies to an allowlisted origin.
 
 ### Tests
 
