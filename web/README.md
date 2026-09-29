@@ -61,13 +61,16 @@ The Vercel deployment is a protected, read-only cloud shell. Configure
 each environment where hosted AI should be available (Preview and/or
 Production). Never add its value to source control, client configuration,
 browser storage, or a request from the browser. The Config page reports only
-whether Gemini is ready; it never displays the credential. Vercel Deployment
+whether the key is configured; it never displays the credential. Vercel Deployment
 Protection and the app's Basic authentication must both remain enabled.
 
-Only authenticated, same-origin Gemini requests to Assistant and Explore AI
-are enabled in this stage. Local CLI execution, `/api/run`, scheduled scans,
-file-backed changes, and other worker or data-mutation operations remain
-disabled on Vercel until a durable persistence and worker backend is designed.
+Only exact authenticated, same-origin Gemini API paths whose hosted handlers
+are explicitly enabled by the deployment are allowed through the AI gate. A
+configured key alone never enables a local CLI or file-backed handler; routes
+without an enabled hosted implementation remain blocked. Local CLI execution,
+`/api/run`, scheduled scans, file-backed changes, and other worker or data
+mutation operations remain disabled on Vercel until durable persistence and a
+worker backend are designed.
 
 ## Scheduled scans on Windows
 

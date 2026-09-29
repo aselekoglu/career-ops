@@ -153,8 +153,8 @@ export function ConfigForm() {
                   <p className="mt-1">Could not read hosted AI readiness. Refresh this page to try again.</p>
                 ) : hostedAiStatus === null ? (
                   <p className="mt-1 flex items-center gap-2"><Loader2 className="size-4 animate-spin" /> Checking Vercel configuration…</p>
-                ) : hostedAiStatus.ready && hostedAiStatus.geminiConfigured ? (
-                  <p className="mt-1">Gemini is configured and ready. Its API key is stored as a server-only environment variable in Vercel; it is never shown or stored in this browser.</p>
+                ) : hostedAiStatus.geminiConfigured ? (
+                  <p className="mt-1">The Gemini API key is configured as a server-side Vercel environment variable. Its value is never shown or stored in this browser.</p>
                 ) : (
                   <p className="mt-1">Gemini is not configured for this deployment. Add <code className="font-mono text-foreground">GEMINI_API_KEY</code> to the Vercel environment; do not paste it here.</p>
                 )}
