@@ -36,6 +36,7 @@ const STORAGE_KEY = "career-ops:config";
 export function ConfigForm() {
   const [mode, setMode] = useState<Mode>("cli");
   const [clis, setClis] = useState<Cli[] | null>(null);
+  const [hosted, setHosted] = useState(false);
   const [cliId, setCliId] = useState<string>("");
   const [provider, setProvider] = useState("anthropic");
   const [apiKey, setApiKey] = useState("");
@@ -65,6 +66,7 @@ export function ConfigForm() {
     fetch("/api/clis")
       .then((r) => r.json())
       .then((d) => {
+        setHosted(d.cloud === true);
         const list: Cli[] = d.clis ?? [];
         setClis(list);
         // auto-select first installed if nothing chosen yet
@@ -128,7 +130,12 @@ export function ConfigForm() {
               career-ops uses an AI tool you already have — signed in, your own usage, nothing to paste.
             </p>
             <p className="mb-3 text-xs text-faint">Works with Claude Code, Codex, OpenCode and more — free ones work great.</p>
-            {clis === null ? (
+            {hosted ? (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">
+                This app is running on Vercel. It cannot see or install Claude Code, Codex, OpenCode, or other tools on your computer.
+                The API-key option is not connected yet, so AI actions require the local Career Ops app until a hosted provider or worker is configured.
+              </div>
+            ) : clis === null ? (
               <div className="flex items-center gap-2 text-sm text-muted">
                 <Loader2 className="size-4 animate-spin" /> Checking what&apos;s on your computer…
               </div>

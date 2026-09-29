@@ -21,6 +21,8 @@ const FIELDS: { key: ProfileCadenceKey; label: string; hint: string }[] = [
 export function CadenceSettings() {
   const [values, setValues] = useState<Record<ProfileCadenceKey, string> | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +38,8 @@ export function CadenceSettings() {
         return r.json();
       })
       .then((d) => {
+        setReadOnly(d?.readOnly === true);
+        setNote(typeof d?.note === "string" ? d.note : null);
         // `effective` is already defaults+overrides, computed server-side from
         // the CORE's cadenceDefaults (#2369) — no local defaults table to merge
         // in. A key the core didn't supply renders empty rather than as an
@@ -93,6 +97,11 @@ export function CadenceSettings() {
           When the <span className="text-muted">Follow-ups</span> tracker nudges you. Saved to{" "}
           <span className="font-mono text-muted">config/profile.yml</span> — the CLI uses the same values.
         </p>
+        {readOnly && (
+          <p role="status" className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted">
+            {note || "Current cadence settings are shown from the imported snapshot. Editing is unavailable in this deployment."}
+          </p>
+        )}
         {loadError ? (
           <div className="mt-3 text-sm text-muted">
             <p className="text-red-500">
@@ -123,6 +132,7 @@ export function CadenceSettings() {
                     min={0}
                     step={1}
                     value={values[f.key]}
+                    disabled={readOnly}
                     onChange={(e) => setValues((v) => (v ? { ...v, [f.key]: e.target.value } : v))}
                     className="mt-1.5 w-24 rounded-md border border-border bg-surface/60 px-3 py-1.5 text-sm tabular-nums outline-none transition-colors focus:border-brand/50 focus-visible:ring-2 focus-visible:ring-brand/40"
                   />
@@ -133,14 +143,14 @@ export function CadenceSettings() {
             <button
               type="button"
               onClick={save}
-              disabled={saving}
+              disabled={saving || readOnly}
               className={cn(
                 "mt-4 inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-xs font-medium transition-colors hover:bg-surface-hover",
                 "disabled:pointer-events-none disabled:opacity-60",
               )}
             >
               {saving ? <Loader2 className="size-3.5 animate-spin" /> : saved ? <Check className="size-3.5 text-emerald-400" /> : null}
-              {saved ? "Saved" : "Save cadence"}
+              {readOnly ? "Read-only" : saved ? "Saved" : "Save cadence"}
             </button>
           </>
         )}

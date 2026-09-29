@@ -1,8 +1,11 @@
 "use client";
 
-import { CheckCircle2, XCircle, Clock, X, TerminalSquare } from "lucide-react";
+import { CheckCircle2, XCircle, Clock, X, TerminalSquare, Loader2, Ban } from "lucide-react";
+import { useRef } from "react";
 import type { JobRun } from "@/lib/scheduled-jobs";
 import { cn } from "@/lib/cn";
+import { ScheduledOverlay } from "./scheduled-overlay";
+import { runStatusTone } from "@/lib/scheduled-run-status.mjs";
 
 export function RunHistoryDrawer({
   isOpen,
@@ -13,20 +16,18 @@ export function RunHistoryDrawer({
   onClose: () => void;
   runs: JobRun[];
 }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm transition-opacity">
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="relative flex h-full w-full max-w-md flex-col border-l border-border bg-surface shadow-2xl"
-      >
+    <ScheduledOverlay isOpen={isOpen} onClose={onClose} titleId="run-history-title" initialFocusRef={closeRef} overlayClassName="justify-end" panelClassName="!my-0 !mr-0 !h-full !max-h-none max-w-md rounded-none rounded-l-2xl border-y-0 border-r-0 p-0 flex flex-col">
         <div className="flex items-center justify-between border-b border-border p-4">
           <div className="flex items-center gap-2">
             <TerminalSquare className="size-5 text-brand" />
-            <h2 className="text-base font-semibold text-foreground">Execution Run History</h2>
+            <h2 id="run-history-title" className="text-base font-semibold text-foreground">Execution Run History</h2>
           </div>
           <button
+            ref={closeRef}
             type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-faint hover:bg-surface-hover hover:text-foreground"
@@ -43,6 +44,10 @@ export function RunHistoryDrawer({
           ) : (
             runs.map((run, i) => {
               const isSuccess = run.state === "success";
+              const isRunning = run.state === "running";
+              const isQueued = run.state === "queued";
+              const isCancelled = run.state === "cancelled";
+              const tone = runStatusTone(run.state);
               return (
                 <div
                   key={`${run.id || "run"}-${i}`}
@@ -52,11 +57,17 @@ export function RunHistoryDrawer({
                     <div className="flex items-center gap-1.5 font-medium">
                       {isSuccess ? (
                         <CheckCircle2 className="size-4 text-emerald-500" />
+                      ) : isRunning ? (
+                        <Loader2 className="size-4 animate-spin text-brand" />
+                      ) : isQueued ? (
+                        <Clock className="size-4 text-amber-500" />
+                      ) : isCancelled ? (
+                        <Ban className="size-4 text-muted" />
                       ) : (
                         <XCircle className="size-4 text-rose-500" />
                       )}
-                      <span className={cn(isSuccess ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500")}>
-                        {isSuccess ? "Success" : "Failed"}
+                      <span className={cn(tone === "success" ? "text-emerald-600 dark:text-emerald-400" : tone === "failed" ? "text-rose-500" : "text-muted")}>
+                        {isSuccess ? "Success" : isRunning ? "Running" : isQueued ? "Queued" : isCancelled ? "Cancelled" : "Failed"}
                       </span>
                       {run.engine && (
                         <span className="rounded bg-surface-hover px-1.5 py-0.5 text-[10px] text-faint uppercase font-mono">
@@ -83,7 +94,6 @@ export function RunHistoryDrawer({
             })
           )}
         </div>
-      </div>
-    </div>
+    </ScheduledOverlay>
   );
 }

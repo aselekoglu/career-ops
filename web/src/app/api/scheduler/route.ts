@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { careerOpsRoot } from "@/lib/career-ops";
+import { resolveCodeRoot } from "@/lib/core/code-root.mjs";
 import { schedulerStatus } from "@/lib/scheduler-status";
 import { cloudDataEnabled } from "@/lib/cloud-store";
 import { cloudSchedulerStatus } from "@/lib/cloud-career-ops";
@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function runnerScript() {
-  return path.join(careerOpsRoot(), "scripts", "scheduled-jobs-runner.mjs");
+  return path.join(resolveCodeRoot(process.cwd(), process.env), "web", "scripts", "scheduled-jobs-runner.mjs");
 }
 
 export async function GET() {
@@ -27,10 +27,22 @@ export async function POST() {
 
   try {
     const child = spawn(process.execPath, [script], {
-      cwd: careerOpsRoot(),
+      cwd: resolveCodeRoot(process.cwd(), process.env),
       detached: true,
       stdio: "ignore",
       windowsHide: true,
+    });
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      child.once("spawn", () => {
+        settled = true;
+        resolve();
+      });
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      });
     });
     child.unref();
     return NextResponse.json({ accepted: true }, { status: 202 });

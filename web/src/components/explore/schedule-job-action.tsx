@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CalendarPlus } from "lucide-react";
 import type { ExploreFilters } from "@/lib/explore";
 import { Button } from "@/components/ui/button";
+import { cadenceMinimum, createScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
 
 type ScheduleUnit = "minutes" | "hours" | "days";
 
@@ -14,26 +15,30 @@ export function ScheduleJobAction({ filters }: { filters: ExploreFilters }) {
   const [unit, setUnit] = useState<ScheduleUnit>("hours");
   const [state, setState] = useState("");
   const [saving, setSaving] = useState(false);
-  const minimum = unit === "minutes" ? 15 : 1;
+  const [cloudReadOnly, setCloudReadOnly] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/scheduled-jobs", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data) => { if (active) setCloudReadOnly(data?.readOnly === true); })
+      .catch(() => { if (active) setCloudReadOnly(true); });
+    return () => { active = false; };
+  }, []);
+  const minimum = cadenceMinimum(unit);
 
   const save = async () => {
     setSaving(true);
     setState("Saving...");
     try {
-      const response = await fetch("/api/scheduled-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await createScheduledJobRequest({
           name,
           every: Math.max(minimum, every),
           unit,
           filters,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           startAt: new Date().toISOString(),
-        }),
       });
-      const body = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(body.error || "Could not create the scheduled scan.");
       setState("Scheduled scan created.");
       setOpen(false);
     } catch (error) {
@@ -45,11 +50,12 @@ export function ScheduleJobAction({ filters }: { filters: ExploreFilters }) {
 
   return (
     <div className="inline-flex flex-wrap items-center gap-2">
-      <Button type="button" variant="outline" onClick={() => setOpen((value) => !value)}>
+      <Button type="button" variant="outline" disabled={cloudReadOnly} onClick={() => setOpen((value) => !value)}>
         <CalendarPlus className="size-4" />
         Schedule
       </Button>
-      {open && (
+      {cloudReadOnly && <span role="status" className="text-xs text-muted">Use the local app to create or run scans; this deployment shows a read-only snapshot.</span>}
+      {open && !cloudReadOnly && (
         <div className="flex flex-wrap items-end gap-2 rounded-xl border border-border bg-surface p-3 text-sm">
           <label className="grid gap-1 text-xs text-muted">
             Name
@@ -90,6 +96,7 @@ export function ScheduleJobAction({ filters }: { filters: ExploreFilters }) {
           {state && <span className="text-xs text-muted">{state}</span>}
         </div>
       )}
+      {!open && state && <span role="status" className="text-xs text-muted">{state}</span>}
     </div>
   );
 }

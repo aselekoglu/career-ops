@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CalendarPlus, Loader2, Sparkles, X } from "lucide-react";
 import type { ScanEngine } from "@/lib/scheduled-jobs";
 import { DEFAULT_FILTERS, type ExploreFilters } from "@/lib/explore";
 import { FilterBuilder } from "@/components/explore/filter-builder";
+import { ScheduledOverlay } from "./scheduled-overlay";
+import { cadenceMinimum, cadenceValueForUnit, createScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
 
 export function CreateJobModal({
   isOpen,
@@ -15,18 +17,19 @@ export function CreateJobModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [name, setName] = useState("AI & Automation Engineer Scan");
+  const [name, setName] = useState("Scheduled scan");
   const [engine, setEngine] = useState<ScanEngine>("full");
   const [every, setEvery] = useState(6);
   const [unit, setUnit] = useState<"minutes" | "hours" | "days">("hours");
   const [filters, setFilters] = useState<ExploreFilters>({
     ...DEFAULT_FILTERS,
     ats: [...DEFAULT_FILTERS.ats],
-    positive: ["AI", "Agentic", "LLM", "Automation", "Fullstack"],
-    negative: ["Manager", "Sales", "Contractor"],
+    positive: [],
+    negative: [],
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -36,22 +39,7 @@ export function CreateJobModal({
     setError("");
 
     try {
-      const res = await fetch("/api/scheduled-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          engine,
-          every,
-          unit,
-          filters,
-        }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to create scheduled scan");
-      }
+      await createScheduledJobRequest({ name, engine, every, unit, filters });
 
       onCreated();
       onClose();
@@ -63,18 +51,14 @@ export function CreateJobModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-opacity">
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
-      >
+    <ScheduledOverlay isOpen={isOpen} onClose={onClose} titleId="create-scheduled-scan-title" initialFocusRef={nameRef} panelClassName="max-w-2xl">
         <div className="flex items-center justify-between border-b border-border pb-4">
           <div className="flex items-center gap-2.5">
             <div className="grid size-9 place-items-center rounded-xl bg-brand-soft text-brand">
               <CalendarPlus className="size-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-foreground">Create Scheduled Scan</h2>
+              <h2 id="create-scheduled-scan-title" className="text-lg font-semibold text-foreground">Create Scheduled Scan</h2>
               <p className="text-xs text-muted">Configure a persistent background job for automatic role discovery.</p>
             </div>
           </div>
@@ -94,12 +78,13 @@ export function CreateJobModal({
           <div>
             <label className="mb-1 block text-[13px] font-medium text-foreground">Scan Name</label>
             <input
+              ref={nameRef}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
               className="w-full rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60 focus:ring-2 focus:ring-brand/20"
-              placeholder="e.g. Senior Backend & AI Roles"
+              placeholder="e.g. Roles matching my profile"
             />
           </div>
 
@@ -126,14 +111,18 @@ export function CreateJobModal({
               <div className="flex gap-2">
                 <input
                   type="number"
-                  min={unit === "minutes" ? 15 : 1}
+                  min={cadenceMinimum(unit)}
                   value={every}
-                  onChange={(e) => setEvery(Math.max(unit === "minutes" ? 15 : 1, Number(e.target.value)))}
+                  onChange={(e) => setEvery(Math.max(cadenceMinimum(unit), Number(e.target.value)))}
                   className="w-20 rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60"
                 />
                 <select
                   value={unit}
-                  onChange={(e) => setUnit(e.target.value as "minutes" | "hours" | "days")}
+                  onChange={(e) => {
+                    const nextUnit = e.target.value as "minutes" | "hours" | "days";
+                    setUnit(nextUnit);
+                    setEvery((value) => cadenceValueForUnit(value, nextUnit));
+                  }}
                   className="flex-1 rounded-xl border border-border bg-surface-hover/60 px-3.5 py-2 text-sm text-foreground outline-none focus:border-brand/60"
                 >
                   <option value="hours">Hours</option>
@@ -168,7 +157,6 @@ export function CreateJobModal({
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ScheduledOverlay>
   );
 }

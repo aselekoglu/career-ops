@@ -170,6 +170,7 @@ export async function cloudVerifyPortals(): Promise<{
 
 export async function cloudSchedulerStatus() {
   return {
+    platform: "cloud",
     available: false,
     running: false,
     task: { exists: false, enabled: false, nextRun: null, lastRun: null },

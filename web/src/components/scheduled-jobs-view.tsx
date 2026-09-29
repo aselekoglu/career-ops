@@ -20,10 +20,16 @@ import { JobCard } from "./scheduled-scans/job-card";
 import { RunHistoryDrawer } from "./scheduled-scans/run-history-drawer";
 import type { ScheduledJob, JobRun } from "@/lib/scheduled-jobs";
 import { instrumentSerif } from "@/lib/fonts";
+import { updateScheduledJobRequest } from "@/lib/scheduled-job-client.mjs";
+import { isSchedulerStatusPayload } from "@/lib/scheduled-scheduler-status.mjs";
 
 type Store = { jobs: ScheduledJob[]; runs: JobRun[]; cloud?: boolean; readOnly?: boolean; source?: string };
 type SchedulerStatus = {
+  platform?: "win32" | "darwin" | "linux" | "cloud" | string;
   available: boolean;
+  cloud?: boolean;
+  readOnly?: boolean;
+  note?: string;
   running: boolean;
   task: { exists: boolean; enabled: boolean; nextRun: string | null; lastRun: string | null };
 };
@@ -37,29 +43,41 @@ function formatTaskTime(value: string | null) {
 export function ScheduledJobsView() {
   const [store, setStore] = useState<Store>({ jobs: [], runs: [] });
   const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [filterTab, setFilterTab] = useState<"all" | "active" | "paused">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<ScheduledJob | null>(null);
   const [osRunning, setOsRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [cloudReadOnly, setCloudReadOnly] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const [resJobs, resScheduler] = await Promise.all([
-        fetch("/api/scheduled-jobs", { cache: "no-store" }).then((r) => r.json()),
-        fetch("/api/scheduler", { cache: "no-store" }).then((r) => r.json()).catch(() => null),
+      const [jobsResponse, schedulerResponse] = await Promise.all([
+        fetch("/api/scheduled-jobs", { cache: "no-store" }),
+        fetch("/api/scheduler", { cache: "no-store" }),
       ]);
+      const resJobs = await jobsResponse.json().catch(() => ({}));
+      const resScheduler = await schedulerResponse.json().catch(() => null);
+      if (!jobsResponse.ok) throw new Error(resJobs.error || "Could not load scheduled scans.");
+      if (!schedulerResponse.ok && resScheduler?.error) setError(resScheduler.error);
+      setCloudReadOnly(resJobs.readOnly === true);
       setStore({
         jobs: Array.isArray(resJobs.jobs) ? resJobs.jobs : [],
         runs: Array.isArray(resJobs.runs) ? resJobs.runs : [],
+        cloud: resJobs.cloud === true,
+        readOnly: resJobs.readOnly === true,
+        source: typeof resJobs.source === "string" ? resJobs.source : undefined,
       });
-      if (resScheduler) setScheduler(resScheduler);
-    } catch {
-      /* ignore */
+      if (schedulerResponse.ok && (resScheduler?.cloud === true || isSchedulerStatusPayload(resScheduler))) {
+        setScheduler(resScheduler as SchedulerStatus);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load scheduled scans.");
     } finally {
       setLoading(false);
     }
@@ -71,27 +89,38 @@ export function ScheduledJobsView() {
 
   const handleToggleStatus = async (id: string, currentStatus: string) => {
     const nextStatus = currentStatus === "active" ? "paused" : "active";
-    await fetch(`/api/scheduled-jobs/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: nextStatus }),
-    });
-    void loadData();
+    try {
+      await updateScheduledJobRequest(id, { status: nextStatus });
+      await loadData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not update scheduled scan.");
+    }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this scheduled scan?")) return;
-    await fetch(`/api/scheduled-jobs/${id}`, { method: "DELETE" });
-    void loadData();
+    try {
+      const response = await fetch(`/api/scheduled-jobs/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        setError(body.error || "Could not delete scheduled scan.");
+        return;
+      }
+      await loadData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not delete scheduled scan.");
+    }
   };
 
   const handleTriggerOsScheduler = async () => {
     setOsRunning(true);
     try {
-      await fetch("/api/scheduler", { method: "POST" });
-      void loadData();
-    } catch {
-      /* ignore */
+      const response = await fetch("/api/scheduler", { method: "POST" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || "Could not start scheduler.");
+      await loadData();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start scheduler.");
     } finally {
       setOsRunning(false);
     }
@@ -140,6 +169,7 @@ export function ScheduledJobsView() {
           <button
             type="button"
             onClick={() => setCreateModalOpen(true)}
+            disabled={cloudReadOnly || loading}
             className="inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground shadow-lg transition-all hover:bg-brand-200"
           >
             <CalendarPlus className="size-4" />
@@ -164,13 +194,12 @@ export function ScheduledJobsView() {
           </button>
         </div>
       </div>
-
-      {cloudReadOnly && (
-        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-muted">
-          Production is showing the latest scheduled-scan snapshot from <code className="text-foreground">Neon</code>.
-          Creating, editing, deleting, and running jobs stays local-only until a durable cloud worker is connected.
+      {cloudReadOnly && store.cloud && (
+        <div role="status" className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-muted">
+          Production is showing the imported scheduled-scan snapshot from Neon. Creating, editing, deleting, and running scans requires the local Career Ops app or a connected cloud worker.
         </div>
       )}
+      {error && <div role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-600 dark:text-rose-400">{error}</div>}
 
       {/* Stats Cards */}
       <div className="grid gap-3.5 sm:grid-cols-4">
@@ -181,7 +210,7 @@ export function ScheduledJobsView() {
       </div>
 
       {/* OS Task Scheduler Banner */}
-      {scheduler && (
+      {scheduler && !scheduler.cloud && !cloudReadOnly && (
         <div className="co-rise rounded-2xl border border-border bg-surface/40 p-4 shadow-sm backdrop-blur-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -190,7 +219,7 @@ export function ScheduledJobsView() {
               </div>
               <div>
                 <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                  Windows Task Scheduler Integration
+                  {scheduler.platform === "win32" ? "Windows Task Scheduler Integration" : "Manual scans"}
                   <span
                     className={
                       scheduler.task.exists && scheduler.task.enabled
@@ -198,27 +227,31 @@ export function ScheduledJobsView() {
                         : "rounded bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300"
                     }
                   >
-                    {scheduler.task.exists
-                      ? scheduler.task.enabled ? "Task enabled" : "Task disabled"
-                      : "Task not installed"}
+                    {scheduler.platform !== "win32"
+                      ? "No automatic schedule"
+                      : scheduler.task.exists
+                        ? scheduler.task.enabled ? "Task enabled" : "Task disabled"
+                        : "Task not installed"}
                   </span>
                 </div>
                 <div className="mt-0.5 text-xs text-muted">
-                  {scheduler.task.exists
-                    ? "Next OS check: " + formatTaskTime(scheduler.task.nextRun) + " · Last OS check: " + formatTaskTime(scheduler.task.lastRun)
-                    : "Install the local task with scripts/install-scan-schedule.ps1 to run due jobs automatically."}
+                  {scheduler.platform !== "win32"
+                    ? "On macOS and Linux, saved scans only run when you choose Run now."
+                    : scheduler.task.exists
+                      ? "Next OS check: " + formatTaskTime(scheduler.task.nextRun) + " · Last OS check: " + formatTaskTime(scheduler.task.lastRun)
+                      : "Install the Windows task with web/scripts/install-scan-schedule.ps1 to run due jobs automatically."}
                 </div>
               </div>
             </div>
-            <button
+            {scheduler.platform === "win32" && <button
               type="button"
               onClick={handleTriggerOsScheduler}
-              disabled={cloudReadOnly || osRunning || scheduler.running || !scheduler.available}
+              disabled={osRunning || scheduler.running || !scheduler.available}
               className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-hover disabled:opacity-50"
             >
               {osRunning ? <Loader2 className="size-3.5 animate-spin text-brand" /> : <Zap className="size-3.5 text-brand" />}
               {osRunning ? "Checking..." : "Check due jobs now"}
-            </button>
+            </button>}
           </div>
         </div>
       )}
@@ -272,14 +305,16 @@ export function ScheduledJobsView() {
         <div className="rounded-2xl border border-dashed border-border p-12 text-center">
           <CalendarClock className="mx-auto size-8 text-faint" />
           <h3 className="mt-3 text-sm font-semibold text-foreground">No scheduled scans found</h3>
-          <p className="mt-1 text-xs text-muted">Create a new scan to start automatically discovering matching jobs.</p>
-          <button
+          <p className="mt-1 text-xs text-muted">
+            {cloudReadOnly ? "No jobs are present in the imported snapshot." : "Create a new scan to start automatically discovering matching jobs."}
+          </p>
+          {!cloudReadOnly && <button
             type="button"
             onClick={() => setCreateModalOpen(true)}
             className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-xs font-medium text-brand-foreground shadow"
           >
             <CalendarPlus className="size-3.5" /> New Scheduled Scan
-          </button>
+          </button>}
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -291,6 +326,7 @@ export function ScheduledJobsView() {
               onEdit={(j) => setEditingJob(j)}
               onDelete={handleDelete}
               onRunFinished={loadData}
+              readOnly={cloudReadOnly}
             />
           ))}
         </div>
@@ -298,14 +334,14 @@ export function ScheduledJobsView() {
 
       {/* Create Modal, Edit Modal & History Drawer */}
       <CreateJobModal
-        isOpen={createModalOpen}
+        isOpen={!cloudReadOnly && createModalOpen}
         onClose={() => setCreateModalOpen(false)}
         onCreated={loadData}
       />
 
       <EditJobModal
         job={editingJob}
-        isOpen={!!editingJob}
+        isOpen={!cloudReadOnly && !!editingJob}
         onClose={() => setEditingJob(null)}
         onUpdated={loadData}
       />
