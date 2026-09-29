@@ -43,7 +43,7 @@
 **Interfaces:**
 - HostedAiStatus is { geminiConfigured: boolean; openaiConfigured: boolean; ready: boolean; primary: "gemini" | "openai" | null }.
 - HostedAiInput is { task: "assistant" | "explore"; system: string; messages: Array<{ role: "user" | "assistant"; content: string }>; webSearch: boolean; signal?: AbortSignal }.
-- HostedAiEvent is { type: "text"; text: string } or { type: "source"; url: string; title?: string }.
+- HostedAiEvent is { type: "text"; text: string }. Source URLs remain in the existing DiscoveredOffer.url field and are marked unconfirmed by the current parser.
 - HostedAiProvider is { stream(input: HostedAiInput): AsyncIterable<HostedAiEvent> }.
 - createHostedAiService(options?) returns { status(): HostedAiStatus; stream(input: HostedAiInput): AsyncGenerator<HostedAiEvent> }. Options are { env?: NodeJS.ProcessEnv; providers?: Partial<Record<"gemini" | "openai", HostedAiProvider>>; timeoutMs?: number }; tests inject fake provider streams.
 
@@ -106,11 +106,10 @@
 
 **Interfaces:**
 - The route calls streamHostedAi({ task: explore, system, messages, webSearch: true, signal }).
-- Provider search sources normalize to HostedAiEvent source records.
-- Existing offer events and result schema remain unchanged.
+- Existing offer events and result schema remain unchanged; validated source URLs stay in DiscoveredOffer.url and retain the unconfirmed badge.
 - Hosted AI discovery results are view-only; adding them to the pipeline is disabled.
 
-- [ ] Step 1: Write tests for normalized source URLs, offer event parsing, dedup against the Neon snapshot, and read-only hosted results.
+- [ ] Step 1: Write tests for valid offer URL parsing, offer event parsing, dedup against the Neon snapshot, and read-only hosted results.
 - [ ] Step 2: Run node --test tests/lib/hosted-explore.test.mjs and confirm it fails.
 - [ ] Step 3: Route hosted Explore AI through Gemini Google Search grounding and OpenAI Responses web_search, using the Task 1 fallback policy.
 - [ ] Step 4: Adapt known-URL lookup to the Neon snapshot and preserve the current offer stream contract.
