@@ -23,6 +23,7 @@ type Cli = {
 };
 
 type Mode = "cli" | "key" | "manual";
+type HostedAiStatus = { hosted: boolean; ready: boolean; geminiConfigured: boolean };
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude)" },
@@ -37,6 +38,8 @@ export function ConfigForm() {
   const [mode, setMode] = useState<Mode>("cli");
   const [clis, setClis] = useState<Cli[] | null>(null);
   const [hosted, setHosted] = useState(false);
+  const [hostedAiStatus, setHostedAiStatus] = useState<HostedAiStatus | null>(null);
+  const [hostedAiStatusError, setHostedAiStatusError] = useState(false);
   const [cliId, setCliId] = useState<string>("");
   const [provider, setProvider] = useState("anthropic");
   const [apiKey, setApiKey] = useState("");
@@ -67,6 +70,15 @@ export function ConfigForm() {
       .then((r) => r.json())
       .then((d) => {
         setHosted(d.cloud === true);
+        if (d.cloud === true) {
+          fetch("/api/ai/status", { cache: "no-store" })
+            .then((r) => {
+              if (!r.ok) throw new Error("Hosted AI status unavailable");
+              return r.json();
+            })
+            .then((status: HostedAiStatus) => setHostedAiStatus(status))
+            .catch(() => setHostedAiStatusError(true));
+        }
         const list: Cli[] = d.clis ?? [];
         setClis(list);
         // auto-select first installed if nothing chosen yet
@@ -90,7 +102,9 @@ export function ConfigForm() {
     <div className="mx-auto max-w-2xl px-6 py-10">
       <h1 className="font-display text-2xl tracking-tight text-landing">Config</h1>
       <p className="mt-1 text-sm text-muted">
-        Run career-ops on your own AI, right on your computer. Your CV and data never leave your machine.
+        {hosted
+          ? "Hosted Gemini is managed securely by the Vercel deployment; no API key is entered in this browser."
+          : "Run career-ops on your own AI, right on your computer. Your CV and data never leave your machine."}
       </p>
 
       {/* Engine mode */}
@@ -105,14 +119,14 @@ export function ConfigForm() {
           title="Use an AI tool you have"
           hint="Recommended"
         />
-        <ModeCard
+        {!hosted && <ModeCard
           active={mode === "key"}
           onClick={() => setMode("key")}
           icon={KeyRound}
           title="Paste an AI key"
           hint="Coming soon"
           disabled
-        />
+        />}
         <ModeCard
           active={mode === "manual"}
           onClick={() => setMode("manual")}
@@ -133,9 +147,18 @@ export function ConfigForm() {
             </p>
             {!hosted && <p className="mb-3 text-xs text-faint">Works with Claude Code, Codex, OpenCode and more — free ones work great.</p>}
             {hosted ? (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">
-                This app is running on Vercel. It cannot see or install Claude Code, Codex, OpenCode, or other tools on your computer.
-                The API-key option is not connected yet, so AI actions require the local Career Ops app until a hosted provider or worker is configured.
+              <div className="rounded-xl border border-border bg-surface/50 p-4 text-sm text-muted">
+                <p className="font-medium text-foreground">Hosted Gemini</p>
+                {hostedAiStatusError ? (
+                  <p className="mt-1">Could not read hosted AI readiness. Refresh this page to try again.</p>
+                ) : hostedAiStatus === null ? (
+                  <p className="mt-1 flex items-center gap-2"><Loader2 className="size-4 animate-spin" /> Checking Vercel configuration…</p>
+                ) : hostedAiStatus.ready && hostedAiStatus.geminiConfigured ? (
+                  <p className="mt-1">Gemini is configured and ready. Its API key is stored as a server-only environment variable in Vercel; it is never shown or stored in this browser.</p>
+                ) : (
+                  <p className="mt-1">Gemini is not configured for this deployment. Add <code className="font-mono text-foreground">GEMINI_API_KEY</code> to the Vercel environment; do not paste it here.</p>
+                )}
+                <p className="mt-2 text-xs text-faint">Vercel cannot access AI tools installed on your computer. File-backed actions, scheduled scans, and worker tasks remain disabled in hosted mode.</p>
               </div>
             ) : clis === null ? (
               <div className="flex items-center gap-2 text-sm text-muted">
@@ -219,7 +242,7 @@ export function ConfigForm() {
           </div>
         )}
 
-        {mode === "key" && (
+        {mode === "key" && !hosted && (
           <div className="space-y-5">
             <div>
               <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-muted">

@@ -54,6 +54,21 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
 - **Additive:** the web is isolated from the core's packaging, CI and release
   automation. The CLI works exactly the same without it.
 
+### Protected Vercel deployment
+
+The Vercel deployment is a protected, read-only cloud shell. Configure
+`GEMINI_API_KEY` as a server-side environment variable in the Vercel project for
+each environment where hosted AI should be available (Preview and/or
+Production). Never add its value to source control, client configuration,
+browser storage, or a request from the browser. The Config page reports only
+whether Gemini is ready; it never displays the credential. Vercel Deployment
+Protection and the app's Basic authentication must both remain enabled.
+
+Only authenticated, same-origin Gemini requests to Assistant and Explore AI
+are enabled in this stage. Local CLI execution, `/api/run`, scheduled scans,
+file-backed changes, and other worker or data-mutation operations remain
+disabled on Vercel until a durable persistence and worker backend is designed.
+
 ## Scheduled scans on Windows
 
 Automatic recurring scans through Task Scheduler are Windows-only. On macOS and Linux,

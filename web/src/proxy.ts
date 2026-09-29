@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CLOUD_EXECUTION_MESSAGE, isCloudRuntime } from "@/lib/deployment";
+import { isAllowedCloudAiRequest } from "@/lib/ai/cloud-ai-gate.mjs";
 
 const SAFE_CLOUD_API_PATHS = new Set([
   "/api/health",
@@ -64,10 +65,35 @@ export function proxy(request: NextRequest) {
   }
 
   const pathname = request.nextUrl.pathname;
-  const aiAction = pathname === "/api/assistant" || pathname === "/api/run" || pathname.startsWith("/api/explore/ai");
-  if (aiAction) {
+  const hostedStatus = {
+    hosted: true,
+    ready: Boolean(process.env.GEMINI_API_KEY?.trim()),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+  };
+  if (pathname === "/api/ai/status" || pathname === "/api/explore/ai/known" || pathname === "/api/assistant" || pathname === "/api/explore/ai") {
+    const decision = isAllowedCloudAiRequest({
+      pathname,
+      method: request.method,
+      origin: request.headers.get("origin"),
+      host: request.headers.get("host") ?? request.nextUrl.host,
+      secFetchSite: request.headers.get("sec-fetch-site"),
+    }, hostedStatus);
+    if (decision.allowed) return NextResponse.next();
+
+    const unavailable = decision.reason === "gemini_unavailable";
+    const crossOrigin = decision.reason === "same_origin_required";
     return NextResponse.json(
-      { error: "AI actions are not configured for this Vercel deployment. Local AI CLIs run on your computer; hosted AI needs a server-side provider or worker.", code: "CLOUD_AI_UNAVAILABLE" },
+      {
+        error: unavailable ? "Hosted Gemini is not configured." : crossOrigin ? "This request must come from the same origin." : "This method is not allowed for this hosted AI endpoint.",
+        code: unavailable ? "HOSTED_AI_UNAVAILABLE" : crossOrigin ? "CLOUD_AI_ORIGIN_DENIED" : "CLOUD_AI_REQUEST_DENIED",
+      },
+      { status: unavailable ? 503 : crossOrigin ? 403 : 405, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  if (pathname === "/api/run" || pathname.startsWith("/api/explore/ai/")) {
+    return NextResponse.json(
+      { error: CLOUD_EXECUTION_MESSAGE, code: "CLOUD_EXECUTION_DISABLED" },
       { status: 501, headers: { "Cache-Control": "no-store" } },
     );
   }
