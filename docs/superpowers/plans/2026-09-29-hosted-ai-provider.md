@@ -17,6 +17,7 @@
 - Use Gemini Interactions with provider-side conversation storage disabled via store=false.
 - Hosted Assistant exposes only navigate and filterPipeline actions. Hosted Explore AI displays results but cannot add them to the pipeline.
 - Keep /api/run, file writes, CV/PDF generation, evaluation, tracker/profile/portal writes, and scheduled scan execution blocked in cloud mode.
+- Cloud AI routes are default-deny: only GET /api/ai/status is available until a route is implemented with its server-side hosted branch. Explicit Assistant, Explore, and known-URL readiness flags must be enabled in the same task that completes each hosted handler; a configured key alone never opens a local CLI or file-backed handler.
 - Cap request bodies at 64 KiB, history at 20 messages, each user message at 8,000 characters, retrieved context at 16,000 characters, Assistant output at 2,048 tokens, and Explore output at 4,096 tokens. Provider timeout is 60 seconds; no automatic provider fallback is configured.
 - Vercel Preview already has GEMINI_API_KEY per user. Verify the configured status without reading or printing its value.
 
@@ -64,8 +65,9 @@
 **Interfaces:**
 - GET /api/ai/status returns only { hosted, ready, geminiConfigured }. It never returns the key value.
 - toPublicHostedAiStatus(status, hosted) returns only the public fields above.
-- isAllowedCloudAiRequest({ pathname, method, origin, host, secFetchSite }, status) returns { allowed: boolean; reason?: string }. It allows GET /api/ai/status and GET /api/explore/ai/known; the provider POST routes require a configured Gemini key and a same-origin request.
+- isAllowedCloudAiRequest(request, status, handlerReadiness) returns { allowed: boolean; reason?: string }. It allows GET /api/ai/status by default. GET /api/explore/ai/known requires handlerReadiness.exploreKnown; Assistant/Explore POSTs require the matching handlerReadiness flag, configured Gemini, and strict same-origin Origin + Host + Sec-Fetch-Site checks.
 - Basic authentication and Vercel Deployment Protection remain enforced before the cloud AI gate.
+- Initialize handlerReadiness as { assistant: false, explore: false, exploreKnown: false }. Do not enable a flag until the matching hosted route implementation is present.
 
 - [ ] Step 1: Write Node tests for public status shaping, asserting serialized output never contains the configured key value.
 - [ ] Step 2: Write gate tests for key readiness, same-origin POSTs, cross-origin POST rejection, read-only status/known GETs, and denial of /api/run and data mutation routes.
@@ -80,6 +82,9 @@
 **Files:**
 - Modify: web/src/app/api/assistant/route.ts
 - Modify: web/src/components/assistant-console.tsx
+- Modify: web/src/lib/ai/cloud-ai-gate.mjs
+- Modify: web/src/proxy.ts
+- Modify: web/tests/lib/cloud-ai-gate.test.mjs
 - Create: web/src/lib/ai/hosted-assistant-actions.mjs
 - Create: web/tests/lib/hosted-assistant-actions.test.mjs
 
@@ -93,6 +98,7 @@
 - [ ] Step 3: Add the hosted prompt/action gate and split the Assistant route between local CLI and authenticated hosted-provider mode. In cloud mode, build context from the minimal relevant Neon snapshot instead of local filesystem reads.
 - [ ] Step 4: Update assistant-console to read /api/ai/status, allow hosted requests without cliId, and show a read-only explanation when an unsupported action is requested.
 - [ ] Step 5: Run the focused action tests and npm run typecheck from web; confirm local CLI mode still uses its existing request contract.
+- [ ] Step 6: Only after the hosted cloud branch is verified, set handlerReadiness.assistant=true in the proxy; keep Explore and known-URL false. Test the gate and verify cloud requests never call resolveCli or spawn.
 
 ### Task 4: Hosted Explore AI
 
@@ -101,6 +107,9 @@
 - Modify: web/src/app/api/explore/ai/known/route.ts
 - Modify: web/src/components/explore/explore-provider.tsx
 - Modify: web/src/components/explore/explorer-view.tsx
+- Modify: web/src/lib/ai/cloud-ai-gate.mjs
+- Modify: web/src/proxy.ts
+- Modify: web/tests/lib/cloud-ai-gate.test.mjs
 - Create: web/tests/lib/hosted-explore.test.mjs
 
 **Interfaces:**
@@ -114,6 +123,7 @@
 - [ ] Step 4: Adapt known-URL lookup to the Neon snapshot and preserve the current offer stream contract.
 - [ ] Step 5: Update ExploreProvider to allow hosted AI without a local cliId and disable pipeline writes in hosted mode.
 - [ ] Step 6: Add a prompt-injection case proving discovered page text cannot add tools or write actions; run the focused Explore tests and confirm they pass.
+- [ ] Step 7: Only after the hosted Explore POST and Neon-backed known-URL GET are verified, set handlerReadiness.explore=true and handlerReadiness.exploreKnown=true. Keep scheduler, /api/run, writes, and all other capabilities blocked.
 
 ### Task 5: Verification and Preview handoff
 
