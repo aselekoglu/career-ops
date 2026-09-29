@@ -92,6 +92,27 @@ test("Gemini Search is enabled only for Explore and output is capped at 4096 tok
   assert.equal(requests[1].tools, undefined);
 });
 
+test("Gemini error event after text fails safely instead of ending successfully", async () => {
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async () => (async function* () {
+        yield { event_type: "step.delta", delta: { type: "text", text: "partial" } };
+        yield { event_type: "error", error: { code: "gateway_timeout", message: "raw private provider detail" } };
+      })(),
+    },
+  });
+  const service = createHostedAiService({ env: { GEMINI_API_KEY: "test-key" }, gemini: provider });
+  const seen = [];
+  await assert.rejects(async () => {
+    for await (const event of service.stream(request)) seen.push(event);
+  }, (error) => {
+    assert.equal(error.code, "HOSTED_AI_TIMEOUT");
+    assert.doesNotMatch(error.message, /raw private provider detail/);
+    return true;
+  });
+  assert.deepEqual(seen, [{ type: "text", text: "partial" }]);
+});
+
 test("request bounds reject oversized history, user text, system context, and body", async () => {
   let calls = 0;
   const service = createHostedAiService({
@@ -107,6 +128,29 @@ test("request bounds reject oversized history, user text, system context, and bo
     await assert.rejects(collect(service.stream(oversized)), { code: "HOSTED_AI_INPUT_TOO_LARGE" });
   }
   assert.equal(calls, 0);
+});
+
+test("assistant history over 8000 characters is accepted while user text over 8000 is rejected", async () => {
+  const seen = [];
+  const service = createHostedAiService({
+    env: { GEMINI_API_KEY: "test-key" },
+    gemini: {
+      async *stream(input) {
+        seen.push(input.messages);
+        yield { type: "text", text: "ok" };
+      },
+    },
+  });
+  const assistantHistory = { ...request, messages: [
+    { role: "assistant", content: "x".repeat(8001) },
+    { role: "user", content: "Continue" },
+  ] };
+  assert.deepEqual(await collect(service.stream(assistantHistory)), [{ type: "text", text: "ok" }]);
+  await assert.rejects(collect(service.stream({
+    ...request,
+    messages: [{ role: "user", content: "x".repeat(8001) }],
+  })), { code: "HOSTED_AI_INPUT_TOO_LARGE" });
+  assert.equal(seen.length, 1);
 });
 
 test("provider timeout aborts the stream and returns a safe error", async () => {

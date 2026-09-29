@@ -19,7 +19,8 @@ function validateInput(input) {
   if (!Array.isArray(input.messages) || input.messages.length > MAX_HISTORY) throw invalid();
   for (const message of input.messages) {
     if (!message || (message.role !== "user" && message.role !== "assistant")) throw invalid();
-    if (typeof message.content !== "string" || message.content.length > MAX_MESSAGE_CHARS) throw invalid();
+    if (typeof message.content !== "string") throw invalid();
+    if (message.role === "user" && message.content.length > MAX_MESSAGE_CHARS) throw invalid();
   }
   const body = {
     task: input.task,
@@ -33,6 +34,9 @@ function validateInput(input) {
 function normalizeProviderError(error, signal, timedOut) {
   if (timedOut()) return hostedAiError("HOSTED_AI_TIMEOUT", "Gemini did not respond in time.");
   if (signal?.aborted) return hostedAiError("HOSTED_AI_ABORTED", "Hosted AI request was cancelled.");
+  if (error?.code === "gateway_timeout") {
+    return hostedAiError("HOSTED_AI_TIMEOUT", "Gemini did not respond in time.");
+  }
   const status = Number(error?.status ?? error?.statusCode ?? error?.code);
   if (status === 401 || status === 403) {
     return hostedAiError("HOSTED_AI_AUTH_ERROR", "Gemini access is unavailable. Check the configured API key and permissions.");
@@ -61,6 +65,9 @@ export function createGeminiProvider(client) {
         store: false,
       }, { signal: input.signal, maxRetries: 0 });
       for await (const event of response) {
+        if (event?.event_type === "error") {
+          throw Object.assign(new Error("Gemini interaction failed."), { code: event.error?.code });
+        }
         if (event?.event_type === "step.delta" && event.delta?.type === "text" && event.delta.text) {
           yield { type: "text", text: event.delta.text };
         }
