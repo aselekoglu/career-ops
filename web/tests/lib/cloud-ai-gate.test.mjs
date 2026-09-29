@@ -13,7 +13,7 @@ const request = (pathname, method = "POST", extra = {}) => ({
   secFetchSite: "same-origin",
   ...extra,
 });
-const readyHandlers = { assistant: true, explore: true, exploreKnown: true };
+const readyHandlers = { assistant: true, explore: false, exploreKnown: false };
 
 test("public hosted AI status exposes booleans only and never provider credentials", () => {
   const secret = "gemini-secret-that-must-not-escape";
@@ -36,9 +36,9 @@ test("only status GET is enabled by default; known URLs require an adapted hoste
 
 test("Gemini POSTs require both an adapted hosted handler and configured same-origin provider", () => {
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready).allowed, false);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready, readyHandlers).allowed, true);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, readyHandlers).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), ready, readyHandlers).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), { ...ready, geminiConfigured: false, ready: false }, readyHandlers).allowed, false);
 });
 

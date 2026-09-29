@@ -1,0 +1,40 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  assistantExecutionMode,
+  hostedAssistantPrompt,
+  isHostedAssistantActionAllowed,
+} from "../../src/lib/ai/hosted-assistant-actions.mjs";
+
+test("hosted Assistant permits only navigation and pipeline filtering", () => {
+  for (const id of ["navigate", "filterPipeline"]) {
+    assert.equal(isHostedAssistantActionAllowed(id), true, `${id} should be allowed`);
+  }
+});
+
+test("hosted Assistant denies spending, writes, reads, and legacy mutation envelopes", () => {
+  for (const id of [
+    "evaluate", "evaluateCompany", "research", "generatePdf", "status", "setStatus",
+    "profile", "setProfile", "portal", "setPortals", "apply", "setApplyField",
+    "remember", "applyExplore", "explore", "go", "setApply", "unknown",
+  ]) {
+    assert.equal(isHostedAssistantActionAllowed(id), false, `${id} must be denied`);
+  }
+  assert.equal(isHostedAssistantActionAllowed(""), false);
+  assert.equal(isHostedAssistantActionAllowed(null), false);
+});
+
+test("hosted prompt advertises only the two read-only client actions", () => {
+  const prompt = hostedAssistantPrompt({ cv: "A concise CV", memory: "Prefers concise feedback", pipeline: "2 applications" });
+  assert.match(prompt, /navigate/);
+  assert.match(prompt, /filterPipeline/);
+  for (const forbidden of ["evaluateCompany", "generatePdf", "setStatus", "setProfile", "setPortals", "remember", "applyExplore"]) {
+    assert.doesNotMatch(prompt, new RegExp(forbidden));
+  }
+  assert.match(prompt, /read-only/i);
+});
+
+test("hosted runtime selects the hosted provider branch without a local CLI", () => {
+  assert.equal(assistantExecutionMode(true), "hosted");
+  assert.equal(assistantExecutionMode(false), "local");
+});
