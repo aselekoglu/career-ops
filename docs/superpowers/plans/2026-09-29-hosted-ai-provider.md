@@ -56,21 +56,25 @@
 
 **Files:**
 - Create: web/src/app/api/ai/status/route.ts
-- Create: web/tests/lib/hosted-ai-status.test.mjs
+- Create: web/src/lib/ai/cloud-ai-gate.mjs
+- Create: web/tests/lib/cloud-ai-gate.test.mjs
 - Modify: web/src/proxy.ts
 - Modify: web/src/components/config-form.tsx
 - Modify: web/README.md
 
 **Interfaces:**
 - GET /api/ai/status returns only { hosted, ready, geminiConfigured, openaiConfigured, primary }. It never returns key values.
-- Cloud POST allowlist includes only authenticated same-origin /api/assistant and /api/explore/ai requests. Cloud GET allowlist adds /api/ai/status and /api/explore/ai/known. Other cloud write/worker routes remain blocked.
+- toPublicHostedAiStatus(status, hosted) returns only the public fields above.
+- isAllowedCloudAiRequest({ pathname, method, origin, host, secFetchSite }, status) returns { allowed: boolean; reason?: string }. It allows GET /api/ai/status and GET /api/explore/ai/known; provider POST routes require configured credentials and a same-origin request.
+- Basic authentication and Vercel Deployment Protection remain enforced before the cloud AI gate.
 
-- [ ] Step 1: Write tests for status output and assert that serialized output cannot contain either configured key.
-- [ ] Step 2: Write request-gate tests that reject cross-origin AI POSTs and continue blocking /api/run and data mutation routes.
-- [ ] Step 3: Implement the status route and proxy rules while preserving Vercel Deployment Protection and Basic authentication.
-- [ ] Step 4: Update hosted Config to show provider readiness and explain that secrets are configured in Vercel; remove any hosted key-paste UI. Preserve local CLI selection.
-- [ ] Step 5: Document the required Preview and Production variables in web/README.md without including values.
-- [ ] Step 6: Run node --test tests/lib/hosted-ai-status.test.mjs and confirm status and request-gate tests pass.
+- [ ] Step 1: Write Node tests for public status shaping, asserting serialized output never contains either configured key value.
+- [ ] Step 2: Write gate tests for provider readiness, same-origin POSTs, cross-origin POST rejection, read-only status/known GETs, and denial of /api/run and data-mutation routes.
+- [ ] Step 3: Run node --test tests/lib/cloud-ai-gate.test.mjs from web and confirm the new tests fail.
+- [ ] Step 4: Implement the gate helper and status route; update the proxy to use the helper without weakening Basic auth or Deployment Protection.
+- [ ] Step 5: Update hosted Config to show provider readiness and explain that secrets are configured in Vercel; remove any hosted key-paste UI. Preserve local CLI selection.
+- [ ] Step 6: Document the required Preview and Production variables in web/README.md without including values.
+- [ ] Step 7: Run the focused gate tests and confirm they pass.
 
 ### Task 3: Hosted Assistant
 
