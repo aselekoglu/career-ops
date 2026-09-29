@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import * as yaml from "js-yaml";
 
@@ -14,7 +14,7 @@ import {
   readScheduledStore,
   withResourceLock,
   withScheduledStore,
-} from "../src/lib/scheduled-jobs-store.mjs";
+} from "../../src/lib/scheduled-jobs-store.mjs";
 import {
   buildScanCommand,
   claimDueJob,
@@ -27,8 +27,10 @@ import {
   nextFutureRun,
   recordCompletion,
   runnerResourcePath,
-} from "../scripts/scheduled-jobs-runner.mjs";
-import { assertScheduledJobBody } from "../src/lib/scheduled-job-input.mjs";
+} from "../../scripts/scheduled-jobs-runner.mjs";
+import { assertScheduledJobBody } from "../../src/lib/scheduled-job-input.mjs";
+
+const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("scheduled-jobs store starts empty and never seeds candidate-specific targeting", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-store-"));
@@ -297,7 +299,7 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
   try {
     // Use dynamic exit access so the real crash remains covered without tripping
     // test-all's guard that rejects direct process termination in discovered suites.
-    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.resolve("src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); globalThis.process["exit"](17); });`], { encoding: "utf8" });
+    const child = (await import("node:child_process")).spawnSync(process.execPath, ["--input-type=module", "-e", `import { withResourceLock } from ${JSON.stringify(pathToFileURL(path.join(WEB_ROOT, "src/lib/scheduled-jobs-store.mjs")).href)}; await withResourceLock(${JSON.stringify(resource)}, async () => { process.stdout.write("claimed"); globalThis.process["exit"](17); });`], { encoding: "utf8" });
     assert.equal(child.status, 17);
     assert.equal(readLockStatus(resource).stale, true);
     let entered = false;
@@ -311,7 +313,7 @@ test("a crashed lock owner is recoverable by a real second process", async () =>
 test("concurrent real contenders never overlap while taking over or releasing a lock", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-race-"));
   const resource = path.join(temp, "resource");
-  const moduleUrl = pathToFileURL(path.resolve("src/lib/scheduled-jobs-store.mjs")).href;
+  const moduleUrl = pathToFileURL(path.join(WEB_ROOT, "src/lib/scheduled-jobs-store.mjs")).href;
   const runChild = (index) => new Promise((resolve, reject) => {
     const marker = path.join(temp, `${index}.json`);
     const code = `import fs from 'node:fs'; import { withResourceLock } from ${JSON.stringify(moduleUrl)}; const marker=${JSON.stringify(marker)}; await withResourceLock(${JSON.stringify(resource)}, async()=>{ const start=Date.now(); await new Promise(r=>setTimeout(r,35)); fs.writeFileSync(marker, JSON.stringify({start,end:Date.now()})); });`;
@@ -333,8 +335,8 @@ test("concurrent real contenders never overlap while taking over or releasing a 
 test("a worker crash after a persisted claim leaves the queue recoverable", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-claim-crash-"));
   const storePath = path.join(temp, "scheduled-jobs.json");
-  const storeModule = pathToFileURL(path.resolve("src/lib/scheduled-jobs-store.mjs")).href;
-  const runnerModule = pathToFileURL(path.resolve("scripts/scheduled-jobs-runner.mjs")).href;
+  const storeModule = pathToFileURL(path.join(WEB_ROOT, "src/lib/scheduled-jobs-store.mjs")).href;
+  const runnerModule = pathToFileURL(path.join(WEB_ROOT, "scripts/scheduled-jobs-runner.mjs")).href;
   const jobId = "11111111-1111-4111-8111-111111111111";
   const queueId = "22222222-2222-4222-8222-222222222222";
   const now = new Date().toISOString();
