@@ -112,7 +112,7 @@ test("scan command honors the selected engine and bounded filters", () => {
 
 test("scheduled overlay falls back to portal title keywords and preserves hard location blocks", () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-filters-"));
-  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter:\n  positive: [engineer]\nlocation_filter: {}\n", "utf8");
+  fs.writeFileSync(path.join(temp, "portals.yml"), "title_filter:\n  positive: [engineer]\ntitle_filter_full:\n  positive: [architect]\nlocation_filter: {}\n", "utf8");
   const job = {
     id: "11111111-1111-4111-8111-111111111111",
     engine: "full",
@@ -122,14 +122,26 @@ test("scheduled overlay falls back to portal title keywords and preserves hard l
     let overlay;
     const result = executeJob(temp, job, {
       spawnFn: (_node, _args, options) => {
+        assert.equal(options.env.CAREER_OPS_ROOT, temp);
+        assert.ok(fs.existsSync(path.join(options.cwd, "scan.mjs")));
         overlay = yaml.load(fs.readFileSync(options.env.CAREER_OPS_PORTALS, "utf8"));
         return { status: 0, stdout: JSON.stringify({ postingsKept: 0 }), stderr: "" };
       },
     });
     assert.equal(result.state, "success");
     assert.deepEqual(overlay.title_filter.positive, ["engineer"]);
+    assert.deepEqual(overlay.title_filter_full.positive, ["engineer"]);
     assert.deepEqual(overlay.location_filter.block_hard, ["Brazil"]);
     assert.deepEqual(overlay.location_filter.always_allow, ["Porto"]);
+    const explicit = executeJob(temp, { ...job, filters: { ...job.filters, positive: ["designer"] } }, {
+      spawnFn: (_node, _args, options) => {
+        overlay = yaml.load(fs.readFileSync(options.env.CAREER_OPS_PORTALS, "utf8"));
+        return { status: 0, stdout: JSON.stringify({ postingsKept: 0 }), stderr: "" };
+      },
+    });
+    assert.equal(explicit.state, "success");
+    assert.deepEqual(overlay.title_filter.positive, ["designer"]);
+    assert.deepEqual(overlay.title_filter_full.positive, ["designer"]);
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

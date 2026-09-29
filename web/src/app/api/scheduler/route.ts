@@ -2,14 +2,14 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { careerOpsRoot } from "@/lib/career-ops";
+import { resolveCodeRoot } from "@/lib/core/code-root.mjs";
 import { schedulerStatus } from "@/lib/scheduler-status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function runnerScript() {
-  return path.join(careerOpsRoot(), "web", "scripts", "scheduled-jobs-runner.mjs");
+  return path.join(resolveCodeRoot(process.cwd(), process.env), "web", "scripts", "scheduled-jobs-runner.mjs");
 }
 
 export async function GET() {
@@ -24,7 +24,7 @@ export async function POST() {
 
   try {
     const child = spawn(process.execPath, [script], {
-      cwd: careerOpsRoot(),
+      cwd: resolveCodeRoot(process.cwd(), process.env),
       detached: true,
       stdio: "ignore",
       windowsHide: true,

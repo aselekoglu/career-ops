@@ -4,7 +4,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { getScheduledJob } from "@/lib/scheduled-jobs";
 import { isSafeScheduledId } from "@/lib/scheduled-jobs-store.mjs";
-import { careerOpsRoot } from "@/lib/career-ops";
+import { resolveCodeRoot } from "@/lib/core/code-root.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,7 +35,7 @@ function runJob(runner: string, id: string) {
     let child;
     try {
       child = spawn(process.execPath, [runner, "--job", id], {
-        cwd: careerOpsRoot(),
+        cwd: resolveCodeRoot(process.cwd(), process.env),
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
@@ -79,7 +79,7 @@ export async function POST(_req: Request, { params }: RouteContext) {
     return NextResponse.json({ error: "Could not read scheduled jobs." }, { status: 500 });
   }
 
-  const runner = path.join(careerOpsRoot(), "web", "scripts", "scheduled-jobs-runner.mjs");
+  const runner = path.join(resolveCodeRoot(process.cwd(), process.env), "web", "scripts", "scheduled-jobs-runner.mjs");
   if (!fs.existsSync(runner)) {
     return NextResponse.json({ error: "Scheduled job runner is not installed." }, { status: 404 });
   }
