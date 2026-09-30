@@ -18,7 +18,7 @@
 - Hosted Assistant exposes only navigate and filterPipeline actions. Hosted Explore AI displays results but cannot add them to the pipeline.
 - Keep /api/run, file writes, CV/PDF generation, evaluation, tracker/profile/portal writes, and scheduled scan execution blocked in cloud mode.
 - Cloud AI routes are default-deny: only GET /api/ai/status is available until a route is implemented with its server-side hosted branch. Explicit Assistant, Explore, and known-URL readiness flags must be enabled in the same task that completes each hosted handler; a configured key alone never opens a local CLI or file-backed handler.
-- Explore may send the user's explicit search query to Gemini, but must not send Neon-derived known URLs, profile, or pipeline records; deduplicate generated offers server-side after the model response.
+- Explore may send the user's explicit search query to Gemini, but must not send Neon-derived known URLs, profile, or pipeline records; use the authenticated known-URL GET and existing client parser for post-generation dedup.
 - Cap request bodies at 64 KiB, history at 20 messages, each user message at 8,000 characters, retrieved context at 16,000 characters, Assistant output at 2,048 tokens, and Explore output at 4,096 tokens. Provider timeout is 60 seconds; no automatic provider fallback is configured.
 - Vercel Preview already has GEMINI_API_KEY per user. Verify the configured status without reading or printing its value.
 
@@ -117,12 +117,12 @@
 - The route calls createHostedAiService().stream({ task: "explore", system, messages, webSearch: true, signal }).
 - Existing offer events and result schema remain unchanged; validated source URLs stay in DiscoveredOffer.url and retain the unconfirmed badge.
 - Hosted AI discovery results are view-only; adding them to the pipeline is disabled.
-- Only the user's explicit search query and ordinary chat turns are sent as model input. Neon known URLs are read separately on the server and used only for post-generation dedup; they are never added to the Gemini prompt.
+- Only the user's explicit search query and ordinary chat turns are sent as model input. Neon known URLs are returned by the authenticated `/api/explore/ai/known` endpoint to the app and used by the client parser for post-generation dedup; they are never added to the Gemini prompt.
 
-- [ ] Step 1: Write tests for valid offer URL parsing, offer event parsing, server-side dedup against Neon, read-only hosted results, and prove the Gemini input does not contain the Neon known-URL set.
+- [ ] Step 1: Write tests for valid offer URL parsing, offer event parsing, client post-generation dedup against the Neon known-URL GET, read-only hosted results, and prove the Gemini input does not contain the Neon known-URL set.
 - [ ] Step 2: Run node --test tests/lib/hosted-explore.test.mjs and confirm it fails.
 - [ ] Step 3: Route hosted Explore AI through Gemini Google Search grounding.
-- [ ] Step 4: Adapt known-URL lookup to the Neon snapshot; filter/deduplicate generated offers server-side without sending that set to Gemini, and preserve the current offer stream contract.
+- [ ] Step 4: Adapt known-URL lookup to the Neon snapshot, preserve the current offer stream contract, and use the existing client parser for post-generation dedup without sending the set to Gemini.
 - [ ] Step 5: Update ExploreProvider to allow hosted AI without a local cliId and disable pipeline writes in hosted mode.
 - [ ] Step 6: Add a prompt-injection case proving discovered page text cannot add tools or write actions; run the focused Explore tests and confirm they pass.
 - [ ] Step 7: Only after the hosted Explore POST and Neon-backed known-URL GET are verified, set handlerReadiness.explore=true and handlerReadiness.exploreKnown=true. Keep scheduler, /api/run, writes, and all other capabilities blocked.
