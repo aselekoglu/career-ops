@@ -119,13 +119,13 @@
 - Hosted AI discovery results are view-only; adding them to the pipeline is disabled.
 - Only the user's explicit search query and ordinary chat turns are sent as model input. Neon known URLs are returned by the authenticated `/api/explore/ai/known` endpoint to the app and used by the client parser for post-generation dedup; they are never added to the Gemini prompt.
 
-- [ ] Step 1: Write tests for valid offer URL parsing, offer event parsing, client post-generation dedup against the Neon known-URL GET, read-only hosted results, and prove the Gemini input does not contain the Neon known-URL set.
-- [ ] Step 2: Run node --test tests/lib/hosted-explore.test.mjs and confirm it fails.
-- [ ] Step 3: Route hosted Explore AI through Gemini Google Search grounding.
-- [ ] Step 4: Adapt known-URL lookup to the Neon snapshot, preserve the current offer stream contract, and use the existing client parser for post-generation dedup without sending the set to Gemini.
-- [ ] Step 5: Update ExploreProvider to allow hosted AI without a local cliId and disable pipeline writes in hosted mode.
-- [ ] Step 6: Add a prompt-injection case proving discovered page text cannot add tools or write actions; run the focused Explore tests and confirm they pass.
-- [ ] Step 7: Only after the hosted Explore POST and Neon-backed known-URL GET are verified, set handlerReadiness.explore=true and handlerReadiness.exploreKnown=true. Keep scheduler, /api/run, writes, and all other capabilities blocked.
+- [x] Step 1: Write tests for valid offer URL parsing, offer event parsing, client post-generation dedup against the Neon known-URL GET, read-only hosted results, and prove the Gemini input does not contain the Neon known-URL set.
+- [x] Step 2: Run node --test tests/lib/hosted-explore.test.mjs and confirm it fails.
+- [x] Step 3: Route hosted Explore AI through Gemini Google Search grounding.
+- [x] Step 4: Adapt known-URL lookup to the Neon snapshot, preserve the current offer stream contract, and use the existing client parser for post-generation dedup without sending the set to Gemini.
+- [x] Step 5: Update ExploreProvider to allow hosted AI without a local cliId and disable pipeline writes in hosted mode.
+- [x] Step 6: Add a prompt-injection case proving discovered page text cannot add tools or write actions; run the focused Explore tests and confirm they pass.
+- [x] Step 7: Only after the hosted Explore POST and Neon-backed known-URL GET are verified, set handlerReadiness.explore=true and handlerReadiness.exploreKnown=true. Keep scheduler, /api/run, writes, and all other capabilities blocked.
 
 ### Task 5: Verification and Preview handoff
 
