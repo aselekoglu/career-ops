@@ -17,6 +17,7 @@ import { dispatch, type ActionCtx, type DoneInfo } from "@/app/actions/registry"
 import { scoreNum } from "@/lib/format";
 import { pendingActOpenerStart } from "@/lib/act-envelope.mjs";
 import { isHostedAssistantActionAllowed } from "@/lib/ai/hosted-assistant-actions.mjs";
+import { assistantRequestMode, parseAssistantAiStatus, createAssistantTurnGuard } from "@/lib/ai/hosted-assistant-client.mjs";
 import { cn } from "@/lib/cn";
 
 // ── message model: messages are PART arrays so a live worker card can render
@@ -141,19 +142,21 @@ export function AssistantConsole() {
   const [busy, setBusy] = useState(false);
   const [aiStatus, setAiStatus] = useState<{ hosted: boolean; ready: boolean; geminiConfigured: boolean } | null>(null);
   const hostedMode = aiStatus?.hosted === true;
-  const canSend = aiStatus ? (hostedMode ? aiStatus.ready && aiStatus.geminiConfigured : Boolean(cliId)) : false;
+  const requestMode = assistantRequestMode(aiStatus, cliId);
+  const canSend = requestMode !== "disabled";
   const router = useRouter();
   const pathname = usePathname();
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestAbortRef = useRef<AbortController | null>(null);
   const hostedHistoryRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  const turnGuardRef = useRef(createAssistantTurnGuard());
 
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/ai/status", { signal: controller.signal, cache: "no-store" })
       .then((response) => response.ok ? response.json() : null)
-      .then((status) => setAiStatus(status ?? { hosted: false, ready: false, geminiConfigured: false }))
-      .catch(() => { if (!controller.signal.aborted) setAiStatus({ hosted: false, ready: false, geminiConfigured: false }); });
+      .then((status) => { if (!controller.signal.aborted) setAiStatus(parseAssistantAiStatus(status)); })
+      .catch(() => {});
     return () => controller.abort();
   }, []);
 
@@ -229,27 +232,27 @@ export function AssistantConsole() {
     }
     return copy;
   }
-  const setStreamText = (text: string) =>
+  const setStreamText = (text: string, turn: number) =>
     setMessages((ms) =>
-      patchLastAssistant(ms, (m) => {
+      turnGuardRef.current.run(turn, () => patchLastAssistant(ms, (m) => {
         const parts = [...m.parts];
         const idx = parts.findIndex((p) => p.type === "text");
         if (idx === -1) parts.unshift({ type: "text", text });
         else parts[idx] = { type: "text", text };
         return { ...m, parts };
-      }),
+      })) ?? ms,
     );
-  const appendParts = (newParts: Part[]) =>
-    setMessages((ms) => patchLastAssistant(ms, (m) => ({ ...m, parts: [...m.parts, ...newParts] })));
+  const appendParts = (newParts: Part[], turn: number) =>
+    setMessages((ms) => turnGuardRef.current.run(turn, () => patchLastAssistant(ms, (m) => ({ ...m, parts: [...m.parts, ...newParts] }))) ?? ms);
 
-  function appendCards(info: DoneInfo) {
+  function appendCards(info: DoneInfo, turn: number) {
     const ids = info.jobIds ?? [];
     if (!ids.length) {
-      if (info.note) appendParts([{ type: "note", text: info.note }]);
+      if (info.note) appendParts([{ type: "note", text: info.note }], turn);
       return;
     }
-    if (info.batchId && ids.length > 1) appendParts([{ type: "batch", batchId: info.batchId, jobIds: ids }]);
-    else appendParts(ids.map((jobId) => ({ type: "card" as const, jobId })));
+    if (info.batchId && ids.length > 1) appendParts([{ type: "batch", batchId: info.batchId, jobIds: ids }], turn);
+    else appendParts(ids.map((jobId) => ({ type: "card" as const, jobId })), turn);
   }
 
   function buildCtx(): ActionCtx {
@@ -299,19 +302,20 @@ export function AssistantConsole() {
     };
   }
 
-  function runDispatch(id: string, args: Record<string, unknown>) {
+  function runDispatch(id: string, args: Record<string, unknown>, turn: number) {
+    if (!turnGuardRef.current.isCurrent(turn)) return;
     if (hostedMode && !isHostedAssistantActionAllowed(id)) {
-      appendParts([{ type: "note", text: "That action is unavailable in hosted Assistant. I can help you navigate or filter the pipeline." }]);
+      appendParts([{ type: "note", text: "That action is unavailable in hosted Assistant. I can help you navigate or filter the pipeline." }], turn);
       return;
     }
     const res = dispatch(id, args, buildCtx());
-    if (res.status === "done") appendCards(res);
+    if (res.status === "done") appendCards(res, turn);
     else if (res.status === "ignored") {
-      if (res.note) appendParts([{ type: "note", text: res.note }]);
+      if (res.note) appendParts([{ type: "note", text: res.note }], turn);
     } else if (res.status === "confirm") {
       const cid = `c-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
       confirmRuns.current.set(cid, res.run);
-      appendParts([{ type: "confirm", cid, summary: res.summary, state: "pending" }]);
+      appendParts([{ type: "confirm", cid, summary: res.summary, state: "pending" }], turn);
     }
   }
 
@@ -360,13 +364,14 @@ export function AssistantConsole() {
 
   async function send(forced?: string) {
     const text = (forced ?? input).trim();
-    if (!text || busy || !canSend) return;
+    if (!text || busy || requestMode === "disabled") return;
+    const turn = turnGuardRef.current.begin();
     if (forced === undefined) setInput("");
-    const history = hostedMode
+    const history = requestMode === "hosted"
       ? hostedHistoryRef.current.slice(-8)
       : messages.filter((m) => msgText(m) && msgText(m) !== GREETING).map((m) => ({ role: m.role, content: msgText(m) }));
-    setMessages((m) => [...m, { role: "user", parts: [{ type: "text", text }] }, { role: "assistant", parts: [{ type: "text", text: "" }] }]);
-    setBusy(true);
+    setMessages((m) => turnGuardRef.current.run(turn, () => [...m, { role: "user" as const, parts: [{ type: "text" as const, text }] }, { role: "assistant" as const, parts: [{ type: "text" as const, text: "" }] }]) ?? m);
+    setBusy((current) => turnGuardRef.current.run(turn, () => true) ?? current);
     handledRef.current = new Set();
     const shimsDone = new Set<string>();
     const requestAbort = new AbortController();
@@ -375,14 +380,15 @@ export function AssistantConsole() {
       const res = await fetch("/api/assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(hostedMode
+        body: JSON.stringify(requestMode === "hosted"
           ? { message: text, history, pagePath: pathname }
           : { message: text, cliId, history, pageContext: describePage(pathname) + pipelineContext() + applyContext() }),
         signal: requestAbort.signal,
       });
+      if (!turnGuardRef.current.isCurrent(turn)) { void res.body?.cancel(); return; }
       if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({}));
-        setStreamText(`⚠️ ${err.error || "Assistant unavailable."}`);
+        setStreamText(`⚠️ ${err.error || "Assistant unavailable."}`, turn);
         return;
       }
       const reader = res.body.getReader();
@@ -391,6 +397,7 @@ export function AssistantConsole() {
       let finalDisplay = "";
       for (;;) {
         const { done, value } = await reader.read();
+        if (!turnGuardRef.current.isCurrent(turn)) { void reader.cancel(); return; }
         if (done) break;
         acc += dec.decode(value, { stream: true });
 
@@ -411,7 +418,7 @@ export function AssistantConsole() {
           return "";
         });
         finalDisplay = display.trimStart();
-        setStreamText(finalDisplay);
+        setStreamText(finalDisplay, turn);
 
         for (const e of complete) {
           const key = `${e.start}|${e.id}|${e.argsJson}`;
@@ -423,40 +430,45 @@ export function AssistantConsole() {
           } catch {
             continue;
           }
-          runDispatch(e.id, args);
+          runDispatch(e.id, args, turn);
         }
         for (const p of shimNavs) {
           const k = `go:${p}`;
           if (!shimsDone.has(k)) {
             shimsDone.add(k);
-            runDispatch("navigate", { path: p });
+            runDispatch("navigate", { path: p }, turn);
           }
         }
         for (const f of shimRems) {
           const k = `rem:${f}`;
           if (f && !shimsDone.has(k)) {
             shimsDone.add(k);
-            if (hostedMode) appendParts([{ type: "note", text: "Saving memory is unavailable in hosted Assistant." }]);
-            else runDispatch("remember", { fact: f });
+            if (requestMode === "hosted") appendParts([{ type: "note", text: "Saving memory is unavailable in hosted Assistant." }], turn);
+            else runDispatch("remember", { fact: f }, turn);
           }
         }
       }
-      if (hostedMode && !requestAbort.signal.aborted) {
+      if (requestMode === "hosted" && !requestAbort.signal.aborted && turnGuardRef.current.isCurrent(turn)) {
         hostedHistoryRef.current = [...hostedHistoryRef.current, { role: "user" as const, content: text.slice(0, 4_000) }, { role: "assistant" as const, content: finalDisplay.slice(0, 4_000) }].slice(-8);
       }
-      if (!acc.trim()) setStreamText(hostedMode ? "_(no response from hosted Assistant)_" : "_(no output — is the CLI authenticated?)_");
+      if (!acc.trim()) setStreamText(requestMode === "hosted" ? "_(no response from hosted Assistant)_" : "_(no output — is the CLI authenticated?)_", turn);
     } catch {
-      setStreamText(requestAbort.signal.aborted ? "Request cancelled." : "⚠️ Connection error.");
+      setStreamText(requestAbort.signal.aborted ? "Request cancelled." : "⚠️ Connection error.", turn);
     } finally {
-      if (requestAbortRef.current === requestAbort) requestAbortRef.current = null;
-      setBusy(false);
-      router.refresh();
-      pipelineRef.current.refetch();
+      turnGuardRef.current.run(turn, () => {
+        if (requestAbortRef.current === requestAbort) requestAbortRef.current = null;
+        setBusy(false);
+        router.refresh();
+        pipelineRef.current.refetch();
+      });
     }
   }
 
   function resetChat() {
+    turnGuardRef.current.invalidate();
     requestAbortRef.current?.abort();
+    requestAbortRef.current = null;
+    setBusy(false);
     hostedHistoryRef.current = [];
     setMessages([{ role: "assistant", parts: [{ type: "text", text: GREETING }] }]);
     confirmRuns.current.clear();
@@ -535,7 +547,7 @@ export function AssistantConsole() {
             <Button variant="ghost" size="icon" onClick={resetChat} className="text-muted" aria-label="New chat" title="New chat">
               <RotateCcw className="size-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={() => { requestAbortRef.current?.abort(); setOpen(false); }} className="text-muted" aria-label="Close assistant">
+            <Button variant="ghost" size="icon" onClick={() => { turnGuardRef.current.invalidate(); requestAbortRef.current?.abort(); requestAbortRef.current = null; setBusy(false); setOpen(false); }} className="text-muted" aria-label="Close assistant">
               <X className="size-4" />
             </Button>
           </header>
