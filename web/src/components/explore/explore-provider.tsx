@@ -16,6 +16,7 @@ import {
   type ScanEvent,
 } from "@/lib/explore";
 import { makeAiStreamParser, type AiTraceChunk } from "@/lib/explore-ai";
+import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
 
 export type Phase =
   | "idle"
@@ -73,6 +74,8 @@ type ExploreCtx = {
   aiIntent: string;
   setAiIntent: (s: string) => void;
   discoverAI: () => Promise<void>;
+  hostedMode: boolean;
+  hostedReady: boolean;
   aiTrace: AiTraceChunk[];
   aiCost: AiCost;
 };
@@ -111,6 +114,8 @@ type ResultSnapshot = {
 
 export function ExploreProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const [hostedMode, setHostedMode] = useState(false);
+  const [hostedReady, setHostedReady] = useState(false);
   const [filters, setFiltersState] = useState<ExploreFilters>({ ...DEFAULT_FILTERS, ats: [...DEFAULT_FILTERS.ats] });
   const touched = useRef(false);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -131,6 +136,19 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
   const [adding, setAdding] = useState<Set<string>>(new Set());
   const [mode, setModeState] = useState<ExploreMode>("scan");
   const [aiIntent, setAiIntent] = useState("");
+  useEffect(() => {
+    void fetch("/api/ai/status")
+      .then((response) => response.ok ? response.json() : null)
+      .then((status) => {
+        const hosted = status?.hosted === true;
+        setHostedMode(hosted);
+        setHostedReady(hosted && status?.ready === true && status?.geminiConfigured === true);
+      })
+      .catch(() => {
+        setHostedMode(false);
+        setHostedReady(false);
+      });
+  }, []);
   const [aiTrace, setAiTrace] = useState<AiTraceChunk[]>([]);
   const [aiCost, setAiCost] = useState<AiCost>({ searches: 0, candidates: 0, fetches: 0 });
   const runningRef = useRef(false);
@@ -330,6 +348,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addToPipeline = useCallback(async (list: DiscoveredOffer[]) => {
+    if (list.some((offer) => isHostedExploreReadOnly(hostedMode, mode, offer.source))) return 0;
     const fresh = list.filter((o) => !added.has(o.url));
     if (fresh.length === 0) return 0;
     setAdding((s) => new Set([...s, ...fresh.map((o) => o.url)]));
@@ -361,7 +380,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
     }
-  }, [added, router]);
+  }, [added, router, hostedMode, mode]);
 
   const applyPatch = useCallback((raw: Record<string, unknown>, opts?: { merge?: boolean; run?: boolean }) => {
     const next = parseExplorePatch(raw, filtersRef.current, opts?.merge ?? false);
@@ -401,7 +420,12 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     } catch {
       cliId = null;
     }
-    if (!cliId) {
+    if (hostedMode && !hostedReady) {
+      setError("Hosted Gemini is not configured in this deployment.");
+      setPhase("failed");
+      return;
+    }
+    if (!cliId && !hostedMode) {
       setPhase("blocked");
       return;
     }
@@ -451,7 +475,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
       const r = await fetch("/api/explore/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: intent, cliId }),
+        body: JSON.stringify(hostedMode ? { query: intent } : { query: intent, cliId }),
       });
       if (r.status === 404) {
         runningRef.current = false;
@@ -489,7 +513,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     } else {
       setPhase("empty-loose");
     }
-  }, []);
+  }, [hostedMode, hostedReady]);
 
   // Switch surface but PRESERVE the current results + filters — toggling scan↔AI must
   // not throw away a completed search (disc#5). A new search (discover/discoverAI)
@@ -553,9 +577,9 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
       running: phase === "casting" || phase === "scanning" || phase === "revealing" || phase === "hunting",
       offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding,
       discover, loadFresh, addToPipeline, applyPatch, reset,
-      mode, setMode, aiIntent, setAiIntent, discoverAI, aiTrace, aiCost,
+      mode, setMode, aiIntent, setAiIntent, discoverAI, hostedMode, hostedReady, aiTrace, aiCost,
     }),
-    [filters, setFilters, initFilters, phase, offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding, discover, loadFresh, addToPipeline, applyPatch, reset, mode, setMode, aiIntent, discoverAI, aiTrace, aiCost],
+    [filters, setFilters, initFilters, phase, offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding, discover, loadFresh, addToPipeline, applyPatch, reset, mode, setMode, aiIntent, discoverAI, hostedMode, hostedReady, aiTrace, aiCost],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

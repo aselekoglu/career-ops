@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Search, Plus } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { DiscoveredOffer } from "@/lib/explore";
+import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
 import { CostBadge } from "@/components/cost/cost-badge";
 import { DiscoveryCard } from "./discovery-card";
 import { useExplore } from "./explore-provider";
@@ -11,8 +12,9 @@ import { useExplore } from "./explore-provider";
 export type EnrichedOffer = DiscoveredOffer & { inPipeline: boolean; evaluatedN?: string };
 
 export function ResultsList({ offers }: { offers: EnrichedOffer[] }) {
-  const { companiesScanned, partial, addToPipeline, added, mode } = useExplore();
+  const { companiesScanned, partial, addToPipeline, added, mode, hostedMode } = useExplore();
   const isAi = mode === "ai";
+  const hostedReadOnly = offers.some((offer) => isHostedExploreReadOnly(hostedMode, mode, offer.source));
   const [sort, setSort] = useState<"fresh" | "company">("fresh");
   const [q, setQ] = useState("");
 
@@ -26,7 +28,7 @@ export function ResultsList({ offers }: { offers: EnrichedOffer[] }) {
     return sorted;
   }, [offers, q, sort]);
 
-  const addable = offers.filter((o) => !o.inPipeline && !o.evaluatedN && !added.has(o.url));
+  const addable = hostedReadOnly ? [] : offers.filter((o) => !o.inPipeline && !o.evaluatedN && !added.has(o.url));
 
   return (
     <div className="space-y-4">

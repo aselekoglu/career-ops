@@ -13,7 +13,7 @@ const request = (pathname, method = "POST", extra = {}) => ({
   secFetchSite: "same-origin",
   ...extra,
 });
-const readyHandlers = { assistant: true, explore: false, exploreKnown: false };
+const readyHandlers = { assistant: true, explore: true, exploreKnown: true };
 
 test("public hosted AI status exposes booleans only and never provider credentials", () => {
   const secret = "gemini-secret-that-must-not-escape";
@@ -27,18 +27,21 @@ test("public hosted AI status exposes booleans only and never provider credentia
   });
 });
 
-test("only status GET is enabled by default; known URLs require an adapted hosted handler", () => {
+test("status, hosted Explore POST, and known URL GET are enabled only when their handlers are ready", () => {
   const missingKey = { hosted: true, ready: false, geminiConfigured: false };
   assert.equal(isAllowedCloudAiRequest(request("/api/ai/status", "GET"), missingKey).allowed, true);
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), missingKey).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), missingKey, { exploreKnown: true }).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, { explore: true }).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), ready, { exploreKnown: true }).allowed, true);
 });
 
 test("Gemini POSTs require both an adapted hosted handler and configured same-origin provider", () => {
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), ready, readyHandlers).allowed, true);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, readyHandlers).allowed, false);
-  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), ready, readyHandlers).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, readyHandlers).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, { explore: false }).allowed, false);
+  assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), ready, readyHandlers).allowed, true);
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), { ...ready, geminiConfigured: false, ready: false }, readyHandlers).allowed, false);
 });
 

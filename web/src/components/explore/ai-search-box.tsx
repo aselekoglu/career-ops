@@ -29,6 +29,7 @@ export function AiSearchBox({
   onSubmit,
   cliConfigured,
   cliName,
+  hostedUnavailable,
   onRunScan,
 }: {
   intent: string;
@@ -36,6 +37,7 @@ export function AiSearchBox({
   onSubmit: () => void;
   cliConfigured: boolean;
   cliName?: string;
+  hostedUnavailable?: boolean;
   onRunScan: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -72,7 +74,9 @@ export function AiSearchBox({
         />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <span className="text-[12px] text-muted">
-            {cliConfigured ? (
+            {hostedUnavailable ? (
+              "Hosted Gemini is unavailable in this deployment."
+            ) : cliConfigured ? (
               <>
                 Reads the public web with <span className="text-foreground">{cliName || "your CLI"}</span> — it costs your tokens.
               </>
@@ -82,7 +86,7 @@ export function AiSearchBox({
           </span>
           <button
             type="button"
-            disabled={!intent.trim()}
+            disabled={!intent.trim() || hostedUnavailable}
             onClick={onSubmit}
             className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-sm transition hover:brightness-110 disabled:opacity-50"
           >

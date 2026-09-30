@@ -5,6 +5,7 @@ import { ExternalLink, Plus, Check, Loader2, ShieldQuestion, Sparkles, Coins } f
 import { cn } from "@/lib/cn";
 import { instrumentSerif } from "@/lib/fonts";
 import { ATS_LABEL, type AtsSource, type DiscoveredOffer } from "@/lib/explore";
+import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
 import { useJobs } from "@/components/jobs/job-store";
 import { useExplore } from "./explore-provider";
 
@@ -39,7 +40,8 @@ function Logo({ company }: { company: string }) {
 const WORKER_LABEL: Record<string, string> = { evaluate: "Evaluating…", pdf: "Preparing CV…", research: "Researching…", apply: "Filling…" };
 
 export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: DiscoveredOffer; inPipeline: boolean; evaluatedN?: string }) {
-  const { added, adding, addToPipeline } = useExplore();
+  const { added, adding, addToPipeline, mode, hostedMode } = useExplore();
+  const hostedReadOnly = isHostedExploreReadOnly(hostedMode, mode, offer.source);
   const { jobs, startJob } = useJobs();
 
   // GLOBAL worker awareness: any worker acting on this URL drives the CTA, here
@@ -123,6 +125,10 @@ export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: Discov
             <Loader2 className="size-3.5 animate-spin" />
             {statusLabel}
             <span className="text-brand/60">· in pipeline</span>
+          </div>
+        ) : hostedReadOnly ? (
+          <div className="inline-flex w-full items-center justify-center rounded-md border border-border bg-surface/40 px-2.5 py-2 text-xs text-muted">
+            View only · pipeline actions unavailable
           </div>
         ) : (
           <div className="flex items-center gap-2">

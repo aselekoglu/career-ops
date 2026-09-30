@@ -8,6 +8,7 @@ import { instrumentSerif } from "@/lib/fonts";
 import type { Application, InboxJob } from "@/lib/career-ops";
 import { normalizeTextKey } from "@/lib/core/normalize-text-key.mjs";
 import { paramsToFilters, paramsToAi, type ExploreFilters } from "@/lib/explore";
+import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
 import { FilterBuilder } from "./filter-builder";
 import { DiscoveringState } from "./discovering-state";
 import { AiHuntView } from "./ai-hunt-view";
@@ -40,7 +41,7 @@ export function ExplorerView({
   appsSnapshot: Application[];
   rootExists: boolean;
 }) {
-  const { filters, setFilters, initFilters, phase, running, offers, discover, loadFresh, status, error, scannerMissing, mode, setMode, aiIntent, setAiIntent, discoverAI, companiesScanned, companiesAvailable, capHit, droppedNoDate, partial } = useExplore();
+  const { filters, setFilters, initFilters, phase, running, offers, discover, loadFresh, status, error, scannerMissing, mode, setMode, aiIntent, setAiIntent, discoverAI, hostedMode, hostedReady, companiesScanned, companiesAvailable, capHit, droppedNoDate, partial } = useExplore();
   const scanNote =
     companiesScanned > 0
       ? `Scanned ${companiesScanned.toLocaleString()}${companiesAvailable > companiesScanned ? ` of ${companiesAvailable.toLocaleString()}` : ""} compan${companiesScanned === 1 ? "y" : "ies"}${partial ? " · some sources were unreachable" : ""}.`
@@ -107,6 +108,7 @@ export function ExplorerView({
   );
 
   const isAi = mode === "ai";
+  const hostedReadOnly = isHostedExploreReadOnly(hostedMode, mode);
   const isResults = phase === "results";
   const canDiscover = filters.ats.length > 0;
   const scanRunning = running && !isAi;
@@ -129,13 +131,13 @@ export function ExplorerView({
             <span className="rounded-full border border-brand/30 bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-text">New</span>
           </div>
           <div className="w-full sm:ml-auto sm:w-auto">
-            <ExploreModeToggle mode={mode} onChange={setMode} cliConfigured={!!cli.id} />
+            <ExploreModeToggle mode={mode} onChange={setMode} cliConfigured={hostedMode ? hostedReady : !!cli.id} />
           </div>
         </div>
         {!isResults && (
           <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-muted">
             {isAi
-              ? "Describe the role in plain language — an AI hunts the open web for it, on your own AI. Candidates are unverified until you evaluate."
+            ? `Describe the role in plain language — ${hostedMode ? "Gemini searches the open web." : "your AI CLI hunts the open web."} Candidates are unverified until you evaluate.`
               : "Scan the public ATS network — Greenhouse, Lever, Ashby, Workday. Fresh postings matched to you, zero tokens. You only spend when you choose to evaluate one."}
           </p>
         )}
@@ -156,11 +158,13 @@ export function ExplorerView({
               intent={aiIntent}
               onIntent={setAiIntent}
               onSubmit={() => void discoverAI()}
-              cliConfigured={!!cli.id}
-              cliName={cli.name}
+              cliConfigured={hostedMode ? hostedReady : !!cli.id}
+              cliName={hostedMode ? "Gemini" : cli.name}
+              hostedUnavailable={hostedMode && !hostedReady}
               onRunScan={() => setMode("scan")}
             />
             {phase === "results" && <ResultsList offers={enriched} />}
+            {phase === "results" && hostedReadOnly && <p className="text-xs text-muted">Hosted AI discoveries are view-only in this deployment.</p>}
             {phase === "empty-loose" && (
               <EmptyState
                 tone="loose"

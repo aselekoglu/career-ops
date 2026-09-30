@@ -4,6 +4,9 @@ import path from "node:path";
 import { resolveCli } from "@/lib/clis";
 import { careerOpsRoot, readMemory } from "@/lib/career-ops";
 import { assembleDedupContext } from "@/lib/core/discover";
+import { isCloudRuntime } from "@/lib/deployment";
+import { createHostedAiService } from "@/lib/ai/hosted-ai.mjs";
+import { handleHostedExploreRequest } from "@/lib/ai/hosted-explore-handler.mjs";
 
 // AI search orchestrates modes/discover.md by running the USER'S configured CLI
 // headless (CLI-agnostic, like the assistant). Web hunting is slow → generous
@@ -29,6 +32,10 @@ Follow modes/discover.md exactly. You are running headless for the web:
 `;
 
 export async function POST(req: Request) {
+  if (isCloudRuntime()) {
+    return handleHostedExploreRequest(req, { service: createHostedAiService() });
+  }
+
   let body: { query?: string; cliId?: string };
   try {
     body = await req.json();

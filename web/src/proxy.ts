@@ -22,8 +22,8 @@ const SAFE_CLOUD_API_PATHS = new Set([
 // enable Assistant after its server branch exists; Task 4 owns Explore + Neon URLs.
 const HOSTED_AI_HANDLERS = {
   assistant: true,
-  explore: false,
-  exploreKnown: false,
+  explore: true,
+  exploreKnown: true,
 };
 
 function configuredCredentials() {
