@@ -58,3 +58,35 @@ The Explore provider detects hosted and ready status from `/api/ai/status`. An u
 
 - Live credentials, Neon connectivity, deployment protection, and deployed route behavior remain unverified by design; this task explicitly prohibited provider calls.
 - Direct Node tests importing the TypeScript offer parser emit Node's `MODULE_TYPELESS_PACKAGE_JSON` performance warning. Test outcomes are successful; no package-wide module-type change was made as part of this task.
+
+## Fix round 1 — fail-closed execution status and review follow-ups
+
+### Change
+
+`/api/ai/status` now establishes Explore execution mode only after an OK response with boolean `hosted`, `ready`, and `geminiConfigured` fields. Failed fetches, non-OK responses, invalid JSON, missing/wrongly typed fields, and inconsistent local/hosted values remain `unknown`. AI search cannot start in `unknown`; the UI disables the search button and explains the unavailable status. `addToPipeline`, batch add controls, and card-level add/evaluate controls use the validated mode. Unknown or hosted modes keep AI-origin offers view-only even after switching to Scan. Confirmed local mode preserves the prior CLI request path. Confirmed hosted mode requires both readiness booleans.
+
+The injection test now asserts the full parsed event sequence is exactly narration plus offer, with the action-like envelope retained only as narration. The cloud gate mutation test explicitly covers `/api/explore/add`. Hosted handler validation coverage now checks malformed JSON, invalid history role/content/count, oversized query, and oversized streamed request body; each case asserts the provider is never called.
+
+### RED/GREEN and verification
+
+- RED: before the status-state fix, the restored `ai-search` result test failed because `isHostedExploreReadOnly("unknown", "scan", "ai-search")` returned false. The status-reader availability assertion also failed while its module was absent.
+- GREEN: `node --test tests/lib/hosted-explore.test.mjs tests/lib/cloud-ai-gate.test.mjs` — 18 passed, 0 failed, 0 skipped.
+- GREEN: `npm test` — 209 passed, 0 failed, 0 skipped.
+- GREEN: `npm run typecheck` — passed.
+- GREEN: `npm run build` — passed; hosted Explore routes remain included.
+- The test suite verifies network rejection, non-OK status, malformed JSON, and malformed boolean status all remain unknown and preserve view-only behavior for restored AI-source offers. Well-formed local, hosted-ready, and hosted-unavailable states are also covered.
+- Fix commit: `80a445534a65e3223c84ecab815bc362bca0415b` — `fix: fail closed on unknown Explore execution mode`.
+
+### Files changed in this round
+
+- `web/src/lib/explore-execution-status.mjs` (new validated status reader)
+- `web/src/lib/explore-readonly.mjs`
+- `web/src/components/explore/explore-provider.tsx`
+- `web/src/components/explore/explorer-view.tsx`
+- `web/src/components/explore/ai-search-box.tsx`
+- `web/src/components/explore/results-list.tsx`
+- `web/src/components/explore/discovery-card.tsx`
+- `web/tests/lib/hosted-explore.test.mjs`
+- `web/tests/lib/cloud-ai-gate.test.mjs`
+
+No live Gemini, Neon, or Vercel calls were made. Server-side proxy policy remains the write boundary.
