@@ -1,4 +1,5 @@
-// Hosted provider handlers are disabled until their route implementations are ready.
+// Hosted handler readiness is supplied explicitly by proxy.ts. Keep unlisted or
+// not-yet-implemented capabilities denied by default.
 
 /** Project provider state onto the deliberately small, secret-free public shape. */
 export function toPublicHostedAiStatus(status, hosted) {
