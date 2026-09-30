@@ -5,7 +5,9 @@ import * as yaml from "js-yaml";
 import { careerOpsRoot, rootScript } from "@/lib/career-ops";
 import { cloudDataEnabled, getCloudDocument } from "@/lib/cloud-store";
 import { atomicWriteWithBackup } from "@/lib/core/safe-write";
+import { CLOUD_EXECUTION_MESSAGE, isCloudRuntime } from "@/lib/deployment";
 import { PROFILE_CADENCE_KEYS, type ProfileCadenceKey } from "@/lib/followups";
+import { readCadenceWithPolicy } from "@/lib/cadence-read-policy.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,57 +70,91 @@ async function readCoreDefaults(): Promise<Partial<Record<ProfileCadenceKey, num
 }
 
 export async function GET() {
-  if (cloudDataEnabled()) {
-    const storedProfile = await getCloudDocument("config/profile.yml");
-    if (!storedProfile || storedProfile.content_encoding !== "utf8") {
-      return Response.json({ error: "No profile snapshot is available in Neon." }, { status: 503, headers: { "Cache-Control": "no-store" } });
-    }
-    let profile: Record<string, unknown>;
-    try {
-      const parsed = yaml.load(storedProfile.content);
-      if (!isObj(parsed)) return Response.json({ error: "The imported profile is not a mapping." }, { status: 409 });
-      profile = parsed as Record<string, unknown>;
-    } catch {
-      return Response.json({ error: "The imported profile could not be parsed." }, { status: 409 });
-    }
-    const source = isObj(profile.followup_cadence) ? profile.followup_cadence : {};
-    const overrides: Partial<Record<ProfileCadenceKey, number>> = {};
-    for (const key of PROFILE_CADENCE_KEYS) {
-      const raw = source[key];
-      if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0) overrides[key] = raw;
-    }
-    return Response.json({
-      defaults: {},
-      defaultsAvailable: false,
-      overrides,
-      effective: overrides,
-      cloud: true,
-      readOnly: true,
-      source: "neon",
-      note: "Saved cadence values were loaded from Neon. Default values were not included in the snapshot, and this deployment is read-only.",
-    }, { headers: { "Cache-Control": "no-store" } });
-  }
-  const file = path.join(careerOpsRoot(), "config", "profile.yml");
-  const overrides: Partial<Record<ProfileCadenceKey, number>> = {};
-  if (fs.existsSync(file)) {
-    let profile: Record<string, unknown> = {};
-    try {
-      const parsed = yaml.load(fs.readFileSync(file, "utf8"));
-      profile = isObj(parsed) ? parsed : {};
-    } catch {
-      /* unreadable/malformed → show defaults (read is best-effort) */
-    }
-    const source = isObj(profile.followup_cadence) ? profile.followup_cadence : {};
-    for (const key of PROFILE_CADENCE_KEYS) {
-      const n = Number.parseInt(String(source[key]), 10);
-      if (Number.isFinite(n) && n >= 0) overrides[key] = n;
-    }
-  }
-  const defaults = await readCoreDefaults();
-  // `defaultsAvailable: false` tells the form to render its placeholders as
-  // unknown rather than inventing a number — an honest gap beats a stale copy.
-  const effective = { ...(defaults ?? {}), ...overrides };
-  return Response.json({ defaults: defaults ?? {}, defaultsAvailable: defaults !== null, overrides, effective });
+  return readCadenceWithPolicy({
+    databaseConfigured: cloudDataEnabled(),
+    cloudRuntime: isCloudRuntime(),
+    cloudDisabled: () =>
+      Response.json(
+        { error: CLOUD_EXECUTION_MESSAGE, code: "CLOUD_EXECUTION_DISABLED" },
+        { status: 501, headers: { "Cache-Control": "no-store" } },
+      ),
+    readNeon: async () => {
+      const storedProfile = await getCloudDocument("config/profile.yml");
+      if (!storedProfile || storedProfile.content_encoding !== "utf8") {
+        return Response.json(
+          { error: "No profile snapshot is available in Neon." },
+          { status: 503, headers: { "Cache-Control": "no-store" } },
+        );
+      }
+      let profile: Record<string, unknown>;
+      try {
+        const parsed = yaml.load(storedProfile.content);
+        if (!isObj(parsed))
+          return Response.json(
+            { error: "The imported profile is not a mapping." },
+            { status: 409 },
+          );
+        profile = parsed as Record<string, unknown>;
+      } catch {
+        return Response.json(
+          { error: "The imported profile could not be parsed." },
+          { status: 409 },
+        );
+      }
+      const source = isObj(profile.followup_cadence)
+        ? profile.followup_cadence
+        : {};
+      const overrides: Partial<Record<ProfileCadenceKey, number>> = {};
+      for (const key of PROFILE_CADENCE_KEYS) {
+        const raw = source[key];
+        if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0)
+          overrides[key] = raw;
+      }
+      return Response.json(
+        {
+          defaults: {},
+          defaultsAvailable: false,
+          overrides,
+          effective: overrides,
+          cloud: true,
+          readOnly: true,
+          source: "neon",
+          note: "Saved cadence values were loaded from Neon. Default values were not included in the snapshot, and this deployment is read-only.",
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    },
+    readLocal: async () => {
+      const file = path.join(careerOpsRoot(), "config", "profile.yml");
+      const overrides: Partial<Record<ProfileCadenceKey, number>> = {};
+      if (fs.existsSync(file)) {
+        let profile: Record<string, unknown> = {};
+        try {
+          const parsed = yaml.load(fs.readFileSync(file, "utf8"));
+          profile = isObj(parsed) ? parsed : {};
+        } catch {
+          /* unreadable/malformed → show defaults (read is best-effort) */
+        }
+        const source = isObj(profile.followup_cadence)
+          ? profile.followup_cadence
+          : {};
+        for (const key of PROFILE_CADENCE_KEYS) {
+          const n = Number.parseInt(String(source[key]), 10);
+          if (Number.isFinite(n) && n >= 0) overrides[key] = n;
+        }
+      }
+      const defaults = await readCoreDefaults();
+      // `defaultsAvailable: false` tells the form to render its placeholders as
+      // unknown rather than inventing a number — an honest gap beats a stale copy.
+      const effective = { ...(defaults ?? {}), ...overrides };
+      return Response.json({
+        defaults: defaults ?? {},
+        defaultsAvailable: defaults !== null,
+        overrides,
+        effective,
+      });
+    },
+  });
 }
 
 export async function POST(req: Request) {

@@ -68,7 +68,7 @@ export function PortalsView() {
         </p>
       )}
 
-      {res && !res.available && (
+      {res && !res.available && !res.cloud && (
         <p className="mt-4 rounded-xl border border-dashed border-border bg-surface/30 p-4 text-sm text-muted">
           <code className="text-foreground">verify-portals.mjs</code> not found — this needs a complete career-ops
           checkout (the web orchestrates the core&apos;s validator).

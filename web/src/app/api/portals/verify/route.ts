@@ -4,6 +4,8 @@ import path from "node:path";
 import { careerOpsRoot, rootScript } from "@/lib/career-ops";
 import { cloudDataEnabled } from "@/lib/cloud-store";
 import { cloudVerifyPortals } from "@/lib/cloud-career-ops";
+import { isCloudRuntime, CLOUD_EXECUTION_MESSAGE } from "@/lib/deployment";
+import { resolvePortalVerification } from "@/lib/portal-verification.mjs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +23,20 @@ const STATUS: Record<string, "live" | "empty" | "broken" | "skipped"> = {
 };
 
 export async function GET() {
-  if (cloudDataEnabled()) return Response.json(await cloudVerifyPortals(), { headers: { "Cache-Control": "no-store" } });
+  const databaseConfigured = cloudDataEnabled();
+  if (isCloudRuntime() || databaseConfigured) {
+    const result = await resolvePortalVerification({
+      cloud: isCloudRuntime(),
+      databaseConfigured,
+      unavailableMessage: CLOUD_EXECUTION_MESSAGE,
+      cloudVerify: cloudVerifyPortals,
+      localVerify: async () => undefined,
+    });
+    return Response.json(result.body, {
+      status: result.status,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
   const root = careerOpsRoot();
   const verifyPortals = rootScript("verify-portals");
   if (!fs.existsSync(verifyPortals)) {

@@ -3,6 +3,7 @@ import type { Application, InboxJob, LifecyclePhase, PipelineSummary, ReportData
 import type { JobRun, ScheduledJob } from "@/lib/scheduled-jobs";
 import { load as parseYaml } from "js-yaml";
 import { getCloudDocument } from "@/lib/cloud-store";
+import { mapSnapshotStatus } from "@/lib/snapshot-status.mjs";
 
 async function text(path: string): Promise<string | null> {
   const row = await getCloudDocument(path);
@@ -154,14 +155,7 @@ export async function cloudVerifyPortals(): Promise<{
       const health = latest.get(name);
       if (company.enabled === false) return { name, status: "skipped", detail: "disabled in portals.yml" };
       if (!health) return { name, status: "skipped", detail: `${company.provider || "no ATS"} · no imported health result` };
-      const normalized = health.status.toLowerCase();
-      const status: PortalCompany["status"] = normalized === "reachable" || normalized === "live"
-        ? "live"
-        : normalized === "empty"
-          ? "empty"
-          : normalized === "broken" || normalized === "unreachable" || normalized === "error"
-            ? "broken"
-            : "skipped";
+      const status = mapSnapshotStatus(health.status.toLowerCase());
       return { name, status, detail: `${health.status} · snapshot ${health.timestamp}` };
     });
 
