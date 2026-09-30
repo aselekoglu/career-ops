@@ -48,10 +48,10 @@
 - HostedAiProvider is { stream(input: HostedAiInput): AsyncIterable<HostedAiEvent> }.
 - createHostedAiService(options?) returns { status(): HostedAiStatus; stream(input: HostedAiInput): AsyncGenerator<HostedAiEvent> }. Options are { env?: NodeJS.ProcessEnv; gemini?: HostedAiProvider; timeoutMs?: number }; tests inject a fake Gemini provider.
 
-- [ ] Step 1: Write Node tests for missing key, configured status, Gemini stream events, store=false, Google Search enabled only for Explore, request/output bounds, timeout, and clear auth/quota errors.
-- [ ] Step 2: Run node --test tests/lib/hosted-ai.test.mjs from web and confirm the new tests fail.
-- [ ] Step 3: Add the official Google GenAI SDK dependency, pin its resolved version in package-lock.json, and implement the adapter with an injectable client/provider for tests.
-- [ ] Step 4: Run node --test tests/lib/hosted-ai.test.mjs from web and confirm all provider-policy tests pass.
+- [x] Step 1: Write Node tests for missing key, configured status, Gemini stream events, store=false, Google Search enabled only for Explore, request/output bounds, timeout, and clear auth/quota errors.
+- [x] Step 2: Run node --test tests/lib/hosted-ai.test.mjs from web and confirm the new tests fail.
+- [x] Step 3: Add the official Google GenAI SDK dependency, pin its resolved version in package-lock.json, and implement the adapter with an injectable client/provider for tests.
+- [x] Step 4: Run node --test tests/lib/hosted-ai.test.mjs from web and confirm all provider-policy tests pass.
 
 ### Task 2: Cloud capability status, Config UI, and request gate
 
@@ -70,13 +70,13 @@
 - Basic authentication and Vercel Deployment Protection remain enforced before the cloud AI gate.
 - Initialize handlerReadiness as { assistant: false, explore: false, exploreKnown: false }. Do not enable a flag until the matching hosted route implementation is present.
 
-- [ ] Step 1: Write Node tests for public status shaping, asserting serialized output never contains the configured key value.
-- [ ] Step 2: Write gate tests for key readiness, same-origin POSTs, cross-origin POST rejection, read-only status/known GETs, and denial of /api/run and data mutation routes.
-- [ ] Step 3: Run node --test tests/lib/cloud-ai-gate.test.mjs from web and confirm the new tests fail.
-- [ ] Step 4: Implement the gate helper and status route; update the proxy to use the helper without weakening Basic auth or Deployment Protection.
-- [ ] Step 5: Update hosted Config to show Gemini readiness and explain that the key is configured in Vercel; remove any hosted key-paste UI. Preserve local CLI selection.
-- [ ] Step 6: Document the required Preview and Production variable in web/README.md without including values.
-- [ ] Step 7: Run the focused gate tests and confirm they pass.
+- [x] Step 1: Write Node tests for public status shaping, asserting serialized output never contains the configured key value.
+- [x] Step 2: Write gate tests for key readiness, same-origin POSTs, cross-origin POST rejection, read-only status/known GETs, and denial of /api/run and data mutation routes.
+- [x] Step 3: Run node --test tests/lib/cloud-ai-gate.test.mjs from web and confirm the new tests fail.
+- [x] Step 4: Implement the gate helper and status route; update the proxy to use the helper without weakening Basic auth or Deployment Protection.
+- [x] Step 5: Update hosted Config to show Gemini readiness and explain that the key is configured in Vercel; remove any hosted key-paste UI. Preserve local CLI selection.
+- [x] Step 6: Document the required Preview and Production variable in web/README.md without including values.
+- [x] Step 7: Run the focused gate tests and confirm they pass.
 
 ### Task 3: Hosted Assistant
 
@@ -94,12 +94,12 @@
 - isHostedAssistantActionAllowed(actionId) returns true only for navigate and filterPipeline.
 - The route calls createHostedAiService().stream({ task: "assistant", system, messages, webSearch: false, signal }) and returns the same text stream consumed by assistant-console.
 
-- [ ] Step 1: Write tests for allowed navigation/filter envelopes and blocked evaluate, research, generatePdf, status/profile/portal writes, remember, and apply envelopes.
-- [ ] Step 2: Run node --test tests/lib/hosted-assistant-actions.test.mjs and confirm it fails.
-- [ ] Step 3: Add the hosted prompt/action gate and split the Assistant route between local CLI and authenticated hosted-provider mode. In cloud mode, build context from the minimal relevant Neon snapshot instead of local filesystem reads.
-- [ ] Step 4: Update assistant-console to read /api/ai/status, allow hosted requests without cliId, and show a read-only explanation when an unsupported action is requested.
-- [ ] Step 5: Run the focused action tests and npm run typecheck from web; confirm local CLI mode still uses its existing request contract.
-- [ ] Step 6: Only after the hosted cloud branch is verified, set handlerReadiness.assistant=true in the proxy; keep Explore and known-URL false. Test the gate and verify cloud requests never call resolveCli or spawn.
+- [x] Step 1: Write tests for allowed navigation/filter envelopes and blocked evaluate, research, generatePdf, status/profile/portal writes, remember, and apply envelopes.
+- [x] Step 2: Run node --test tests/lib/hosted-assistant-actions.test.mjs and confirm it fails.
+- [x] Step 3: Add the hosted prompt/action gate and split the Assistant route between local CLI and authenticated hosted-provider mode. In cloud mode, build context from the minimal relevant Neon snapshot instead of local filesystem reads.
+- [x] Step 4: Update assistant-console to read /api/ai/status, allow hosted requests without cliId, and show a read-only explanation when an unsupported action is requested.
+- [x] Step 5: Run the focused action tests and npm run typecheck from web; confirm local CLI mode still uses its existing request contract.
+- [x] Step 6: Only after the hosted cloud branch is verified, set handlerReadiness.assistant=true in the proxy; keep Explore and known-URL false. Test the gate and verify cloud requests never call resolveCli or spawn.
 
 ### Task 4: Hosted Explore AI
 
