@@ -30,6 +30,7 @@ export function AiSearchBox({
   cliConfigured,
   cliName,
   hostedUnavailable,
+  statusUnknown,
   onRunScan,
 }: {
   intent: string;
@@ -38,6 +39,7 @@ export function AiSearchBox({
   cliConfigured: boolean;
   cliName?: string;
   hostedUnavailable?: boolean;
+  statusUnknown?: boolean;
   onRunScan: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -74,7 +76,9 @@ export function AiSearchBox({
         />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <span className="text-[12px] text-muted">
-            {hostedUnavailable ? (
+            {statusUnknown ? (
+              "Could not confirm AI search availability. Reload Explore before searching."
+            ) : hostedUnavailable ? (
               "Hosted Gemini is unavailable in this deployment."
             ) : cliConfigured ? (
               <>
@@ -86,7 +90,7 @@ export function AiSearchBox({
           </span>
           <button
             type="button"
-            disabled={!intent.trim() || hostedUnavailable}
+            disabled={!intent.trim() || hostedUnavailable || statusUnknown}
             onClick={onSubmit}
             className="inline-flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-brand-foreground shadow-sm transition hover:brightness-110 disabled:opacity-50"
           >

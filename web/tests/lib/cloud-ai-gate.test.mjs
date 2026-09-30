@@ -62,7 +62,7 @@ test("wrong methods, local execution, and data mutation routes stay denied", () 
   assert.equal(isAllowedCloudAiRequest(request("/api/ai/status", "POST"), ready).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "POST"), ready).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai", "GET"), ready, readyHandlers).allowed, false);
-  for (const pathname of ["/api/run", "/api/pipeline", "/api/profile", "/api/scheduled-jobs", "/api/assistant/extra", "/api/explore/ai/known/extra"]) {
+  for (const pathname of ["/api/run", "/api/pipeline", "/api/profile", "/api/explore/add", "/api/scheduled-jobs", "/api/assistant/extra", "/api/explore/ai/known/extra"]) {
     assert.equal(isAllowedCloudAiRequest(request(pathname), ready).allowed, false, `${pathname} must stay blocked`);
   }
 });

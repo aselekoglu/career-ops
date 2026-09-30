@@ -12,9 +12,9 @@ import { useExplore } from "./explore-provider";
 export type EnrichedOffer = DiscoveredOffer & { inPipeline: boolean; evaluatedN?: string };
 
 export function ResultsList({ offers }: { offers: EnrichedOffer[] }) {
-  const { companiesScanned, partial, addToPipeline, added, mode, hostedMode } = useExplore();
+  const { companiesScanned, partial, addToPipeline, added, mode, executionMode } = useExplore();
   const isAi = mode === "ai";
-  const hostedReadOnly = offers.some((offer) => isHostedExploreReadOnly(hostedMode, mode, offer.source));
+  const hostedReadOnly = offers.some((offer) => isHostedExploreReadOnly(executionMode, mode, offer.source));
   const [sort, setSort] = useState<"fresh" | "company">("fresh");
   const [q, setQ] = useState("");
 

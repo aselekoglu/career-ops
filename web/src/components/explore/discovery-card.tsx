@@ -40,8 +40,8 @@ function Logo({ company }: { company: string }) {
 const WORKER_LABEL: Record<string, string> = { evaluate: "Evaluating…", pdf: "Preparing CV…", research: "Researching…", apply: "Filling…" };
 
 export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: DiscoveredOffer; inPipeline: boolean; evaluatedN?: string }) {
-  const { added, adding, addToPipeline, mode, hostedMode } = useExplore();
-  const hostedReadOnly = isHostedExploreReadOnly(hostedMode, mode, offer.source);
+  const { added, adding, addToPipeline, mode, executionMode } = useExplore();
+  const hostedReadOnly = isHostedExploreReadOnly(executionMode, mode, offer.source);
   const { jobs, startJob } = useJobs();
 
   // GLOBAL worker awareness: any worker acting on this URL drives the CTA, here
