@@ -21,7 +21,7 @@ const SAFE_CLOUD_API_PATHS = new Set([
 // Fail closed until each route has a hosted Gemini implementation. Task 3 may
 // enable Assistant after its server branch exists; Task 4 owns Explore + Neon URLs.
 const HOSTED_AI_HANDLERS = {
-  assistant: false,
+  assistant: true,
   explore: false,
   exploreKnown: false,
 };

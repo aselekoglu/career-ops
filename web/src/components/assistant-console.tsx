@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { dispatch, type ActionCtx, type DoneInfo } from "@/app/actions/registry";
 import { scoreNum } from "@/lib/format";
 import { pendingActOpenerStart } from "@/lib/act-envelope.mjs";
+import { isHostedAssistantActionAllowed } from "@/lib/ai/hosted-assistant-actions.mjs";
 import { cn } from "@/lib/cn";
 
 // ── message model: messages are PART arrays so a live worker card can render
@@ -138,9 +139,23 @@ export function AssistantConsole() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [aiStatus, setAiStatus] = useState<{ hosted: boolean; ready: boolean; geminiConfigured: boolean } | null>(null);
+  const hostedMode = aiStatus?.hosted === true;
+  const canSend = aiStatus ? (hostedMode ? aiStatus.ready && aiStatus.geminiConfigured : Boolean(cliId)) : false;
   const router = useRouter();
   const pathname = usePathname();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const requestAbortRef = useRef<AbortController | null>(null);
+  const hostedHistoryRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/ai/status", { signal: controller.signal, cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((status) => setAiStatus(status ?? { hosted: false, ready: false, geminiConfigured: false }))
+      .catch(() => { if (!controller.signal.aborted) setAiStatus({ hosted: false, ready: false, geminiConfigured: false }); });
+    return () => controller.abort();
+  }, []);
 
   const { jobs, startJob } = useJobs();
   const pipeline = usePipeline();
@@ -285,6 +300,10 @@ export function AssistantConsole() {
   }
 
   function runDispatch(id: string, args: Record<string, unknown>) {
+    if (hostedMode && !isHostedAssistantActionAllowed(id)) {
+      appendParts([{ type: "note", text: "That action is unavailable in hosted Assistant. I can help you navigate or filter the pipeline." }]);
+      return;
+    }
     const res = dispatch(id, args, buildCtx());
     if (res.status === "done") appendCards(res);
     else if (res.status === "ignored") {
@@ -341,18 +360,25 @@ export function AssistantConsole() {
 
   async function send(forced?: string) {
     const text = (forced ?? input).trim();
-    if (!text || busy || !cliId) return;
+    if (!text || busy || !canSend) return;
     if (forced === undefined) setInput("");
-    const history = messages.filter((m) => msgText(m) && msgText(m) !== GREETING).map((m) => ({ role: m.role, content: msgText(m) }));
+    const history = hostedMode
+      ? hostedHistoryRef.current.slice(-8)
+      : messages.filter((m) => msgText(m) && msgText(m) !== GREETING).map((m) => ({ role: m.role, content: msgText(m) }));
     setMessages((m) => [...m, { role: "user", parts: [{ type: "text", text }] }, { role: "assistant", parts: [{ type: "text", text: "" }] }]);
     setBusy(true);
     handledRef.current = new Set();
     const shimsDone = new Set<string>();
+    const requestAbort = new AbortController();
+    requestAbortRef.current = requestAbort;
     try {
       const res = await fetch("/api/assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, cliId, history, pageContext: describePage(pathname) + pipelineContext() + applyContext() }),
+        body: JSON.stringify(hostedMode
+          ? { message: text, history, pagePath: pathname }
+          : { message: text, cliId, history, pageContext: describePage(pathname) + pipelineContext() + applyContext() }),
+        signal: requestAbort.signal,
       });
       if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({}));
@@ -362,6 +388,7 @@ export function AssistantConsole() {
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let acc = "";
+      let finalDisplay = "";
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -383,7 +410,8 @@ export function AssistantConsole() {
           shimRems.push(String(f).trim());
           return "";
         });
-        setStreamText(display.trimStart());
+        finalDisplay = display.trimStart();
+        setStreamText(finalDisplay);
 
         for (const e of complete) {
           const key = `${e.start}|${e.id}|${e.argsJson}`;
@@ -408,14 +436,19 @@ export function AssistantConsole() {
           const k = `rem:${f}`;
           if (f && !shimsDone.has(k)) {
             shimsDone.add(k);
-            runDispatch("remember", { fact: f });
+            if (hostedMode) appendParts([{ type: "note", text: "Saving memory is unavailable in hosted Assistant." }]);
+            else runDispatch("remember", { fact: f });
           }
         }
       }
-      if (!acc.trim()) setStreamText("_(no output — is the CLI authenticated?)_");
+      if (hostedMode && !requestAbort.signal.aborted) {
+        hostedHistoryRef.current = [...hostedHistoryRef.current, { role: "user" as const, content: text.slice(0, 4_000) }, { role: "assistant" as const, content: finalDisplay.slice(0, 4_000) }].slice(-8);
+      }
+      if (!acc.trim()) setStreamText(hostedMode ? "_(no response from hosted Assistant)_" : "_(no output — is the CLI authenticated?)_");
     } catch {
-      setStreamText("⚠️ Connection error.");
+      setStreamText(requestAbort.signal.aborted ? "Request cancelled." : "⚠️ Connection error.");
     } finally {
+      if (requestAbortRef.current === requestAbort) requestAbortRef.current = null;
       setBusy(false);
       router.refresh();
       pipelineRef.current.refetch();
@@ -423,6 +456,8 @@ export function AssistantConsole() {
   }
 
   function resetChat() {
+    requestAbortRef.current?.abort();
+    hostedHistoryRef.current = [];
     setMessages([{ role: "assistant", parts: [{ type: "text", text: GREETING }] }]);
     confirmRuns.current.clear();
     try {
@@ -495,12 +530,12 @@ export function AssistantConsole() {
             <CoMark size={26} />
             <div className="flex-1">
               <div className="text-sm font-semibold tracking-tight">Assistant</div>
-              <div className="text-xs text-faint">{cliId ? `via ${cliId}` : "no CLI configured"}</div>
+              <div className="text-xs text-faint">{hostedMode ? (canSend ? "via hosted Gemini" : "hosted Gemini unavailable") : cliId ? `via ${cliId}` : "no CLI configured"}</div>
             </div>
             <Button variant="ghost" size="icon" onClick={resetChat} className="text-muted" aria-label="New chat" title="New chat">
               <RotateCcw className="size-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={() => setOpen(false)} className="text-muted" aria-label="Close assistant">
+            <Button variant="ghost" size="icon" onClick={() => { requestAbortRef.current?.abort(); setOpen(false); }} className="text-muted" aria-label="Close assistant">
               <X className="size-4" />
             </Button>
           </header>
@@ -535,7 +570,7 @@ export function AssistantConsole() {
           </div>
 
           {/* proactive suggestion chips — onboarding + offer-driven next steps */}
-          {cliId && !busy && suggestions.length > 0 && (
+          {canSend && !busy && suggestions.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3 pb-1 pt-0.5">
               {suggestions.map((s, i) => (
                 <button
@@ -550,7 +585,7 @@ export function AssistantConsole() {
             </div>
           )}
 
-          {!cliId && (
+          {!hostedMode && !cliId && (
             <Link
               href="/config"
               onClick={() => setOpen(false)}
@@ -571,14 +606,14 @@ export function AssistantConsole() {
                     send();
                   }
                 }}
-                placeholder={cliId ? "Ask anything…" : "Configure a CLI first"}
+                placeholder={canSend ? "Ask anything…" : hostedMode ? "Hosted Gemini unavailable" : "Configure a CLI first"}
                 rows={1}
-                disabled={!cliId}
+                disabled={!canSend}
                 className="max-h-32 flex-1 resize-none rounded-xl border border-border bg-surface/60 px-3 py-2 text-sm outline-none transition-colors placeholder:text-faint focus:border-brand/50 disabled:opacity-50"
               />
               <button
                 onClick={() => send()}
-                disabled={busy || !input.trim() || !cliId}
+                disabled={busy || !input.trim() || !canSend}
                 className="rounded-xl bg-brand p-2 text-brand-foreground transition-colors hover:bg-brand-200 disabled:opacity-40"
                 aria-label="Send"
               >

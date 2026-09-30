@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 import { resolveCli } from "@/lib/clis";
 import { careerOpsRoot, readMemory, doctorState } from "@/lib/career-ops";
+import { isCloudRuntime } from "@/lib/deployment";
+import { cloudReadCv, cloudReadMemory, cloudPipelineSummary } from "@/lib/cloud-career-ops";
+import { getCloudDocument } from "@/lib/cloud-store";
+import { createHostedAiService } from "@/lib/ai/hosted-ai.mjs";
+import { buildHostedAssistantContext } from "@/lib/ai/hosted-assistant-context.mjs";
+import { handleHostedAssistantRequest, routeAssistantRequest } from "@/lib/ai/hosted-assistant-handler.mjs";
 
-export const runtime = "nodejs"; // child_process (spawn) requires the Node runtime
+export const runtime = "nodejs"; // hosted Gemini and local child_process require Node
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
@@ -44,7 +50,27 @@ Keep replies short, warm, and useful. Don't dump raw files or narrate internal d
 
 type Msg = { role: "user" | "assistant"; content: string };
 
-export async function POST(req: Request) {
+export function POST(req: Request) {
+  return routeAssistantRequest(req, {
+    isCloud: isCloudRuntime(),
+    hosted: (request: Request) => handleHostedAssistantRequest(request, {
+      service: createHostedAiService(),
+      context: ({ message, pagePath }: { message: string; pagePath: string }) => buildHostedAssistantContext({
+        message, pagePath,
+        readCv: cloudReadCv,
+        readMemory: cloudReadMemory,
+        readProfile: async () => {
+          const row = await getCloudDocument("config/profile.yml");
+          return row?.content_encoding === "utf8" ? row.content : "";
+        },
+        readPipeline: cloudPipelineSummary,
+      }),
+    }),
+    local: localAssistantPOST,
+  });
+}
+
+async function localAssistantPOST(req: Request) {
   let body: { message?: string; cliId?: string; history?: Msg[]; pageContext?: string };
   try {
     body = await req.json();
