@@ -57,7 +57,7 @@ export function proxy(request: NextRequest) {
 
   // This bearer credential is scoped to the worker callback only. It cannot
   // reach browser routes, CVs, general mutations or application assistance.
-  if (request.nextUrl.pathname === '/api/scan-worker') {
+  if (request.nextUrl.pathname === '/api/scan-worker' || request.nextUrl.pathname === '/api/cv-worker') {
     if (request.method === 'POST' && workerAuthorized(request.headers.get('authorization'))) return NextResponse.next();
     return NextResponse.json({ code: 'WORKER_UNAUTHORIZED' }, { status: 401 });
   }
@@ -82,7 +82,9 @@ export function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   if ((pathname === '/api/scans' && request.method === 'POST') ||
-      (/^\/api\/scans\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method))) return NextResponse.next();
+      (/^\/api\/scans\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
+      (pathname === '/api/cv-runs' && request.method === 'POST') ||
+      (/^\/api\/cv-runs\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method))) return NextResponse.next();
   const hostedStatus = {
     hosted: true,
     ready: Boolean(process.env.GEMINI_API_KEY?.trim()),
