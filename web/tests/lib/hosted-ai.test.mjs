@@ -92,6 +92,42 @@ test("Gemini Search is enabled only for Explore and output is capped at 4096 tok
   assert.equal(requests[1].tools, undefined);
 });
 
+test("CV task gets a larger private context budget and an 8192-token output cap", async () => {
+  const requests = [];
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async (input) => {
+        requests.push(input);
+        return (async function* () {
+          yield { event_type: "step.delta", delta: { type: "text", text: "CV" } };
+        })();
+      },
+    },
+  });
+  assert.deepEqual(await collect(provider.stream({ ...request, task: "cv", webSearch: false })), [
+    { type: "text", text: "CV" },
+  ]);
+  assert.equal(requests[0].generation_config.max_output_tokens, 8192);
+  assert.equal(requests[0].tools, undefined);
+
+  let calls = 0;
+  const service = createHostedAiService({
+    env: { GEMINI_API_KEY: "test-key" },
+    gemini: { async *stream() { calls++; yield { type: "text", text: "ok" }; } },
+  });
+  const largeCvRequest = {
+    ...request,
+    task: "cv",
+    messages: [{ role: "user", content: "x".repeat(70_000) }],
+  };
+  assert.deepEqual(await collect(service.stream(largeCvRequest)), [{ type: "text", text: "ok" }]);
+  await assert.rejects(collect(service.stream({
+    ...largeCvRequest,
+    messages: [{ role: "user", content: "x".repeat(100_001) }],
+  })), { code: "HOSTED_AI_INPUT_TOO_LARGE" });
+  assert.equal(calls, 1);
+});
+
 test("Gemini error event after text fails safely instead of ending successfully", async () => {
   const provider = createGeminiProvider({
     interactions: {
