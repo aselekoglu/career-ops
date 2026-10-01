@@ -25,7 +25,9 @@ function getClient() {
 
 export async function getCloudDocument(relativePath: string): Promise<DocumentRow | null> {
   const key = relativePath.replaceAll("\\", "/");
-  if (cache.has(key)) return cache.get(key) ?? null;
+  // Mutable scan documents must be read afresh across warm serverless calls.
+  const mutable = key.startsWith('data/');
+  if (!mutable && cache.has(key)) return cache.get(key) ?? null;
   const sql = getClient();
   if (!sql) return null;
   const rows = await sql`
@@ -35,7 +37,7 @@ export async function getCloudDocument(relativePath: string): Promise<DocumentRo
     LIMIT 1
   `;
   const row = (Array.from(rows as unknown as Array<unknown>)[0] as DocumentRow | undefined) ?? null;
-  cache.set(key, row);
+  if (!mutable) cache.set(key, row);
   return row;
 }
 

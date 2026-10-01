@@ -2107,6 +2107,10 @@ function guardStatusFor(code) {
 
 async function main() {
   const args = process.argv.slice(2);
+  const jsonMode = args.includes('--json');
+  const printReceipt = console.log.bind(console);
+  if (jsonMode) console.log = console.error;
+  const scanStartedAt = new Date().toISOString();
   const dryRun = args.includes('--dry-run');
   const verify = args.includes('--verify');
   // Opt-in: on an anti-bot challenge (e.g. pracuj.pl Cloudflare wall), retry the
@@ -2328,6 +2332,9 @@ async function main() {
   let totalFilteredVisa = 0;
   let totalDupes = 0;
   const newOffers = [];
+  const liveMatches = [];
+  const liveSeenUrls = new Set();
+  const liveSeenRoles = new Set();
   const errors = [...resolveErrors];
   const emptyTargets = [];
 
@@ -2439,6 +2446,14 @@ async function main() {
           continue;
         }
         const dedupUrl = normalizeUrlForDedup(job.url);
+        const liveKey = companyRoleDedupKey(job.company, job.title, canonicalizeCompany);
+        if (jsonMode && !cooldownFilter(job).skip && !liveSeenUrls.has(dedupUrl) && !liveSeenRoles.has(liveKey)) {
+          liveSeenUrls.add(dedupUrl); liveSeenRoles.add(liveKey);
+          liveMatches.push({ company: job.company || company.name, title: job.title, location: job.location || '',
+            url: job.url, source: sourceName, postedAt: Number.isFinite(job.postedAt) ? job.postedAt : null,
+            postedAtEvidence: job.postedAtEvidence ?? null, postedAtPrecision: job.postedAtPrecision ?? 'timestamp',
+            known: seenUrls.has(dedupUrl) || seenCompanyRoles.has(liveKey) });
+        }
         if (seenUrls.has(dedupUrl)) {
           totalDupes++;
           continue;
@@ -2773,6 +2788,19 @@ async function main() {
 
   console.log(`\n→ Run /career-ops pipeline to evaluate new offers.`);
   console.log('→ Share results and get help: https://discord.gg/8pRpHETxa4');
+
+  if (jsonMode) {
+    const resolvedNames = new Set(targets.map(t => t.name));
+    const sources = targets.map(t => ({ company: t.name, source: t._provider.id,
+      status: errors.some(e => e.company === t.name && !String(e.error).includes('used API fallback')) ? 'failed' : emptyTargets.includes(t.name) ? 'empty' : 'ok' }));
+    for (const entry of [...companies, ...boards]) {
+      if (entry?.enabled === false || !entry?.name || resolvedNames.has(entry.name) || (filterCompany && !entry.name.toLowerCase().includes(filterCompany))) continue;
+      sources.push({ company: entry.name, source: entry.provider || 'unsupported', status: 'unsupported' });
+    }
+    printReceipt(JSON.stringify({ version: 'careerops.scan.live@1', startedAt: scanStartedAt,
+      completedAt: new Date().toISOString(), found: totalFound, duplicates: totalDupes,
+      sources, errors: errors.map(e => ({ company: e.company, error: e.error })), jobs: liveMatches }));
+  }
 
   // One-time-ever manifesto note: first successful REAL run only. The state
   // file keeps it from ever repeating; --dry-run must leave no trace, and a

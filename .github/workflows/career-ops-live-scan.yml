@@ -1,0 +1,36 @@
+name: Career Ops live portal scan
+run-name: Career Ops scan ${{ inputs.scan_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      scan_id:
+        description: Authenticated durable scan identifier
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: career-ops-live-portal-scans
+  cancel-in-progress: false
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SCAN_ID: ${{ inputs.scan_id }}
+      CAREER_OPS_SCAN_WORKER_SECRET: ${{ secrets.CAREER_OPS_SCAN_WORKER_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install scanner dependencies
+        # The upstream repository deliberately does not track a root lockfile.
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Scan configured portals now
+        run: node web/scripts/cloud-scan-worker.mjs
+      - name: Persist worker failure
+        if: failure()
+        run: node web/scripts/cloud-scan-worker.mjs --fail

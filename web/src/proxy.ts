@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CLOUD_EXECUTION_MESSAGE, isCloudRuntime } from "@/lib/deployment";
 import { isAllowedCloudAiRequest } from "@/lib/ai/cloud-ai-gate.mjs";
+import { workerAuthorized } from "@/lib/cloud-scans.mjs";
 
 const SAFE_CLOUD_API_PATHS = new Set([
   "/api/health",
@@ -54,6 +55,13 @@ function isAuthorized(request: NextRequest, expected: { username: string; passwo
 export function proxy(request: NextRequest) {
   if (!isCloudRuntime()) return NextResponse.next();
 
+  // This bearer credential is scoped to the worker callback only. It cannot
+  // reach browser routes, CVs, general mutations or application assistance.
+  if (request.nextUrl.pathname === '/api/scan-worker') {
+    if (request.method === 'POST' && workerAuthorized(request.headers.get('authorization'))) return NextResponse.next();
+    return NextResponse.json({ code: 'WORKER_UNAUTHORIZED' }, { status: 401 });
+  }
+
   const credentials = configuredCredentials();
   if (!credentials) {
     return NextResponse.json(
@@ -73,6 +81,8 @@ export function proxy(request: NextRequest) {
   }
 
   const pathname = request.nextUrl.pathname;
+  if ((pathname === '/api/scans' && request.method === 'POST') ||
+      (/^\/api\/scans\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method))) return NextResponse.next();
   const hostedStatus = {
     hosted: true,
     ready: Boolean(process.env.GEMINI_API_KEY?.trim()),

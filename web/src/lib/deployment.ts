@@ -15,10 +15,13 @@ export const CLOUD_EXECUTION_MESSAGE =
 
 export function cloudHealth() {
   const cloud = isCloudRuntime();
+  const liveScans = Boolean(process.env.DATABASE_URL && process.env.CAREER_OPS_SCAN_DISPATCH_TOKEN && process.env.CAREER_OPS_SCAN_WORKER_SECRET && process.env.CAREER_OPS_SCAN_REF);
   return {
     status: "ok" as const,
     runtime: cloud ? "vercel" : "local",
-    execution: cloud ? "disabled-pending-worker" : "local-enabled",
+    execution: cloud ? (liveScans ? "on-demand-portal-worker" : "disabled-pending-worker") : "local-enabled",
     scheduler: cloud ? "external-worker-required" : "local-task-scheduler",
+    scans: { available: cloud && liveScans, modes: cloud && liveScans ? ['portals'] : [], worker: cloud && liveScans ? 'github-actions' : null },
+    scheduledExecution: !cloud,
   };
 }

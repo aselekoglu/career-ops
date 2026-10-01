@@ -142,6 +142,8 @@ export function parseWorkdayResponse(json, entry) {
       company: entry.name,
       location: j.locationsText || locationFromPath(j.externalPath),
       postedAt: parsePostedOn(j.postedOn),
+      postedAtEvidence: typeof j.postedOn === 'string' ? j.postedOn : null,
+      postedAtPrecision: 'day',
     });
   }
   return jobs;
