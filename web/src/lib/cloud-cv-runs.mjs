@@ -463,6 +463,7 @@ function withDownload(request, run) {
   return Object.assign({}, run, { downloadUrl: url.toString() });
 }
 
+/** @param {Request} request @param {string|null} [id] */
 export async function handleCvRunRequest(request, id = null) {
   try {
     if (id) {
