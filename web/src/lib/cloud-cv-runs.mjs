@@ -37,8 +37,8 @@ const MAX_POSTING_CHARS = 24_000;
 const MAX_CV_CHARS = 18_000;
 const MAX_PROFILE_CHARS = 4_000;
 const MAX_REPORT_CHARS = 20_000;
-const MAX_RULES_CHARS = 18_000;
-const MAX_TEMPLATE_CHARS = 34_000;
+const MAX_RULES_CHARS = 28_000;
+const MAX_TEMPLATE_CHARS = 20_000;
 
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const json = (body, status = 200) => Response.json(body, {
