@@ -1,0 +1,41 @@
+name: Career Ops CV render
+run-name: Career Ops CV ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Authenticated durable CV run identifier
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: career-ops-cv-render
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CV_RUN_ID: ${{ inputs.run_id }}
+      CAREER_OPS_SCAN_WORKER_SECRET: ${{ secrets.CAREER_OPS_SCAN_WORKER_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install renderer dependencies
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npx playwright install chromium --with-deps
+      - name: Render tailored CV
+        run: node web/scripts/cloud-cv-worker.mjs
+      - name: Persist worker failure
+        if: failure()
+        run: node web/scripts/cloud-cv-worker.mjs --fail
