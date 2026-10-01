@@ -1,9 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
 
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 192 * 1024;
 const MAX_HISTORY = 20;
 const MAX_MESSAGE_CHARS = 8_000;
 const MAX_SYSTEM_CHARS = 16_000;
+const MAX_CV_MESSAGE_CHARS = 32_000;
+const MAX_CV_SYSTEM_CHARS = 64_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MODEL = "gemini-3.8-flash";
 
@@ -13,14 +15,16 @@ function hostedAiError(code, message) {
 
 function validateInput(input) {
   const invalid = () => hostedAiError("HOSTED_AI_INPUT_TOO_LARGE", "Hosted AI request is invalid or too large.");
-  if (!input || (input.task !== "assistant" && input.task !== "explore")) throw invalid();
-  if (typeof input.system !== "string" || input.system.length > MAX_SYSTEM_CHARS) throw invalid();
+  if (!input || !["assistant", "explore", "cv"].includes(input.task)) throw invalid();
+  const systemLimit = input.task === "cv" ? MAX_CV_SYSTEM_CHARS : MAX_SYSTEM_CHARS;
+  const messageLimit = input.task === "cv" ? MAX_CV_MESSAGE_CHARS : MAX_MESSAGE_CHARS;
+  if (typeof input.system !== "string" || input.system.length > systemLimit) throw invalid();
   if (typeof input.webSearch !== "boolean") throw invalid();
   if (!Array.isArray(input.messages) || input.messages.length > MAX_HISTORY) throw invalid();
   for (const message of input.messages) {
     if (!message || (message.role !== "user" && message.role !== "assistant")) throw invalid();
     if (typeof message.content !== "string") throw invalid();
-    if (message.role === "user" && message.content.length > MAX_MESSAGE_CHARS) throw invalid();
+    if (message.role === "user" && message.content.length > messageLimit) throw invalid();
   }
   const body = {
     task: input.task,
@@ -59,7 +63,7 @@ export function createGeminiProvider(client) {
         model: MODEL,
         input: history,
         system_instruction: input.system,
-        generation_config: { max_output_tokens: input.task === "explore" ? 4096 : 2048 },
+        generation_config: { max_output_tokens: input.task === "cv" ? 8192 : input.task === "explore" ? 4096 : 2048 },
         ...(input.task === "explore" && input.webSearch ? { tools: [{ type: "google_search" }] } : {}),
         stream: true,
         store: false,
