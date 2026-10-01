@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
-const MAX_BODY_BYTES = 192 * 1024;
+const MAX_BODY_BYTES = 64 * 1024;
+const MAX_CV_BODY_BYTES = 192 * 1024;
 const MAX_HISTORY = 20;
 const MAX_MESSAGE_CHARS = 8_000;
 const MAX_SYSTEM_CHARS = 16_000;
@@ -32,7 +33,8 @@ function validateInput(input) {
     messages: input.messages,
     webSearch: input.webSearch,
   };
-  if (Buffer.byteLength(JSON.stringify(body), "utf8") > MAX_BODY_BYTES) throw invalid();
+  const bodyLimit = input.task === "cv" ? MAX_CV_BODY_BYTES : MAX_BODY_BYTES;
+  if (Buffer.byteLength(JSON.stringify(body), "utf8") > bodyLimit) throw invalid();
 }
 
 function normalizeProviderError(error, signal, timedOut) {
