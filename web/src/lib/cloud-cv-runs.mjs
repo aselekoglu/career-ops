@@ -265,7 +265,7 @@ export function cvWorkerConfigured(env = process.env) {
     env.GEMINI_API_KEY &&
     env.CAREER_OPS_SCAN_DISPATCH_TOKEN &&
     env.CAREER_OPS_SCAN_WORKER_SECRET &&
-    (env.CAREER_OPS_CV_REF || env.VERCEL_GIT_COMMIT_REF || env.CAREER_OPS_SCAN_REF),
+    (env.CAREER_OPS_CV_REF || env.CAREER_OPS_SCAN_REF || env.VERCEL_GIT_COMMIT_REF),
   );
 }
 
