@@ -4,6 +4,7 @@ import { createHostedAiService } from "./ai/hosted-ai.mjs";
 import { load as parseYaml } from "js-yaml";
 import { HOSTED_EVALUATION_RULES, HOSTED_MACHINE_SUMMARY_SCHEMA } from "./ai/hosted-evaluation-assets.mjs";
 import { parseApplications as parseTrackerApplications } from "./tracker-table.mjs";
+import { ensureCareerOpsReportNumbering, reserveCareerOpsReportNumber, MAX_STORED_REPORT_NUMBER_SQL } from "./cloud-report-numbering.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
@@ -15,11 +16,6 @@ const TABLE = `CREATE TABLE IF NOT EXISTS career_ops_evaluation_runs (
  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(), started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
  lease UUID, error_code TEXT, workflow_url TEXT, diagnostic_code TEXT, failed_draft TEXT
 )`;
-const MAX_STORED_REPORT_NUMBER = `GREATEST(
- COALESCE((SELECT MAX((regexp_match(path,'^reports/([0-9]+)-'))[1]::int) FROM career_ops_documents WHERE path LIKE 'reports/%'),0),
- COALESCE((SELECT MAX(capture[1]::int) FROM career_ops_documents d CROSS JOIN LATERAL regexp_matches(d.content,'^\\|\\s*(\\d+)', 'gm') AS matches(capture) WHERE d.path='data/applications.md'),0)
-)`;
-const REPORT_COUNTER_TABLE = "CREATE TABLE IF NOT EXISTS career_ops_evaluation_report_counter (singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK(singleton), last_number INTEGER NOT NULL CHECK(last_number >= 0))";
 const MAX_BODY = 32000, MAX_JD_BYTES = 1_500_000, MAX_JD_CHARS = 24_000, MAX_REPORT_CHARS = 40_000;
 const sha = value => createHash("sha256").update(value).digest("hex");
 const json = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -175,7 +171,7 @@ export function validateEvaluationReport(report, archivedPosting = null, expecte
 export function createCloudEvaluationStore({ sql, env = process.env, dispatch = dispatchEvaluation, generate = generateEvaluation, fetchFn = fetch }) {
  let initialized;
  async function ready() {
-  if(!initialized) initialized=(async()=>{ await sql.query(TABLE,[]); await sql.query("ALTER TABLE career_ops_evaluation_runs ADD COLUMN IF NOT EXISTS diagnostic_code TEXT, ADD COLUMN IF NOT EXISTS failed_draft TEXT",[]); await sql.query(REPORT_COUNTER_TABLE,[]); await sql.query(`INSERT INTO career_ops_evaluation_report_counter(singleton,last_number) SELECT TRUE,${MAX_STORED_REPORT_NUMBER} ON CONFLICT(singleton) DO UPDATE SET last_number=GREATEST(career_ops_evaluation_report_counter.last_number,EXCLUDED.last_number)`,[]); await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS career_ops_evaluation_active_key ON career_ops_evaluation_runs(target_key)",[]); })().catch(e=>{initialized=null;throw e;});
+  if(!initialized) initialized=(async()=>{ await sql.query(TABLE,[]); await sql.query("ALTER TABLE career_ops_evaluation_runs ADD COLUMN IF NOT EXISTS diagnostic_code TEXT, ADD COLUMN IF NOT EXISTS failed_draft TEXT",[]); await ensureCareerOpsReportNumbering(sql); await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS career_ops_evaluation_active_key ON career_ops_evaluation_runs(target_key)",[]); })().catch(e=>{initialized=null;throw e;});
   await initialized;
   await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT',completed_at=now() WHERE state IN ('queued','running','committing') AND requested_at < now() - interval '45 minutes'",[]);
  }
@@ -232,8 +228,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     let applicationNumber=request.applicationNumber||null;
     const existingTrackerRows=await parseTracker(trackerDoc?.content);
     if(request.url){const priorReports=await sql.query("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8'",[]);const prior=priorReports.find(x=>reportUrl(x.content)===job.url);const num=String(prior?.path||"").match(/^reports\/(\d+)-/)?.[1];if(num&&existingTrackerRows.some(x=>x.n===String(Number(num))))applicationNumber=String(Number(num));}
-    const allocation=applicationNumber?null:(await sql.query(`INSERT INTO career_ops_evaluation_report_counter(singleton,last_number) SELECT TRUE,${MAX_STORED_REPORT_NUMBER}+1 ON CONFLICT(singleton) DO UPDATE SET last_number=GREATEST(career_ops_evaluation_report_counter.last_number+1,EXCLUDED.last_number) RETURNING last_number AS num`,[]))[0];
-    const reportNumber=applicationNumber||String(allocation.num);
+    const reportNumber=applicationNumber||await reserveCareerOpsReportNumber(sql);
     const posting=await fetchPosting(job.url,fetchFn);
     if(blacklist && isBlacklisted(blacklist.content,job.company)) throw new Error("BLACKLIST_GATE_BLOCKED");
     const generated=await generate({url:job.url,company:job.company,role:job.role,posting,cv:cv.content,profile:profile.content,profileRules:profileRules.content,oferta:HOSTED_EVALUATION_RULES,shared:"",custom:custom?.content||"",machineSummary:HOSTED_MACHINE_SUMMARY_SCHEMA,articleDigest:articleDigest?.content||"",applicationNumber:reportNumber,today:new Date().toISOString().slice(0,10)});
@@ -307,4 +302,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER,hostedEvaluationErrorCode,safeErrorMessage};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};

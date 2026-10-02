@@ -82,6 +82,8 @@ export function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   if ((pathname === '/api/scans' && request.method === 'POST') ||
+      ((pathname === '/api/tracker/commands' || pathname === '/api/inbox/commands') && request.method === 'POST') ||
+      (/^\/api\/tracker\/[1-9]\d{0,7}$/.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
       (/^\/api\/scans\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
       (pathname === '/api/cv-runs' && request.method === 'POST') ||
       (/^\/api\/cv-runs\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
