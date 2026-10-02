@@ -3,7 +3,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createHostedAiService } from "./ai/hosted-ai.mjs";
 import { load as parseYaml } from "js-yaml";
 import { HOSTED_EVALUATION_RULES, HOSTED_MACHINE_SUMMARY_SCHEMA } from "./ai/hosted-evaluation-assets.mjs";
-import { parseTrackerRow, resolveColumns } from "../../../tracker-parse.mjs";
+import { parseApplications as parseTrackerApplications } from "./tracker-table.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TABLE = `CREATE TABLE IF NOT EXISTS career_ops_evaluation_runs (
@@ -58,12 +58,6 @@ function parseInbox(content) {
   const parts = m[2].split("|").map(s => s.trim());
   if (parts.length >= 3) rows.push({ done: m[1].toLowerCase() === "x", url: parts[0], company: parts[1], role: parts[2] });
  }
- return rows;
-}
-function parseApplications(content) {
- const lines = String(content ?? "").split(/\r?\n/), columns = resolveColumns(lines);
- const rows = [];
- for (const line of lines) { const row = parseTrackerRow(line, columns); if (row) rows.push(row); }
  return rows;
 }
 function normalizeCompany(value) { return String(value ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,""); }
@@ -132,6 +126,14 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
  }
  const readDoc=async path=>{const row=(await sql.query("SELECT path,content,sha256,content_encoding FROM career_ops_documents WHERE path=$1",[path]))[0]??null;return row?.content_encoding==="utf8"?row:null;};
  const find=async id=>(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE id=$1",[id]))[0]??null;
+ let trackerAliases;
+ async function parseTracker(content) {
+  if (trackerAliases === undefined) {
+   const doc = await readDoc("data/tracker-aliases.json");
+   try { trackerAliases = doc ? JSON.parse(doc.content) : {}; } catch { trackerAliases = {}; }
+  }
+  return parseTrackerApplications(String(content ?? ""), "", trackerAliases);
+ }
  return {
   async start(raw) {
    if(!workerConfigured(env)) throw new Error("EVALUATION_WORKER_NOT_CONFIGURED");
@@ -145,7 +147,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
    let company,role,url,applicationNumber=null;
    if(request.url) { const job=parseInbox(inboxDoc.content).find(x=>x.url===request.url); if(!job || (job.done && !request.idempotencyKey)) throw new Error("URL_NOT_IN_INBOX"); ({company,role,url}=job); }
    else {
-    const row=parseApplications(trackerDoc.content).find(x=>String(x.num)===request.applicationNumber); if(!row) throw new Error("APPLICATION_NOT_FOUND");
+    const row=(await parseTracker(trackerDoc.content)).find(x=>x.n===request.applicationNumber); if(!row) throw new Error("APPLICATION_NOT_FOUND");
     // Resolve the canonical report path from the markdown link; report documents are keyed by full path.
     const pathMatch=String(row.report||"").match(/(?:\.\.\/|\/)reports\/([^\s)]+)/); const prior=pathMatch ? await readDoc(`reports/${pathMatch[1]}`) : null;
     url=reportUrl(prior?.content); if(!url) throw new Error("APPLICATION_REPORT_NOT_FOUND");
@@ -169,10 +171,11 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     const [trackerDoc,inboxDoc,cv,profile,profileRules,custom,articleDigest,blacklist]=await Promise.all(["data/applications.md","data/pipeline.md","cv.md","config/profile.yml","modes/_profile.md","modes/_custom.md","article-digest.md","data/blacklist.md"].map(readDoc));
     const request=claimed.request; let job;
     if(request.url) job=parseInbox(inboxDoc?.content).find(x=>x.url===request.url);
-    else { const row=parseApplications(trackerDoc?.content).find(x=>String(x.num)===request.applicationNumber); const pathMatch=String(row?.report||"").match(/(?:\.\.\/|\/)reports\/([^\s)]+)/); const prior=pathMatch?await readDoc(`reports/${pathMatch[1]}`):null; job={url:reportUrl(prior?.content),company:row?.company,role:row?.role}; }
+    else { const row=(await parseTracker(trackerDoc?.content)).find(x=>x.n===request.applicationNumber); const pathMatch=String(row?.report||"").match(/(?:\.\.\/|\/)reports\/([^\s)]+)/); const prior=pathMatch?await readDoc(`reports/${pathMatch[1]}`):null; job={url:reportUrl(prior?.content),company:row?.company,role:row?.role}; }
     if(!job?.url || !cv || !profile || !profileRules) throw new Error("EVALUATION_INPUTS_NOT_IMPORTED");
     let applicationNumber=request.applicationNumber||null;
-    if(request.url){const priorReports=await sql.query("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8'",[]);const prior=priorReports.find(x=>reportUrl(x.content)===job.url);const num=String(prior?.path||"").match(/^reports\/(\d+)-/)?.[1];if(num&&parseApplications(trackerDoc?.content).some(x=>String(x.num)===String(Number(num))))applicationNumber=String(Number(num));}
+    const existingTrackerRows=await parseTracker(trackerDoc?.content);
+    if(request.url){const priorReports=await sql.query("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8'",[]);const prior=priorReports.find(x=>reportUrl(x.content)===job.url);const num=String(prior?.path||"").match(/^reports\/(\d+)-/)?.[1];if(num&&existingTrackerRows.some(x=>x.n===String(Number(num))))applicationNumber=String(Number(num));}
     const allocation=applicationNumber?null:(await sql.query(`INSERT INTO career_ops_evaluation_report_counter(singleton,last_number) SELECT TRUE,${MAX_STORED_REPORT_NUMBER}+1 ON CONFLICT(singleton) DO UPDATE SET last_number=GREATEST(career_ops_evaluation_report_counter.last_number+1,EXCLUDED.last_number) RETURNING last_number AS num`,[]))[0];
     const reportNumber=applicationNumber||String(allocation.num);
     const posting=await fetchPosting(job.url,fetchFn);
@@ -187,14 +190,14 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     const number=String(reportNumber).padStart(3,"0"),slug=String(job.company).toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,72)||"company";
     const reportPath=`reports/${number}-${slug}-${new Date().toISOString().slice(0,10)}${applicationNumber?`-rerun-${id.slice(0,8)}`:""}.md`;
     const reportContent=report.trim()+"\n";
-    const lines=tracker.content.split(/\r?\n/); const cols=resolveColumns(lines);
+    const lines=tracker.content.split(/\r?\n/); const trackerRows=await parseTracker(tracker.content);
     const headers=lines.find(x=>x.startsWith("|")&&x.includes("#")&&x.includes("Company")&&!/^\|[\s|:-]+\|$/.test(x));
     if(!headers) throw new Error("TRACKER_FORMAT_INVALID");
     const headerCells=headers.split("|").slice(1,-1).map(x=>x.trim().toLowerCase());
     const values=Array(headerCells.length).fill("");
     const assign=(key,value)=>{const i=headerCells.findIndex(x=>x===key||x.startsWith(key+" ")); if(i>=0) values[i]=cleanCell(value);};
     const date=new Date().toISOString().slice(0,10);
-    if(applicationNumber){const appRow=lines.findIndex(x=>parseTrackerRow(x,cols)?.num===Number(applicationNumber)); if(appRow<0) throw new Error("APPLICATION_NOT_FOUND"); const original=lines[appRow].split("|").slice(1,-1).map(x=>x.trim()); const set=(k,v)=>{const i=headerCells.findIndex(x=>x===k||x.startsWith(k+" "));if(i>=0)original[i]=cleanCell(v);}; set("score",`${score.toFixed(1)}/5`);set("report",`[${applicationNumber}](../${reportPath})`);lines[appRow]=`| ${original.join(" | ")} |`; }
+    if(applicationNumber){const app=trackerRows.find(x=>x.n===applicationNumber);const appRow=app?lines.findIndex(x=>x.trim()===app.raw):-1; if(appRow<0) throw new Error("APPLICATION_NOT_FOUND"); const original=lines[appRow].split("|").slice(1,-1).map(x=>x.trim()); const set=(k,v)=>{const i=headerCells.findIndex(x=>x===k||x.startsWith(k+" "));if(i>=0)original[i]=cleanCell(v);}; set("score",`${score.toFixed(1)}/5`);set("report",`[${applicationNumber}](../${reportPath})`);lines[appRow]=`| ${original.join(" | ")} |`; }
     else {assign("#",String(reportNumber));assign("date",date);assign("company",job.company);assign("role",job.role);assign("score",`${score.toFixed(1)}/5`);assign("status","Evaluated");assign("pdf","❌");assign("report",`[${reportNumber}](../${reportPath})`);assign("notes",`Evaluated from exact inbox URL: ${job.url}`);lines.push(`| ${values.join(" | ")} |`);}
     const trackerContent=lines.join("\n").replace(/\n*$/,"\n");
     const inboxLines=inbox.content.split(/\r?\n/); let inboxChanged=false;
@@ -245,4 +248,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications,reportUrl,validateEvaluationReport,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker};

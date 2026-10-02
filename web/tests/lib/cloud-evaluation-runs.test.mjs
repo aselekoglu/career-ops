@@ -79,6 +79,13 @@ test("input validation preserves exact URL identity and requires an unpadded tra
   assert.throws(() => __test.normalizeInput({ applicationNumber: "052" }), { message: "INVALID_APPLICATION_NUMBER" });
 });
 
+test("evaluation module uses the web tracker parser and preserves its `n` application ID", () => {
+  const aliases = { "#": "num", date: "date", company: "company", role: "role", score: "score", status: "status", pdf: "pdf", report: "report", notes: "notes" };
+  const rows = __test.parseApplications("| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n| 52 | 2026-10-02 | Kinaxis | Engineer | 4.2/5 | Interview | ❌ | [52](../reports/052-kinaxis.md) | Existing |", "", aliases);
+  assert.equal(rows[0].n, "52");
+  assert.equal(rows[0].status, "Interview");
+});
+
 test("report validation requires canonical schema, matching score, URL, and exact archived posting", () => {
   const complete = `${generatedReport()}\n\n## Job Description (archived verbatim)\n\n${posting}\n`;
   assert.equal(__test.validateEvaluationReport(complete, posting, { url, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer" }), 4.2);
