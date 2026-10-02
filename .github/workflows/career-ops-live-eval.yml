@@ -1,0 +1,34 @@
+name: Career Ops live evaluation
+run-name: Career Ops evaluation ${{ inputs.evaluation_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      evaluation_id:
+        description: Authenticated durable evaluation identifier
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: career-ops-live-evaluation-${{ inputs.evaluation_id }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EVALUATION_ID: ${{ inputs.evaluation_id }}
+      CAREER_OPS_SCAN_WORKER_SECRET: ${{ secrets.CAREER_OPS_SCAN_WORKER_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Trigger durable evaluation
+        run: node web/scripts/cloud-evaluation-worker.mjs
