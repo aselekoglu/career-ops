@@ -89,8 +89,10 @@ test("evaluation module uses the web tracker parser and preserves its `n` applic
 test("report validation requires canonical schema, matching score, URL, and exact archived posting", () => {
   const complete = `${generatedReport()}\n\n## Job Description (archived verbatim)\n\n${posting}\n`;
   assert.equal(__test.validateEvaluationReport(complete, posting, { url, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer" }), 4.2);
-  assert.throws(() => __test.validateEvaluationReport(complete.replace(posting, `${posting} altered`), posting), { message: "EVALUATION_INVALID_RESULT" });
-  assert.throws(() => __test.validateEvaluationReport(complete.replace("score: 4.2", "score: 3.1"), posting), { message: "EVALUATION_INVALID_RESULT" });
+  assert.throws(() => __test.validateEvaluationReport(complete.replace(posting, `${posting} altered`), posting), { message: "EVALUATION_INVALID_RESULT:archive_mismatch" });
+  assert.throws(() => __test.validateEvaluationReport(complete.replace("score: 4.2", "score: 3.1"), posting), { message: "EVALUATION_INVALID_RESULT:machine_summary_score_mismatch" });
+  assert.throws(() => __test.validateEvaluationReport(complete.replace("## F) Interview Plan", "## Interview Plan"), posting), { message: "EVALUATION_INVALID_RESULT:missing_f_interview" });
+  assert.equal(__test.validateEvaluationReport(complete.replace("**Verification:** unconfirmed (hosted evaluation)\n", ""), posting, {url,company:"Kinaxis",role:"Co-op Intern, Forward Deployed Engineer"}), 4.2);
 });
 
 test("worker credential accepts only its configured bearer value", () => {
@@ -116,10 +118,23 @@ test("report prompt identifies the posting as untrusted data", () => {
   assert.match(prompt.user, /Report\/tracker number: 52/);
 });
 
+test("platform supplies the hosted verification label without requiring generated text to include it", () => {
+  const header = `**URL:** ${url}\n**Score:** 4.2/5`;
+  assert.equal(__test.addHostedVerification(header), `**URL:** ${url}\n**Verification:** unconfirmed (hosted evaluation)\n**Score:** 4.2/5`);
+  assert.equal(__test.addHostedVerification(`${header}\n**Verification:** unconfirmed (hosted evaluation)`), `${header}\n**Verification:** unconfirmed (hosted evaluation)`);
+});
+
+test("public failure result carries a bounded validator reason without exposing the draft", () => {
+  const run = __test.publicRun({ id: "77777777-7777-4777-8777-777777777777", state: "failed", requested_at: new Date("2026-10-02T00:00:00Z"), error_code: "EVALUATION_INVALID_RESULT", diagnostic_code: "missing_f_interview", failed_draft: "PRIVATE GENERATED CONTENT" });
+  assert.equal(run.errorMessage, "The evaluator did not return a complete valid report. [missing_f_interview]");
+  assert.equal("failedDraft" in run, false);
+  assert.equal(__test.publicRun({ id: run.runId, state: "failed", requested_at: new Date("2026-10-02T00:00:00Z"), error_code: "EVALUATION_INVALID_RESULT", diagnostic_code: "private value" }).errorMessage, "The evaluator did not return a complete valid report.");
+});
+
 test("duplicate exact URL returns durable run before inspecting the checked inbox", async () => {
   const run = { id: "11111111-1111-4111-8111-111111111111", state: "completed", target_key: `url:${url}:default`, request: { url }, requested_at: new Date("2026-10-02T00:00:00Z"), completed_at: new Date("2026-10-02T00:01:00Z"), application_number: "52", score: "4.2", report_path: "reports/052-kinaxis-2026-10-02.md" };
   const sql = { async query(statement, params = []) {
-    if (/^CREATE |^SELECT setval|^UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT'/.test(statement)) return [];
+    if (/^(CREATE |ALTER TABLE |SELECT setval|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
     if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return params[0] === run.target_key ? [run] : [];
     throw new Error(`Unexpected SQL: ${statement}`);
@@ -144,7 +159,7 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
   let nextNumber = 52;
   let commitConflict = false;
   const sql = { async query(statement, params = []) {
-    if (/^CREATE |^SELECT setval|^UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT'/.test(statement)) return [];
+    if (/^(CREATE |ALTER TABLE |SELECT setval|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
     if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return statement.includes("RETURNING last_number") ? [{ num: nextNumber++ }] : [];
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return [];
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=")) return [];
@@ -169,11 +184,11 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
       Object.assign(run, { state: "completed", report_path: params[2], application_number: params[14], completed_at: new Date("2026-10-02T00:02:00Z") });
       return [run];
     }
-    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed'")) { Object.assign(run, { state: "failed", error_code: params[2] }); return []; }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed'")) { Object.assign(run, { state: "failed", error_code: params[2], diagnostic_code: params[3], failed_draft: params[4] }); return []; }
     throw new Error(`Unexpected SQL: ${statement}`);
   } };
-  let generatedCount = 0;
-  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => {}, fetchFn: async () => new Response(`<html><body>${posting}</body></html>`, { status: 200 }), generate: async () => { generatedCount++; return generatedReport(); } });
+  let generatedCount = 0, generated = generatedReport();
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => {}, fetchFn: async () => new Response(`<html><body>${posting}</body></html>`, { status: 200 }), generate: async () => { generatedCount++; return generated; } });
   const queued = await store.start({ url });
   const completed = await store.process(queued.runId);
   assert.equal(completed.status, "completed");
@@ -193,6 +208,15 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
   assert.equal(failed.applicationNumber, null);
   assert.equal(failed.errorCode, "EVALUATION_WRITE_CONFLICT");
   assert.deepEqual([...files.entries()], beforeRetry);
+  commitConflict = false;
+  generated = generatedReport().replace("## F) Interview Plan", "## Interview Plan");
+  const invalidRun = await store.start({ url, idempotencyKey: "invalid-format-diagnostic" });
+  const invalid = await store.process(invalidRun.runId);
+  assert.equal(invalid.errorCode, "EVALUATION_INVALID_RESULT");
+  assert.equal(invalid.diagnosticCode, "missing_f_interview");
+  const invalidDetails = await store.get(invalid.runId);
+  assert.ok(invalidDetails.failedDraft.includes("## Interview Plan"));
+  assert.deepEqual([...files.entries()], beforeRetry, "invalid report must not write a report, tracker row, or inbox completion");
 });
 
 test("explicit application reevaluation keeps its tracker lifecycle state", async () => {
@@ -206,7 +230,7 @@ test("explicit application reevaluation keeps its tracker lifecycle state", asyn
   ]);
   const run = { id: "44444444-4444-4444-8444-444444444444", state: "queued", request: { applicationNumber: "52" }, target_key: "application:52:default", application_number: "52", requested_at: new Date("2026-10-02T00:00:00Z") };
   const sql = { async query(statement, params = []) {
-    if (/^CREATE |^SELECT setval|^UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT'/.test(statement)) return [];
+    if (/^(CREATE |ALTER TABLE |SELECT setval|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
     if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [run];
     if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
