@@ -6,7 +6,8 @@ import { HOSTED_EVALUATION_RULES, HOSTED_MACHINE_SUMMARY_SCHEMA } from "./ai/hos
 import { parseApplications as parseTrackerApplications } from "./tracker-table.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const VALID_REPORT_DIAGNOSTICS = new Set(["not_text","report_too_short","report_too_long","missing_or_malformed_score","score_out_of_range","missing_url","missing_legitimacy","missing_machine_summary","missing_a_role_summary","missing_b_match_with_cv","missing_c_level_strategy","missing_d_comp_demand","missing_e_customization","missing_f_interview","missing_g_legitimacy","missing_risk_summary","missing_job_archive","archive_too_short","archive_mismatch","machine_summary_yaml_missing","machine_summary_yaml_invalid","machine_summary_not_object","machine_summary_missing_fields","machine_summary_score_mismatch","machine_summary_risk_summary_invalid","company_mismatch","role_mismatch","url_mismatch"]);
+const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
+const VALID_REPORT_DIAGNOSTICS = new Set(["not_text","report_too_short","report_too_long","missing_or_malformed_score","score_out_of_range","missing_url","missing_legitimacy","missing_machine_summary","missing_a_role_summary","missing_b_match_with_cv","missing_c_level_strategy","missing_d_comp_demand","missing_e_customization","missing_f_interview","missing_g_legitimacy","missing_risk_summary","missing_risk_summary_rows","missing_job_archive","archive_too_short","archive_mismatch","machine_summary_yaml_missing","machine_summary_yaml_invalid","machine_summary_not_object","machine_summary_missing_fields","machine_summary_score_mismatch","machine_summary_risk_summary_invalid","company_mismatch","role_mismatch","url_mismatch"]);
 const TABLE = `CREATE TABLE IF NOT EXISTS career_ops_evaluation_runs (
  id UUID PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('queued','running','committing','completed','failed')),
  request JSONB NOT NULL, target_key TEXT NOT NULL UNIQUE, idempotency_key TEXT UNIQUE,
@@ -15,7 +16,7 @@ const TABLE = `CREATE TABLE IF NOT EXISTS career_ops_evaluation_runs (
  lease UUID, error_code TEXT, workflow_url TEXT, diagnostic_code TEXT, failed_draft TEXT
 )`;
 const MAX_STORED_REPORT_NUMBER = `GREATEST(
- COALESCE((SELECT MAX((regexp_match(path,'^([0-9]+)-'))[1]::int) FROM career_ops_documents WHERE path LIKE 'reports/%'),0),
+ COALESCE((SELECT MAX((regexp_match(path,'^reports/([0-9]+)-'))[1]::int) FROM career_ops_documents WHERE path LIKE 'reports/%'),0),
  COALESCE((SELECT MAX(capture[1]::int) FROM career_ops_documents d CROSS JOIN LATERAL regexp_matches(d.content,'^\\|\\s*(\\d+)', 'gm') AS matches(capture) WHERE d.path='data/applications.md'),0)
 )`;
 const REPORT_COUNTER_TABLE = "CREATE TABLE IF NOT EXISTS career_ops_evaluation_report_counter (singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK(singleton), last_number INTEGER NOT NULL CHECK(last_number >= 0))";
@@ -78,6 +79,37 @@ function addHostedVerification(report) {
  if (/^\*\*Verification:\*\*\s*unconfirmed\s*\(hosted evaluation\)/mi.test(report)) return report;
  return report.replace(/^(\*\*URL:\*\*\s*https?:\/\/[^\r\n]+)$/mi, "$1\n**Verification:** unconfirmed (hosted evaluation)");
 }
+function machineSummaryFrom(report, invalid = code => { throw new Error(`EVALUATION_INVALID_RESULT:${code}`); }) {
+ const heading=/^#{2,6}\s+Machine Summary\s*$/mi.exec(report); if(!heading)return invalid("machine_summary_yaml_missing");
+ const remainder=report.slice(heading.index+heading[0].length), fence=remainder.match(/^\s*```(?:yaml)?\s*([\s\S]*?)^\s*```/im);
+ if(!fence)return invalid("machine_summary_yaml_missing");
+ try {const value=parseYaml(fence[1]);if(!value||typeof value!=="object"||Array.isArray(value))return invalid("machine_summary_not_object");return value;}catch{return invalid("machine_summary_yaml_invalid");}
+}
+function validateRiskSummary(value, invalid = code => { throw new Error(`EVALUATION_INVALID_RESULT:${code}`); }) {
+ if(!value||typeof value!=="object"||Array.isArray(value))return invalid("machine_summary_risk_summary_invalid");
+ const keys=Object.keys(RISK_ENUMS);
+ if(keys.some(k=>!(k in value))||Object.keys(value).some(k=>!(k in RISK_ENUMS)))return invalid("machine_summary_risk_summary_invalid");
+ for(const key of keys)if(typeof value[key]!=="string"||!RISK_ENUMS[key].includes(value[key]))return invalid("machine_summary_risk_summary_invalid");
+ return value;
+}
+function riskSummaryTable(risk) {
+ const text={
+  legitimacy:{high_confidence:"✅ High Confidence",proceed_with_caution:"⚠️ Proceed with Caution",suspicious:"⚠️ Suspicious"},
+  classification:{clear:"✅ clear",flagged:"⚠️ flagged",not_evaluated:"— not evaluated"},
+  culture:{pass:"✅ pass",caution:"⚠️ caution",fail:"⚠️ fail",not_evaluated:"— not evaluated"},
+  interview_redflags:{none:"✅ none",caution:"⚠️ caution",warning:"⚠️ warning",not_evaluated:"— no interview sessions yet"},
+  ai_infra:{consistent:"✅ consistent",mismatch:"⚠️ mismatch",not_evaluated:"— not evaluated"},
+ };
+ const names={legitimacy:"Posting legitimacy",classification:"Employment classification",culture:"Culture screen",interview_redflags:"Interview red flags",ai_infra:"AI claims vs. infrastructure"};
+ return `## Risk Summary\n\n| Signal | Status |\n|--------|--------|\n${Object.keys(RISK_ENUMS).map(k=>`| ${names[k]} | ${text[k][risk[k]]} |`).join("\n")}`;
+}
+export function normalizeGeneratedReport(report) {
+ const invalid=code=>{throw new Error(`EVALUATION_INVALID_RESULT:${code}`);};
+ let output=String(report??"").replace(/^#{2,6}\s+(Machine Summary|Risk Summary)\s*$/gmi,"## $1");
+ const summary=machineSummaryFrom(output,invalid);const risk=validateRiskSummary(summary.risk_summary,invalid);
+ if(!/^## Risk Summary\s*$/mi.test(output))output=`${output.trimEnd()}\n\n${riskSummaryTable(risk)}\n`;
+ return output;
+}
 function normalizeInput(input) {
  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("INVALID_EVALUATION_REQUEST");
  const allowed = new Set(["url", "applicationNumber", "idempotencyKey"]);
@@ -123,14 +155,15 @@ export function validateEvaluationReport(report, archivedPosting = null, expecte
  if (!/^\*\*Legitimacy:\*\*/mi.test(report)) invalid("missing_legitimacy");
  for (const [name,section] of [["machine_summary","## Machine Summary"],["a_role_summary","## A) Role Summary"],["b_match_with_cv","## B) Match with CV"],["c_level_strategy","## C) Level and Strategy"],["d_comp_demand","## D) Comp and Demand"],["e_customization","## E) Customization Plan"],["f_interview","## F) Interview Plan"],["g_legitimacy","## G) Posting Legitimacy"],["risk_summary","## Risk Summary"],["job_archive","## Job Description (archived verbatim)"]]) if (!report.includes(section)) invalid(`missing_${name}`);
  const archive = report.split("## Job Description (archived verbatim)").at(-1).trim(); if (archive.length < 120) invalid("archive_too_short"); if (archivedPosting != null && archive !== archivedPosting.trim()) invalid("archive_mismatch");
- const fence = report.match(/## Machine Summary[\s\S]*?```(?:yaml)?\s*([\s\S]*?)```/i);
- if (!fence) invalid("machine_summary_yaml_missing");
- let summary; try { summary = parseYaml(fence[1]); } catch { invalid("machine_summary_yaml_invalid"); }
+ const summary=machineSummaryFrom(report,invalid);
  const required = ["company","role","score","legitimacy_tier","archetype","final_decision","hard_stops","soft_gaps","top_strengths","risk_level","confidence","next_action","work_auth","discard_reasons","via","company_confidential","advertised_comp","risk_summary"];
  if (!summary || typeof summary !== "object" || Array.isArray(summary)) invalid("machine_summary_not_object");
  if (required.some(key => !(key in summary))) invalid("machine_summary_missing_fields");
  if (typeof summary.score !== "number" || Number(summary.score.toFixed(1)) !== Number(score.toFixed(1))) invalid("machine_summary_score_mismatch");
- if (typeof summary.risk_summary !== "object" || summary.risk_summary === null || Array.isArray(summary.risk_summary)) invalid("machine_summary_risk_summary_invalid");
+ const risk=validateRiskSummary(summary.risk_summary,invalid);
+ const riskIndex=report.indexOf("## Risk Summary"), riskSection=riskIndex<0?"":report.slice(riskIndex+"## Risk Summary".length);
+ const riskRows=["Posting legitimacy","Employment classification","Culture screen","Interview red flags","AI claims vs. infrastructure"];
+ if(riskRows.some(name=>!riskSection.split(/\r?\n/).some(line=>line.trim().startsWith(`| ${name} |`))))invalid("missing_risk_summary_rows");
  if (expected.company && summary.company !== expected.company) invalid("company_mismatch");
  if (expected.role && summary.role !== expected.role) invalid("role_mismatch");
  if (expected.url && reportUrl(report) !== expected.url) invalid("url_mismatch");
@@ -140,7 +173,7 @@ export function validateEvaluationReport(report, archivedPosting = null, expecte
 export function createCloudEvaluationStore({ sql, env = process.env, dispatch = dispatchEvaluation, generate = generateEvaluation, fetchFn = fetch }) {
  let initialized;
  async function ready() {
-  if(!initialized) initialized=(async()=>{ await sql.query(TABLE,[]); await sql.query("ALTER TABLE career_ops_evaluation_runs ADD COLUMN IF NOT EXISTS diagnostic_code TEXT, ADD COLUMN IF NOT EXISTS failed_draft TEXT",[]); await sql.query(REPORT_COUNTER_TABLE,[]); await sql.query(`INSERT INTO career_ops_evaluation_report_counter(singleton,last_number) SELECT TRUE,${MAX_STORED_REPORT_NUMBER} ON CONFLICT(singleton) DO NOTHING`,[]); await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS career_ops_evaluation_active_key ON career_ops_evaluation_runs(target_key)",[]); })().catch(e=>{initialized=null;throw e;});
+  if(!initialized) initialized=(async()=>{ await sql.query(TABLE,[]); await sql.query("ALTER TABLE career_ops_evaluation_runs ADD COLUMN IF NOT EXISTS diagnostic_code TEXT, ADD COLUMN IF NOT EXISTS failed_draft TEXT",[]); await sql.query(REPORT_COUNTER_TABLE,[]); await sql.query(`INSERT INTO career_ops_evaluation_report_counter(singleton,last_number) SELECT TRUE,${MAX_STORED_REPORT_NUMBER} ON CONFLICT(singleton) DO UPDATE SET last_number=GREATEST(career_ops_evaluation_report_counter.last_number,EXCLUDED.last_number)`,[]); await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS career_ops_evaluation_active_key ON career_ops_evaluation_runs(target_key)",[]); })().catch(e=>{initialized=null;throw e;});
   await initialized;
   await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT',completed_at=now() WHERE state IN ('queued','running','committing') AND requested_at < now() - interval '45 minutes'",[]);
  }
@@ -202,11 +235,11 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     const posting=await fetchPosting(job.url,fetchFn);
     if(blacklist && isBlacklisted(blacklist.content,job.company)) throw new Error("BLACKLIST_GATE_BLOCKED");
     const generated=await generate({url:job.url,company:job.company,role:job.role,posting,cv:cv.content,profile:profile.content,profileRules:profileRules.content,oferta:HOSTED_EVALUATION_RULES,shared:"",custom:custom?.content||"",machineSummary:HOSTED_MACHINE_SUMMARY_SCHEMA,articleDigest:articleDigest?.content||"",applicationNumber:reportNumber,today:new Date().toISOString().slice(0,10)});
-    const baseReport=addHostedVerification(generated.split("## Job Description (archived verbatim)")[0].trim());
+    invalidDraft=generated.slice(0,MAX_REPORT_CHARS);
+    const baseReport=addHostedVerification(normalizeGeneratedReport(generated.split("## Job Description (archived verbatim)")[0].trim()));
     const report=`${baseReport}\n\n## Job Description (archived verbatim)\n\n${posting.trim()}\n`;
     let score;
-    try { score=validateEvaluationReport(report,posting,{url:job.url,company:job.company,role:job.role}); }
-    catch(error) { if(String(error?.message||"").startsWith("EVALUATION_INVALID_RESULT:")){invalidDraft=report.slice(0,MAX_REPORT_CHARS);diagnosticCode=String(error.message).slice("EVALUATION_INVALID_RESULT:".length,120);} throw error; }
+    score=validateEvaluationReport(report,posting,{url:job.url,company:job.company,role:job.role});
     const readyState=await sql.query("UPDATE career_ops_evaluation_runs SET state='committing',company=$3,role=$4,score=$5 WHERE id=$1 AND lease=$2 AND state='running' RETURNING id",[id,lease,job.company,job.role,score]); if(!readyState[0]) throw new Error("INVALID_WORKER_CLAIM");
     const [tracker,inbox]=await Promise.all([readDoc("data/applications.md"),readDoc("data/pipeline.md")]);
     if(!tracker || !inbox) throw new Error("EVALUATION_INPUTS_NOT_IMPORTED");
@@ -239,7 +272,8 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     if(!nowRows[0]) throw new Error("EVALUATION_WRITE_CONFLICT");
     return publicRun(nowRows[0]);
    } catch(error) { const message=String(error?.message||"");const invalid=message.startsWith("EVALUATION_INVALID_RESULT:");const code=message.startsWith("HOSTED_AI_")?"HOSTED_AI_UNAVAILABLE":message.startsWith("POSTING_")?message:message.includes("division by zero")?"EVALUATION_WRITE_CONFLICT":invalid?"EVALUATION_INVALID_RESULT":["CV_NOT_FOUND","PROFILE_NOT_FOUND","URL_NOT_IN_INBOX","EVALUATION_INPUTS_NOT_IMPORTED","EVALUATION_INVALID_RESULT","TRACKER_FORMAT_INVALID","APPLICATION_NOT_FOUND","APPLICATION_REPORT_NOT_FOUND","BLACKLIST_GATE_BLOCKED","EVALUATION_WRITE_CONFLICT"].includes(message)?message:"EVALUATION_WORKER_FAILED";
-    await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code=$3,diagnostic_code=$4,failed_draft=$5,completed_at=now() WHERE id=$1 AND lease=$2 AND state IN ('running','committing')",[id,lease,code,diagnosticCode,invalidDraft]); return publicRun(await find(id)); }
+    const reason=invalid?message.slice("EVALUATION_INVALID_RESULT:".length,120):null; diagnosticCode=reason&&VALID_REPORT_DIAGNOSTICS.has(reason)?reason:null;
+    await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code=$3,diagnostic_code=$4,failed_draft=$5,completed_at=now() WHERE id=$1 AND lease=$2 AND state IN ('running','committing')",[id,lease,code,diagnosticCode,invalid?invalidDraft:null]); return publicRun(await find(id)); }
   },
  };
 }
@@ -271,4 +305,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER};

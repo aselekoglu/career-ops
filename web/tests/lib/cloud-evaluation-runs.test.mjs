@@ -69,7 +69,7 @@ ${body}
 ## G) Posting Legitimacy
 ${body}
 ## Risk Summary
-${body}`;
+${__test.riskSummaryTable({legitimacy:"high_confidence",classification:"clear",culture:"not_evaluated",interview_redflags:"not_evaluated",ai_infra:"not_evaluated"})}`;
 }
 
 test("input validation preserves exact URL identity and requires an unpadded tracker number", () => {
@@ -77,6 +77,11 @@ test("input validation preserves exact URL identity and requires an unpadded tra
   assert.throws(() => __test.normalizeInput({ url, applicationNumber: "52" }), { message: "ONE_TARGET_REQUIRED" });
   assert.throws(() => __test.normalizeInput({ url, other: "https://evil.example" }), { message: "INVALID_EVALUATION_REQUEST" });
   assert.throws(() => __test.normalizeInput({ applicationNumber: "052" }), { message: "INVALID_APPLICATION_NUMBER" });
+});
+
+test("report allocation includes the numeric prefix from stored reports paths", () => {
+  assert.match(__test.maxStoredReportNumberSql, /regexp_match\(path,'\^reports\/\(\[0-9\]\+\)-'\)/);
+  assert.match(__test.maxStoredReportNumberSql, /path LIKE 'reports\/%'/);
 });
 
 test("evaluation module uses the web tracker parser and preserves its `n` application ID", () => {
@@ -93,6 +98,18 @@ test("report validation requires canonical schema, matching score, URL, and exac
   assert.throws(() => __test.validateEvaluationReport(complete.replace("score: 4.2", "score: 3.1"), posting), { message: "EVALUATION_INVALID_RESULT:machine_summary_score_mismatch" });
   assert.throws(() => __test.validateEvaluationReport(complete.replace("## F) Interview Plan", "## Interview Plan"), posting), { message: "EVALUATION_INVALID_RESULT:missing_f_interview" });
   assert.equal(__test.validateEvaluationReport(complete.replace("**Verification:** unconfirmed (hosted evaluation)\n", ""), posting, {url,company:"Kinaxis",role:"Co-op Intern, Forward Deployed Engineer"}), 4.2);
+});
+
+test("normalizer builds the risk table only from a complete, allowlisted Machine Summary map", () => {
+  const source = generatedReport().replace(/^#{2,6} Risk Summary\s*$[\s\S]*$/m, "").replace(/^#{2,6} Machine Summary$/m, "#### Machine Summary");
+  const normalized = __test.normalizeGeneratedReport(source);
+  assert.match(normalized, /^## Machine Summary$/m);
+  assert.match(normalized, /^## Risk Summary$/m);
+  assert.match(normalized, /^\| Posting legitimacy \| ✅ High Confidence \|$/m);
+  assert.match(normalized, /^\| Interview red flags \| — no interview sessions yet \|$/m);
+  assert.match(normalized, /\*\*Score:\*\* 4\.2\/5/);
+  assert.throws(() => __test.normalizeGeneratedReport(source.replace(/risk_summary:[\s\S]*?(?=\n```)/, "risk_summary:\n  legitimacy: high_confidence")), { message: "EVALUATION_INVALID_RESULT:machine_summary_risk_summary_invalid" });
+  assert.throws(() => __test.normalizeGeneratedReport(source.replace("legitimacy: high_confidence", "legitimacy: invented")), { message: "EVALUATION_INVALID_RESULT:machine_summary_risk_summary_invalid" });
 });
 
 test("worker credential accepts only its configured bearer value", () => {
@@ -217,6 +234,15 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
   const invalidDetails = await store.get(invalid.runId);
   assert.ok(invalidDetails.failedDraft.includes("## Interview Plan"));
   assert.deepEqual([...files.entries()], beforeRetry, "invalid report must not write a report, tracker row, or inbox completion");
+  generated = generatedReport().replace("legitimacy: high_confidence", "legitimacy: invented");
+  const badMapRun = await store.start({ url, idempotencyKey: "invalid-risk-map-diagnostic" });
+  const badMap = await store.process(badMapRun.runId);
+  assert.equal(badMap.status, "failed");
+  assert.equal(badMap.errorCode, "EVALUATION_INVALID_RESULT");
+  assert.equal(badMap.errorMessage, "The evaluator did not return a complete valid report. [machine_summary_risk_summary_invalid]");
+  const badMapDetails = await store.get(badMap.runId);
+  assert.ok(badMapDetails.failedDraft.includes("legitimacy: invented"));
+  assert.deepEqual([...files.entries()], beforeRetry, "invalid Risk Summary data must not write a report, tracker row, or inbox completion");
 });
 
 test("explicit application reevaluation keeps its tracker lifecycle state", async () => {
