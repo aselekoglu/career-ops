@@ -82,6 +82,10 @@ export function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   if ((pathname === '/api/scans' && request.method === 'POST') ||
+      (pathname === '/api/cv-artifacts' && ['GET','HEAD'].includes(request.method)) ||
+      (/^\/api\/cv-artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
+      (/^\/api\/cv-artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/associate$/i.test(pathname) && request.method === 'POST') ||
+      (/^\/api\/cv-artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/download$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
       ((pathname === '/api/tracker/commands' || pathname === '/api/inbox/commands') && request.method === 'POST') ||
       (/^\/api\/tracker\/[1-9]\d{0,7}$/.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
       (/^\/api\/scans\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||

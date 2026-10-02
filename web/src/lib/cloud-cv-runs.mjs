@@ -11,27 +11,9 @@ import {
 } from "./cloud-career-ops";
 import { getCloudDocument } from "./cloud-store";
 import { workerAuthorized } from "./cloud-scans.mjs";
+import { createCloudPdfArtifactStore, ensureCvArtifactSchema, persistRenderedCvArtifact, reportUrlFromContent } from "./cloud-pdf-artifacts.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const RUN_TABLE = [
-  "CREATE TABLE IF NOT EXISTS career_ops_cv_runs (",
-  "id UUID PRIMARY KEY,",
-  "state TEXT NOT NULL CHECK(state IN ('generating','queued','running','completed','failed')),",
-  "request JSONB NOT NULL,",
-  "company TEXT,",
-  "role TEXT,",
-  "format TEXT,",
-  "html TEXT,",
-  "artifact_path TEXT,",
-  "requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),",
-  "started_at TIMESTAMPTZ,",
-  "completed_at TIMESTAMPTZ,",
-  "lease UUID,",
-  "error_code TEXT,",
-  "workflow_url TEXT",
-  ")",
-].join(" ");
-
 const MAX_POSTING_BYTES = 1_500_000;
 const MAX_POSTING_CHARS = 24_000;
 const MAX_CV_CHARS = 18_000;
@@ -84,6 +66,8 @@ function slug(value, fallback = "cv") {
 
 function publicRun(row) {
   if (!row) return null;
+  const request = typeof row.request === "string" ? (() => { try { return JSON.parse(row.request); } catch { return {}; } })() : row.request || {};
+  const associationStatus = row.association_status || (row.application_number ? "linked" : request.applicationNumber ? "pending" : "unlinked");
   return {
     runId: row.id,
     status: row.state,
@@ -96,6 +80,11 @@ function publicRun(row) {
     completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null,
     errorCode: row.error_code || null,
     workflowUrl: row.workflow_url || null,
+    applicationNumber: row.application_number || null,
+    reportPath: row.report_path || null,
+    associationStatus,
+    associationPending: associationStatus === "pending",
+    associationErrorCode: row.association_error_code || null,
   };
 }
 
@@ -235,8 +224,10 @@ async function resolveTarget(input) {
     if (!app) throw new Error("APPLICATION_NOT_FOUND");
     const report = await cloudReadReport(applicationNumber);
     if (!report || !report.content) throw new Error("APPLICATION_REPORT_NOT_FOUND");
+    const reportUrl = reportUrlFromContent(report.content);
+    if (!reportUrl || !/^reports\/[A-Za-z0-9._-]+\.md$/.test(`reports/${report.file}`)) throw new Error("APPLICATION_REPORT_NOT_FOUND");
     return {
-      selector: { applicationNumber },
+      selector: { applicationNumber, reportPath: `reports/${report.file}`, reportUrl },
       company: app.company,
       role: app.role,
       location: "",
@@ -298,7 +289,7 @@ export function createCloudCvStore(options = {}) {
 
   async function ready() {
     if (!initialized) {
-      initialized = sql.query(RUN_TABLE, []).catch((error) => {
+      initialized = ensureCvArtifactSchema(sql).catch((error) => {
         initialized = null;
         throw error;
       });
@@ -405,11 +396,12 @@ export function createCloudCvStore(options = {}) {
 
     async complete(id, lease, receipt) {
       if (!UUID_RE.test(id) || !UUID_RE.test(lease)) throw new Error("INVALID_CV_WORKER_CLAIM");
-      if (!receipt || typeof receipt.pdfBase64 !== "string" || receipt.pdfBase64.length > 12_000_000) {
+      if (!receipt || typeof receipt.pdfBase64 !== "string" || receipt.pdfBase64.length > 12_000_000 ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(receipt.pdfBase64)) {
         throw new Error("INVALID_CV_RECEIPT");
       }
       const pdf = Buffer.from(receipt.pdfBase64, "base64");
-      if (pdf.length < 500 || pdf.subarray(0, 4).toString("ascii") !== "%PDF") throw new Error("INVALID_CV_RECEIPT");
+      if (pdf.length < 500 || pdf.length > 9_000_000 || pdf.toString("base64") !== receipt.pdfBase64 || pdf.subarray(0, 4).toString("ascii") !== "%PDF") throw new Error("INVALID_CV_RECEIPT");
 
       await ready();
       const row = await find(id);
@@ -419,21 +411,22 @@ export function createCloudCvStore(options = {}) {
       const base = "output/cv-" + slug(row.company) + "-" + slug(row.role) + "-" + stamp + "-" + id.slice(0, 8);
       const pdfPath = base + ".pdf";
       const htmlPath = base + ".html";
-      const html = row.html;
-      const pdfBase64 = pdf.toString("base64");
+      await persistRenderedCvArtifact({ sql, run: row, lease, htmlPath, pdfPath, pdfBytes: pdf });
 
-      await sql.query(
-        "INSERT INTO career_ops_documents(path,content,sha256,content_encoding,byte_size,updated_at) VALUES($1,$2,$3,'utf8',$4,now()) ON CONFLICT(path) DO UPDATE SET content=EXCLUDED.content,sha256=EXCLUDED.sha256,content_encoding='utf8',byte_size=EXCLUDED.byte_size,updated_at=now()",
-        [htmlPath, html, sha(html), Buffer.byteLength(html)],
-      );
-      await sql.query(
-        "INSERT INTO career_ops_documents(path,content,sha256,content_encoding,byte_size,updated_at) VALUES($1,$2,$3,'base64',$4,now()) ON CONFLICT(path) DO UPDATE SET content=EXCLUDED.content,sha256=EXCLUDED.sha256,content_encoding='base64',byte_size=EXCLUDED.byte_size,updated_at=now()",
-        [pdfPath, pdfBase64, sha(pdf), pdf.length],
-      );
-      await sql.query(
-        "UPDATE career_ops_cv_runs SET state='completed',artifact_path=$4,completed_at=now() WHERE id=$1 AND lease=$2 AND state='running' AND format=$3",
-        [id, lease, row.format, pdfPath],
-      );
+      const request = typeof row.request === "string" ? JSON.parse(row.request) : row.request;
+      if (request?.applicationNumber) {
+        const artifacts = createCloudPdfArtifactStore({ sql });
+        let associationErrorCode = "CV_ARTIFACT_ASSOCIATION_FAILED";
+        try {
+          await artifacts.associate(id, String(request.applicationNumber), `cv-completion:${id}`);
+        } catch (error) {
+          associationErrorCode = /^CV_ARTIFACT_[A-Z_]{1,80}$/.test(String(error?.message || "")) ? error.message : associationErrorCode;
+          try { await artifacts.markAssociationPending(id, new Error(associationErrorCode)); } catch { /* Render and PDF are durable; response still reports pending. */ }
+        }
+        const final = await find(id);
+        if (final?.association_status === "pending" && !final.association_error_code) final.association_error_code = associationErrorCode;
+        return publicRun(final);
+      }
       return publicRun(await find(id));
     },
 
