@@ -1,0 +1,267 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import worker from '../src/server.mjs';
+
+const env = { CAREER_OPS_API_ORIGIN: 'https://career-ops-aselekoglu.vercel.app', CAREER_OPS_WEB_AUTH_USER: 'test-user', CAREER_OPS_WEB_AUTH_PASSWORD: 'test-password' };
+const rpc = (method, params = {}, authenticated = true) => new Request('https://bridge.example/mcp', { method: 'POST', headers: { 'content-type': 'application/json', ...(authenticated ? { 'oai-authenticated-user-id': 'test-owner' } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+
+test('discovery is public, read-only and includes the native panel extension', async () => {
+  const response = await worker.fetch(rpc('tools/list', {}, false), env);
+  const body = await response.json();
+  assert.ok(body.result.tools.length >= 4);
+  assert.ok(body.result.tools.filter(t => !['career_ops_cv_generate_start', 'career_ops_evaluation_start'].includes(t.name)).every(t => t.annotations.readOnlyHint));
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_start').annotations.idempotentHint, false);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_status').annotations.readOnlyHint, true);
+  assert.ok(body.result.tools.find(t => t.name === 'open_career_ops')._meta['openai/ui'].entrypoints.some(e => e.type === 'thread'));
+  assert.ok(!JSON.stringify(body).includes('test-password'));
+});
+
+test('private data needs a Sites user before any upstream request', async () => {
+  const response = await worker.fetch(rpc('tools/call', { name: 'career_ops_pipeline', arguments: {} }, false), env);
+  assert.equal(response.status, 401);
+});
+
+test('calls only the fixed upstream and filters/paginates real applications', async t => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/pipeline');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    assert.equal(options.redirect, 'manual');
+    return Response.json({ applications: [{ n: '1', company: 'Example', role: 'Analyst', status: 'Applied' }, { n: '2', company: 'Other', role: 'Engineer', status: 'Interview' }], inbox: [], root: 'private-path' });
+  });
+  const response = await worker.fetch(rpc('tools/call', { name: 'career_ops_pipeline', arguments: { company: 'exam', limit: 1 } }), env);
+  const body = await response.json();
+  assert.equal(body.result.structuredContent.applications.length, 1);
+  assert.equal(body.result.structuredContent.applications[0].company, 'Example');
+  assert.ok(!JSON.stringify(body).includes('private-path'));
+});
+
+test('refuses arbitrary origins and missing credentials without network access', async () => {
+  for (const config of [{ ...env, CAREER_OPS_API_ORIGIN: 'https://attacker.example' }, { ...env, CAREER_OPS_WEB_AUTH_PASSWORD: '' }]) {
+    const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_health', arguments: {} }), config)).json();
+    assert.equal(body.result.isError, true);
+  }
+});
+
+test('rejects unknown args and write operations', async () => {
+  for (const params of [{ name: 'career_ops_pipeline', arguments: { url: 'https://attacker.example' } }, { name: 'delete_application', arguments: {} }, { name: 'career_ops_pipeline', arguments: { limit: -1 } }]) {
+    const body = await (await worker.fetch(rpc('tools/call', params), env)).json();
+    assert.equal(body.error.code, -32602);
+  }
+});
+
+test('does not relay upstream error bodies or auth secrets', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('test-password private error details', { status: 401 }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_health', arguments: {} }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(!JSON.stringify(body).includes('test-password'));
+});
+
+test('rejects redirects without forwarding credentials to another destination', async t => {
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    assert.equal(options.redirect, 'manual');
+    return new Response(null, { status: 307, headers: { Location: 'https://attacker.example' } });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_health', arguments: {} }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(body.result.content[0].text.includes('UPSTREAM_REDIRECT_DENIED'));
+});
+
+test('supports protocol negotiation, UI resources and notification acknowledgement', async () => {
+  const init = await (await worker.fetch(rpc('initialize', { protocolVersion: '2025-06-18' }), env)).json();
+  assert.equal(init.result.protocolVersion, '2025-06-18');
+  const list = await (await worker.fetch(rpc('resources/list'), env)).json();
+  const resource = await (await worker.fetch(rpc('resources/read', { uri: list.result.resources[0].uri }), env)).json();
+  assert.equal(resource.result.contents[0].mimeType, 'text/html;profile=mcp-app');
+  assert.ok(resource.result.contents[0].text.includes('ui/initialize'));
+  const response = await worker.fetch(new Request('https://bridge.example/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) }), env);
+  assert.equal(response.status, 202);
+});
+
+test('live scan tools are gated, start is a write, and status/results remain read-only', async () => {
+  const configured = { ...env, CAREER_OPS_LIVE_SCANS_ENABLED: '1' };
+  const body = await (await worker.fetch(rpc('tools/list'), configured)).json();
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_scan_start').annotations.readOnlyHint, false);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_scan_status').annotations.readOnlyHint, true);
+  assert.equal((await (await worker.fetch(rpc('tools/call', { name: 'career_ops_scan_start', arguments: {} }), env)).json()).error.code, -32602);
+});
+test('scan schema rejects unsupported modes, arbitrary sources and malformed scan identifiers', async () => {
+  const configured = { ...env, CAREER_OPS_LIVE_SCANS_ENABLED: '1' };
+  for (const params of [
+    { name:'career_ops_scan_start',arguments:{mode:'full'} }, { name:'career_ops_scan_start',arguments:{sinceDays:0} },
+    { name:'career_ops_scan_start',arguments:{companies:['https://attacker.example']} },
+    { name:'career_ops_scan_status',arguments:{} }, { name:'career_ops_scan_results',arguments:{scanId:'../cv'} },
+  ]) assert.equal((await (await worker.fetch(rpc('tools/call',params),configured)).json()).error.code,-32602);
+});
+test('start sends only a validated POST to the existing Vercel API and reports queue state', async t => {
+  t.mock.method(globalThis,'fetch',async (url,opts)=>{
+    assert.equal(url, env.CAREER_OPS_API_ORIGIN+'/api/scans'); assert.equal(opts.method,'POST'); assert.deepEqual(JSON.parse(opts.body),{mode:'portals',sinceDays:5});
+    return Response.json({status:'queued',scanId:'11111111-1111-4111-8111-111111111111'},{status:202});
+  });
+  const body=await (await worker.fetch(rpc('tools/call',{name:'career_ops_scan_start',arguments:{mode:'portals',sinceDays:5}}),{...env,CAREER_OPS_LIVE_SCANS_ENABLED:'1'})).json();
+  assert.equal(body.result.structuredContent.status,'queued');
+});
+
+test('CV tools are always discoverable and proxy exact fixed API requests with bounded generation timeout', async t => {
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  assert.ok(listed.result.tools.some(tool => tool.name === 'career_ops_cv_generate_start'));
+  assert.ok(listed.result.tools.some(tool => tool.name === 'career_ops_cv_generate_status'));
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-runs');
+    assert.equal(opts.method, 'POST'); assert.equal(opts.redirect, 'manual');
+    assert.deepEqual(JSON.parse(opts.body), { applicationNumber: '17', pageFormat: 'a4' });
+    return Response.json({ runId: '11111111-1111-4111-8111-111111111111', status: 'generating', company: 'Example', format: 'a4', sourceCV: 'must not escape' }, { status: 202 });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: { applicationNumber: '17', pageFormat: 'a4' } }), env)).json();
+  assert.equal(body.result.structuredContent.status, 'generating');
+  assert.ok(!JSON.stringify(body).includes('sourceCV'));
+});
+
+test('CV start validates exclusive selectors, formats and safe HTTP URLs before upstream access', async () => {
+  for (const args of [
+    {}, { applicationNumber: '17', url: 'https://example.com/job' }, { applicationNumber: '' },
+    { applicationNumber: '0' }, { applicationNumber: '-2' }, { applicationNumber: '1.2' },
+    { url: 'ftp://example.com/job' }, { url: 'https://user:pass@example.com/job' },
+    { url: 'https://example.com/\njob' }, { url: 'https://example.com/job', pageFormat: 'legal' },
+    { url: 'https://example.com/job', extra: true },
+  ]) {
+    const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: args }), env)).json();
+    assert.equal(body.error.code, -32602, JSON.stringify(args));
+  }
+});
+
+test('CV URL is passed to backend without fetching it; status preserves exact artifact metadata and active state', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-runs');
+      assert.deepEqual(JSON.parse(opts.body), { url: 'https://jobs.example/role', pageFormat: 'letter' });
+      return Response.json({ runId: '22222222-2222-4222-8222-222222222222', status: 'queued' }, { status: 202 });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-runs/22222222-2222-4222-8222-222222222222');
+    assert.equal(opts.method, 'GET');
+    return Response.json({ runId: '22222222-2222-4222-8222-222222222222', status: 'running', artifactPath: null, downloadUrl: null, company: 'Example', privateSecret: 'do not relay' });
+  });
+  const started = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: { url: 'https://jobs.example/role' } }), env)).json();
+  assert.equal(started.result.structuredContent.status, 'queued');
+  const current = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId: '22222222-2222-4222-8222-222222222222' } }), env)).json();
+  assert.equal(current.result.structuredContent.status, 'running');
+  assert.ok(!JSON.stringify(current).includes('privateSecret'));
+  assert.equal(calls, 2);
+});
+
+test('CV status rejects malformed UUID and completed status preserves exact download URL', async t => {
+  const invalid = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId: '../cv' } }), env)).json();
+  assert.equal(invalid.error.code, -32602);
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ runId: '33333333-3333-4333-8333-333333333333', status: 'completed', artifactPath: 'output/exact.pdf', downloadUrl: 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=exact', startedAt: null, completedAt: '2026-10-02T00:00:00Z', errorCode: null, sourceCV: 'private' }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId: '33333333-3333-4333-8333-333333333333' } }), env)).json();
+  assert.equal(body.result.structuredContent.downloadUrl, 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=exact');
+  assert.equal(body.result.structuredContent.artifactPath, 'output/exact.pdf');
+  assert.equal(body.result.structuredContent.startedAt, null);
+  assert.equal(body.result.structuredContent.errorCode, null);
+  assert.ok(!JSON.stringify(body).includes('sourceCV'));
+});
+
+test('CV backend stable error code and safe failed-run metadata propagate without arbitrary messages or secrets', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ errorCode: 'GEMINI_GENERATION_FAILED', message: 'secret raw backend detail', runId: '44444444-4444-4444-8444-444444444444', status: 'failed', artifactPath: null, completedAt: null, internalToken: 'supersecret', sourceCV: 'private' }, { status: 502 }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: { applicationNumber: '17' } }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.equal(body.result.structuredContent.errorCode, 'GEMINI_GENERATION_FAILED');
+  assert.equal(body.result.structuredContent.status, 'failed');
+  assert.equal(body.result.structuredContent.artifactPath, null);
+  assert.equal(body.result.structuredContent.completedAt, null);
+  assert.ok(!JSON.stringify(body).includes('secret raw backend detail'));
+  assert.ok(!JSON.stringify(body).includes('sourceCV'));
+  assert.ok(!JSON.stringify(body).includes('supersecret'));
+});
+
+test('CV backend exact inbox-membership error propagates by stable code only', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ code: 'JOB_NOT_IN_INBOX', message: 'private posting details', internalToken: 'hidden' }, { status: 400 }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: { url: 'https://jobs.example/not-in-inbox' } }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.equal(body.result.structuredContent.errorCode, 'JOB_NOT_IN_INBOX');
+  assert.ok(!JSON.stringify(body).includes('private posting details'));
+  assert.ok(!JSON.stringify(body).includes('hidden'));
+});
+
+test('CV success response must include a valid run ID and recognized state', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ sourceCV: 'private', internalToken: 'hidden' }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: { applicationNumber: '17' } }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(body.result.content[0].text.startsWith('INVALID_CV_RUN:'));
+  assert.ok(!JSON.stringify(body).includes('private'));
+  assert.ok(!JSON.stringify(body).includes('hidden'));
+});
+
+test('evaluation tools are advertised with write start and read-only status/report', async () => {
+  const body = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const start = body.result.tools.find(tool => tool.name === 'career_ops_evaluation_start');
+  assert.ok(start);
+  assert.equal(start.annotations.readOnlyHint, false);
+  assert.equal(body.result.tools.find(tool => tool.name === 'career_ops_evaluation_status').annotations.readOnlyHint, true);
+  assert.equal(body.result.tools.find(tool => tool.name === 'career_ops_evaluation_report').annotations.readOnlyHint, true);
+  assert.match(start.description, /exact URL already in the inbox/);
+  assert.match(start.description, /completed/);
+});
+
+test('evaluation start enforces exclusive selectors and fixed endpoint with safe queued result', async t => {
+  for (const args of [
+    {}, { url: 'https://jobs.example/role', applicationNumber: '12' }, { applicationNumber: '0' },
+    { applicationNumber: '12', extra: true }, { url: 'ftp://jobs.example/role' },
+    { url: 'https://user:pass@jobs.example/role' }, { url: 'https://jobs.example/role\n' },
+    { url: 'https://jobs.example/role', idempotencyKey: 'bad key' },
+  ]) {
+    const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_evaluation_start', arguments: args }), env)).json();
+    assert.equal(body.error.code, -32602, JSON.stringify(args));
+  }
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/evaluation-runs');
+    assert.equal(opts.method, 'POST');
+    assert.deepEqual(JSON.parse(opts.body), { url: 'https://jobs.example/role?ref=inbox', idempotencyKey: 'client:abc-123' });
+    return Response.json({ runId: '55555555-5555-4555-8555-555555555555', status: 'queued', company: 'Example', role: 'Engineer', privateField: 'must not escape' }, { status: 202 });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_evaluation_start', arguments: { url: 'https://jobs.example/role?ref=inbox', idempotencyKey: 'client:abc-123' } }), env)).json();
+  assert.equal(body.result.structuredContent.status, 'queued');
+  assert.ok(!JSON.stringify(body).includes('privateField'));
+});
+
+test('evaluation status preserves exact allowlisted fields and completed state without inference', async t => {
+  let requested;
+  t.mock.method(globalThis, 'fetch', async url => {
+    requested = String(url);
+    return Response.json({ runId: '66666666-6666-4666-8666-666666666666', status: 'completed', company: 'Example', role: 'Engineer', applicationNumber: '37', reportPath: 'reports/037-example.md', score: 82, requestedAt: '2026-10-02T01:00:00Z', startedAt: '2026-10-02T01:01:00Z', completedAt: '2026-10-02T01:02:00Z', errorCode: null, errorMessage: null, secret: 'hidden' });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_evaluation_status', arguments: { runId: '66666666-6666-4666-8666-666666666666' } }), env)).json();
+  assert.equal(requested, env.CAREER_OPS_API_ORIGIN + '/api/evaluation-runs/66666666-6666-4666-8666-666666666666');
+  assert.equal(body.result.structuredContent.status, 'completed');
+  assert.equal(body.result.structuredContent.score, 82);
+  assert.equal(body.result.structuredContent.applicationNumber, '37');
+  assert.ok(!JSON.stringify(body).includes('hidden'));
+});
+
+test('evaluation report requires backend completed status and reads only the fixed persisted report endpoint', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/evaluation-runs/77777777-7777-4777-8777-777777777777');
+      return Response.json({ runId: '77777777-7777-4777-8777-777777777777', status: 'running' });
+    }
+    throw new Error('report must not be requested before completed');
+  });
+  const pending = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_evaluation_report', arguments: { runId: '77777777-7777-4777-8777-777777777777' } }), env)).json();
+  assert.equal(pending.result.isError, true);
+  assert.equal(pending.result.structuredContent.status, 'running');
+  assert.equal(calls, 1);
+
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls++;
+    assert.equal(opts.method, 'GET');
+    if (String(url).endsWith('/report')) return Response.json({ runId: '88888888-8888-4888-8888-888888888888', reportPath: 'reports/038-example.md', contentType: 'text/markdown', report: '# Evaluation\nScore: 81', privateField: 'hidden' });
+    return Response.json({ runId: '88888888-8888-4888-8888-888888888888', status: 'completed' });
+  });
+  const completed = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_evaluation_report', arguments: { runId: '88888888-8888-4888-8888-888888888888' } }), env)).json();
+  assert.equal(completed.result.structuredContent.reportPath, 'reports/038-example.md');
+  assert.equal(completed.result.structuredContent.report, '# Evaluation\nScore: 81');
+  assert.ok(!JSON.stringify(completed).includes('hidden'));
+});

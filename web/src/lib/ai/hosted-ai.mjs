@@ -2,10 +2,12 @@ import { GoogleGenAI } from "@google/genai";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_CV_BODY_BYTES = 192 * 1024;
+const MAX_EVALUATION_BODY_BYTES = 192 * 1024;
 const MAX_HISTORY = 20;
 const MAX_MESSAGE_CHARS = 8_000;
 const MAX_SYSTEM_CHARS = 16_000;
 const MAX_CV_MESSAGE_CHARS = 100_000;
+const MAX_EVALUATION_MESSAGE_CHARS = 160_000;
 const MAX_CV_SYSTEM_CHARS = 16_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MODEL = "gemini-3.8-flash";
@@ -16,9 +18,9 @@ function hostedAiError(code, message) {
 
 function validateInput(input) {
   const invalid = () => hostedAiError("HOSTED_AI_INPUT_TOO_LARGE", "Hosted AI request is invalid or too large.");
-  if (!input || !["assistant", "explore", "cv"].includes(input.task)) throw invalid();
+  if (!input || !["assistant", "explore", "cv", "evaluation"].includes(input.task)) throw invalid();
   const systemLimit = input.task === "cv" ? MAX_CV_SYSTEM_CHARS : MAX_SYSTEM_CHARS;
-  const messageLimit = input.task === "cv" ? MAX_CV_MESSAGE_CHARS : MAX_MESSAGE_CHARS;
+  const messageLimit = input.task === "cv" ? MAX_CV_MESSAGE_CHARS : input.task === "evaluation" ? MAX_EVALUATION_MESSAGE_CHARS : MAX_MESSAGE_CHARS;
   if (typeof input.system !== "string" || input.system.length > systemLimit) throw invalid();
   if (typeof input.webSearch !== "boolean") throw invalid();
   if (!Array.isArray(input.messages) || input.messages.length > MAX_HISTORY) throw invalid();
@@ -33,7 +35,7 @@ function validateInput(input) {
     messages: input.messages,
     webSearch: input.webSearch,
   };
-  const bodyLimit = input.task === "cv" ? MAX_CV_BODY_BYTES : MAX_BODY_BYTES;
+  const bodyLimit = input.task === "cv" ? MAX_CV_BODY_BYTES : input.task === "evaluation" ? MAX_EVALUATION_BODY_BYTES : MAX_BODY_BYTES;
   if (Buffer.byteLength(JSON.stringify(body), "utf8") > bodyLimit) throw invalid();
 }
 
@@ -65,7 +67,7 @@ export function createGeminiProvider(client) {
         model: MODEL,
         input: history,
         system_instruction: input.system,
-        generation_config: { max_output_tokens: input.task === "cv" ? 8192 : input.task === "explore" ? 4096 : 2048 },
+        generation_config: { max_output_tokens: input.task === "cv" || input.task === "evaluation" ? 8192 : input.task === "explore" ? 4096 : 2048 },
         ...(input.task === "explore" && input.webSearch ? { tools: [{ type: "google_search" }] } : {}),
         stream: true,
         store: false,

@@ -128,6 +128,25 @@ test("CV task gets a larger private context budget and an 8192-token output cap"
   assert.equal(calls, 1);
 });
 
+test("evaluation task accepts bounded canonical context without enabling web search", async () => {
+  const requests = [];
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async (input) => {
+        requests.push(input);
+        return (async function* () { yield { event_type: "step.delta", delta: { type: "text", text: "Report" } }; })();
+      },
+    },
+  });
+  const service = createHostedAiService({ env: { GEMINI_API_KEY: "test-key" }, gemini: provider });
+  assert.deepEqual(await collect(service.stream({ ...request, task: "evaluation", messages: [{ role: "user", content: "x".repeat(150_000) }] })), [
+    { type: "text", text: "Report" },
+  ]);
+  assert.equal(requests[0].generation_config.max_output_tokens, 8192);
+  assert.equal(requests[0].tools, undefined);
+  await assert.rejects(collect(service.stream({ ...request, task: "evaluation", messages: [{ role: "user", content: "x".repeat(160_001) }] })), { code: "HOSTED_AI_INPUT_TOO_LARGE" });
+});
+
 test("Gemini error event after text fails safely instead of ending successfully", async () => {
   const provider = createGeminiProvider({
     interactions: {

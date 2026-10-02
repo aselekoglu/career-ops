@@ -23,6 +23,13 @@ export function cloudHealth() {
     process.env.CAREER_OPS_SCAN_WORKER_SECRET &&
     (process.env.CAREER_OPS_CV_REF || process.env.VERCEL_GIT_COMMIT_REF || process.env.CAREER_OPS_SCAN_REF)
   );
+  const evaluations = Boolean(
+    process.env.DATABASE_URL &&
+    process.env.GEMINI_API_KEY &&
+    process.env.CAREER_OPS_SCAN_DISPATCH_TOKEN &&
+    process.env.CAREER_OPS_SCAN_WORKER_SECRET &&
+    process.env.CAREER_OPS_SCAN_REF
+  );
   return {
     status: "ok" as const,
     runtime: cloud ? "vercel" : "local",
@@ -30,6 +37,7 @@ export function cloudHealth() {
     scheduler: cloud ? "external-worker-required" : "local-task-scheduler",
     scans: { available: cloud && liveScans, modes: cloud && liveScans ? ['portals'] : [], worker: cloud && liveScans ? 'github-actions' : null },
     cvGeneration: { available: cloud && cvGeneration, ai: cloud && cvGeneration ? 'gemini-hosted' : null, renderer: cloud && cvGeneration ? 'github-actions' : null },
+    evaluations: { available: cloud && evaluations, ai: cloud && evaluations ? 'gemini-hosted' : null, worker: cloud && evaluations ? 'github-actions' : null },
     scheduledExecution: !cloud,
   };
 }
