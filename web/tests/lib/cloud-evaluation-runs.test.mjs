@@ -91,6 +91,14 @@ test("evaluation module uses the web tracker parser and preserves its `n` applic
   assert.equal(rows[0].status, "Interview");
 });
 
+test("incomplete hosted output keeps its structured code and exposes only a safe message", () => {
+  const error = Object.assign(new Error("provider included private diagnostic data"), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
+  const code = __test.hostedEvaluationErrorCode(error);
+  assert.equal(code, "HOSTED_AI_OUTPUT_INCOMPLETE");
+  assert.match(__test.safeErrorMessage(code), /stopped before completing/i);
+  assert.doesNotMatch(__test.safeErrorMessage(code), /private diagnostic data/);
+});
+
 test("report validation requires canonical schema, matching score, URL, and exact archived posting", () => {
   const complete = `${generatedReport()}\n\n## Job Description (archived verbatim)\n\n${posting}\n`;
   assert.equal(__test.validateEvaluationReport(complete, posting, { url, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer" }), 4.2);

@@ -134,7 +134,10 @@ test("evaluation task accepts bounded canonical context without enabling web sea
     interactions: {
       create: async (input) => {
         requests.push(input);
-        return (async function* () { yield { event_type: "step.delta", delta: { type: "text", text: "Report" } }; })();
+        return (async function* () {
+          yield { event_type: "step.delta", delta: { type: "text", text: "Report" } };
+          yield { event_type: "interaction.completed", interaction: { id: "evaluation-1", status: "completed" } };
+        })();
       },
     },
   });
@@ -142,9 +145,44 @@ test("evaluation task accepts bounded canonical context without enabling web sea
   assert.deepEqual(await collect(service.stream({ ...request, task: "evaluation", messages: [{ role: "user", content: "x".repeat(150_000) }] })), [
     { type: "text", text: "Report" },
   ]);
-  assert.equal(requests[0].generation_config.max_output_tokens, 8192);
+  assert.equal(requests[0].generation_config.max_output_tokens, 16384);
+  assert.equal(requests[0].generation_config.thinking_level, "low");
   assert.equal(requests[0].tools, undefined);
   await assert.rejects(collect(service.stream({ ...request, task: "evaluation", messages: [{ role: "user", content: "x".repeat(160_001) }] })), { code: "HOSTED_AI_INPUT_TOO_LARGE" });
+});
+
+test("evaluation rejects truncated text when the terminal interaction status is incomplete", async () => {
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async () => (async function* () {
+        yield { event_type: "step.delta", delta: { type: "text", text: "partial A-F report" } };
+        yield { event_type: "interaction.completed", interaction: { id: "evaluation-incomplete", status: "incomplete" } };
+      })(),
+    },
+  });
+  const service = createHostedAiService({ env: { GEMINI_API_KEY: "test-key" }, gemini: provider });
+  const seen = [];
+  await assert.rejects(async () => {
+    for await (const event of service.stream({ ...request, task: "evaluation" })) seen.push(event);
+  }, (error) => {
+    assert.equal(error.code, "HOSTED_AI_OUTPUT_INCOMPLETE");
+    assert.match(error.message, /stopped before completing/i);
+    return true;
+  });
+  assert.deepEqual(seen, [{ type: "text", text: "partial A-F report" }]);
+});
+
+test("evaluation rejects a budget-exceeded status update after text", async () => {
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async () => (async function* () {
+        yield { event_type: "step.delta", delta: { type: "text", text: "partial report" } };
+        yield { event_type: "interaction.status_update", status: "budget_exceeded", interaction_id: "evaluation-budget" };
+      })(),
+    },
+  });
+  const service = createHostedAiService({ env: { GEMINI_API_KEY: "test-key" }, gemini: provider });
+  await assert.rejects(collect(service.stream({ ...request, task: "evaluation" })), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
 });
 
 test("Gemini error event after text fails safely instead of ending successfully", async () => {

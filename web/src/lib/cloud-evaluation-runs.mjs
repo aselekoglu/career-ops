@@ -41,10 +41,12 @@ function safeErrorMessage(code) {
   const messages = { URL_NOT_IN_INBOX: "That exact URL is not in the inbox.", CV_NOT_FOUND: "A source CV is required before evaluation.",
   PROFILE_NOT_FOUND: "The candidate profile is not available.", POSTING_FETCH_FAILED: "The job posting could not be fetched.",
   POSTING_FETCH_EMPTY: "The job posting did not contain readable job details.", HOSTED_AI_UNAVAILABLE: "The hosted evaluator is unavailable.",
+  HOSTED_AI_OUTPUT_INCOMPLETE: "The hosted evaluator stopped before completing the A-G report.",
   EVALUATION_WORKER_DISPATCH_FAILED: "The evaluation worker could not be started.", EVALUATION_WRITE_CONFLICT: "The tracker changed during evaluation; no result was committed.",
   BLACKLIST_GATE_BLOCKED: "This company is on the candidate's do-not-apply list and needs a user decision.", EVALUATION_INVALID_RESULT: "The evaluator did not return a complete valid report." };
  return messages[code] ?? "The evaluation could not be completed.";
 }
+function hostedEvaluationErrorCode(error) { return error?.code === "HOSTED_AI_OUTPUT_INCOMPLETE" ? error.code : null; }
 export function workerAuthorized(value, env = process.env) {
  const expected = env.CAREER_OPS_SCAN_WORKER_SECRET;
  if (!expected || !value?.startsWith("Bearer ")) return false;
@@ -271,7 +273,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
       [id,lease,reportPath,reportContent,sha(reportContent),Buffer.byteLength(reportContent),trackerContent,sha(trackerContent),Buffer.byteLength(trackerContent),inboxContent,sha(inboxContent),Buffer.byteLength(inboxContent),tracker.sha256,inbox.sha256,applicationNumber||reportNumber]);
     if(!nowRows[0]) throw new Error("EVALUATION_WRITE_CONFLICT");
     return publicRun(nowRows[0]);
-   } catch(error) { const message=String(error?.message||"");const invalid=message.startsWith("EVALUATION_INVALID_RESULT:");const code=message.startsWith("HOSTED_AI_")?"HOSTED_AI_UNAVAILABLE":message.startsWith("POSTING_")?message:message.includes("division by zero")?"EVALUATION_WRITE_CONFLICT":invalid?"EVALUATION_INVALID_RESULT":["CV_NOT_FOUND","PROFILE_NOT_FOUND","URL_NOT_IN_INBOX","EVALUATION_INPUTS_NOT_IMPORTED","EVALUATION_INVALID_RESULT","TRACKER_FORMAT_INVALID","APPLICATION_NOT_FOUND","APPLICATION_REPORT_NOT_FOUND","BLACKLIST_GATE_BLOCKED","EVALUATION_WRITE_CONFLICT"].includes(message)?message:"EVALUATION_WORKER_FAILED";
+   } catch(error) { const message=String(error?.message||"");const invalid=message.startsWith("EVALUATION_INVALID_RESULT:");const code=hostedEvaluationErrorCode(error)||(message.startsWith("HOSTED_AI_")?"HOSTED_AI_UNAVAILABLE":message.startsWith("POSTING_")?message:message.includes("division by zero")?"EVALUATION_WRITE_CONFLICT":invalid?"EVALUATION_INVALID_RESULT":["CV_NOT_FOUND","PROFILE_NOT_FOUND","URL_NOT_IN_INBOX","EVALUATION_INPUTS_NOT_IMPORTED","EVALUATION_INVALID_RESULT","TRACKER_FORMAT_INVALID","APPLICATION_NOT_FOUND","APPLICATION_REPORT_NOT_FOUND","BLACKLIST_GATE_BLOCKED","EVALUATION_WRITE_CONFLICT"].includes(message)?message:"EVALUATION_WORKER_FAILED");
     const reason=invalid?message.slice("EVALUATION_INVALID_RESULT:".length,120):null; diagnosticCode=reason&&VALID_REPORT_DIAGNOSTICS.has(reason)?reason:null;
     await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code=$3,diagnostic_code=$4,failed_draft=$5,completed_at=now() WHERE id=$1 AND lease=$2 AND state IN ('running','committing')",[id,lease,code,diagnosticCode,invalid?invalidDraft:null]); return publicRun(await find(id)); }
   },
@@ -305,4 +307,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER,hostedEvaluationErrorCode,safeErrorMessage};

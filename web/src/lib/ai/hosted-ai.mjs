@@ -10,6 +10,7 @@ const MAX_CV_MESSAGE_CHARS = 100_000;
 const MAX_EVALUATION_MESSAGE_CHARS = 160_000;
 const MAX_CV_SYSTEM_CHARS = 16_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
+const EVALUATION_TIMEOUT_MS = 90_000;
 const MODEL = "gemini-3.8-flash";
 
 function hostedAiError(code, message) {
@@ -40,6 +41,9 @@ function validateInput(input) {
 }
 
 function normalizeProviderError(error, signal, timedOut) {
+  if (error?.code === "HOSTED_AI_OUTPUT_INCOMPLETE") {
+    return hostedAiError("HOSTED_AI_OUTPUT_INCOMPLETE", "Gemini stopped before completing the evaluation.");
+  }
   if (timedOut()) return hostedAiError("HOSTED_AI_TIMEOUT", "Gemini did not respond in time.");
   if (signal?.aborted) return hostedAiError("HOSTED_AI_ABORTED", "Hosted AI request was cancelled.");
   if (error?.code === "gateway_timeout") {
@@ -67,18 +71,37 @@ export function createGeminiProvider(client) {
         model: MODEL,
         input: history,
         system_instruction: input.system,
-        generation_config: { max_output_tokens: input.task === "cv" || input.task === "evaluation" ? 8192 : input.task === "explore" ? 4096 : 2048 },
+        generation_config: {
+          max_output_tokens: input.task === "evaluation" ? 16384 : input.task === "cv" ? 8192 : input.task === "explore" ? 4096 : 2048,
+          ...(input.task === "evaluation" ? { thinking_level: "low" } : {}),
+        },
         ...(input.task === "explore" && input.webSearch ? { tools: [{ type: "google_search" }] } : {}),
         stream: true,
         store: false,
       }, { signal: input.signal, maxRetries: 0 });
+      let completed = false;
       for await (const event of response) {
         if (event?.event_type === "error") {
           throw Object.assign(new Error("Gemini interaction failed."), { code: event.error?.code });
         }
+        if (event?.event_type === "interaction.status_update") {
+          if (["incomplete", "budget_exceeded", "failed", "cancelled"].includes(event.status)) {
+            throw Object.assign(new Error("Gemini evaluation output was incomplete."), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
+          }
+          if (event.status === "completed") completed = true;
+        }
+        if (event?.event_type === "interaction.completed") {
+          if (event.interaction?.status !== "completed") {
+            throw Object.assign(new Error("Gemini evaluation output was incomplete."), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
+          }
+          completed = true;
+        }
         if (event?.event_type === "step.delta" && event.delta?.type === "text" && event.delta.text) {
           yield { type: "text", text: event.delta.text };
         }
+      }
+      if (input.task === "evaluation" && !completed) {
+        throw Object.assign(new Error("Gemini evaluation stream ended without a completion event."), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
       }
     },
   };
@@ -88,7 +111,6 @@ export function createGeminiProvider(client) {
 export function createHostedAiService(options = {}) {
   const env = options.env ?? process.env;
   const apiKey = typeof env.GEMINI_API_KEY === "string" ? env.GEMINI_API_KEY.trim() : "";
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const provider = options.gemini ?? (apiKey ? createGeminiProvider(new GoogleGenAI({ apiKey })) : null);
 
   return {
@@ -98,6 +120,7 @@ export function createHostedAiService(options = {}) {
     async *stream(input) {
       if (!apiKey) throw hostedAiError("HOSTED_AI_UNAVAILABLE", "Gemini is not configured.");
       validateInput(input);
+      const timeoutMs = options.timeoutMs ?? (input.task === "evaluation" ? EVALUATION_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
       const controller = new AbortController();
       let didTimeOut = false;
       const onAbort = () => controller.abort();
