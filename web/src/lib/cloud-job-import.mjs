@@ -29,6 +29,25 @@ const ERROR_STATUS = {
   POSTING_NOT_FOUND: 404, PARSE_FAILED: 422,
   DATABASE_WRITE_FAILED: 503, UPSTREAM_UNAVAILABLE: 503,
 };
+const INTERNAL_DIAGNOSTIC_CODES = new Set([
+  ...SAFE_ERRORS, "INVALID_REQUEST", "INVALID_POSTING", "DOCUMENT_UNAVAILABLE", "WRITE_CONFLICT",
+  "IMPORT_RECORD_INVALID", "JOB_IMPORT_STORAGE_UNAVAILABLE",
+]);
+const SAFE_ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "AbortError", "NeonDbError"]);
+
+function logImportFailure(options, stage, error) {
+  const logger = typeof options.logger === "function" ? options.logger : console.error;
+  const diagnostic = {};
+  const name = error && typeof error === "object" && SAFE_ERROR_NAMES.has(error.name) ? error.name : "Error";
+  diagnostic.name = name;
+  const suppliedCode = error && typeof error === "object" && typeof error.code === "string" ? error.code : null;
+  const messageCode = typeof error === "string" ? error : error && typeof error.message === "string" ? error.message : null;
+  const code = suppliedCode && (/^[0-9A-Z]{5}$/.test(suppliedCode) || INTERNAL_DIAGNOSTIC_CODES.has(suppliedCode))
+    ? suppliedCode
+    : INTERNAL_DIAGNOSTIC_CODES.has(messageCode) ? messageCode : null;
+  if (code) diagnostic.code = code;
+  try { logger("career_ops_job_import_failed", { stage, ...diagnostic }); } catch { /* Diagnostics never change the API result. */ }
+}
 
 function json(body, status = 200) {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -128,6 +147,7 @@ export async function handleJobImportRequest(request, options = {}) {
   try {
     store = (options.getStore || getCloudStore)();
   } catch (error) {
+    logImportFailure(options, "store-init", error);
     const code = error?.message === "JOB_IMPORT_STORAGE_UNAVAILABLE" ? "UPSTREAM_UNAVAILABLE" : "DATABASE_WRITE_FAILED";
     return failure(code, input.url);
   }
@@ -135,15 +155,19 @@ export async function handleJobImportRequest(request, options = {}) {
   let existing;
   try {
     existing = await store.findImport({ originalUrl: input.url, normalizedUrl, source: input.source, forceRefresh: input.forceRefresh === true });
-  } catch {
+  } catch (error) {
+    logImportFailure(options, "lookup", error);
     return failure("DATABASE_WRITE_FAILED", input.url);
   }
   if (existing) return json(existing);
 
   let imported;
   try { imported = await (options.importFn || importPosting)(input.url, { source: input.source }); }
-  catch { return failure("FETCH_FAILED", input.url); }
-  if (!imported?.ok) return failure(imported?.error, input.url);
+  catch (error) { logImportFailure(options, "fetch", error); return failure("FETCH_FAILED", input.url); }
+  if (!imported?.ok) {
+    logImportFailure(options, "fetch", imported?.error);
+    return failure(imported?.error, input.url);
+  }
 
   try {
     const result = await store.importPosting({
@@ -155,6 +179,7 @@ export async function handleJobImportRequest(request, options = {}) {
     });
     return json(result);
   } catch (error) {
+    logImportFailure(options, "persist", error);
     const code = error?.message === "UPSTREAM_UNAVAILABLE" ? "UPSTREAM_UNAVAILABLE" : "DATABASE_WRITE_FAILED";
     return failure(code, input.url);
   }

@@ -92,13 +92,22 @@ test("private URLs fail before storage access or importer fetch", async () => {
 });
 
 test("storage errors return a fixed safe error without leaking diagnostics", async () => {
+  const logged = [];
+  const databaseError = new Error("postgres://db-user:db-password@secret-host/private diagnostic");
+  databaseError.name = "NeonDbError";
+  databaseError.code = "08006";
+  databaseError.stack = "NeonDbError: postgres://db-user:db-password@secret-host/private diagnostic";
   const response = await handleJobImportRequest(request(body), {
-    getStore: () => ({ findImport: async () => { throw new Error("postgres://secret-host/private diagnostic"); } }),
+    logger: (...entry) => logged.push(entry),
+    getStore: () => ({ findImport: async () => { throw databaseError; } }),
   });
   assert.equal(response.status, 503);
   const payload = await response.text();
   assert.match(payload, /DATABASE_WRITE_FAILED/);
   assert.doesNotMatch(payload, /secret-host|private diagnostic/);
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0], ["career_ops_job_import_failed", { stage: "lookup", name: "NeonDbError", code: "08006" }]);
+  assert.doesNotMatch(JSON.stringify(logged), /db-user|db-password|secret-host|private diagnostic|stack/i);
 });
 
 test("missing DATABASE_URL fails closed before creating the cloud store", async () => {

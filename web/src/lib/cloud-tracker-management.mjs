@@ -52,8 +52,9 @@ function inboxAddLine({ url, company, role, location, compensation }) {
 function parseInbox(md) {
   return md.split(/\r?\n/).map((line,index)=>{
     const m=line.match(/^(\s*-\s*\[)([ xX])(\]\s*)(.+)$/); if(!m)return null;
-    const pieces=m[4].split("|").map(cell); if(pieces.length<3||!pieces[0]) throw new Error("INBOX_FORMAT_INVALID");
-    const url=validatePublicUrl(pieces[0]); if(url!==pieces[0]) throw new Error("INBOX_FORMAT_INVALID");
+    const pieces=m[4].split("|").map(cell); if(pieces.length<3||!pieces[0]||!pieces[1]||!pieces[2])return null;
+    let url; try { url=validatePublicUrl(pieces[0]); } catch { return null; }
+    if(url!==pieces[0])return null;
     return {index,line,prefix:m[1],done:m[2].toLowerCase()==="x",spacer:m[3],pieces,url};
   }).filter(Boolean);
 }

@@ -65,7 +65,7 @@
 - [x] Implement stable IDs, canonical dedup, CAS retries, tracker-report recognition, and concurrent evaluation guards.
 - [x] Add `POST /api/job-import` with a bounded closed JSON contract, safe structured errors, and a Basic-authenticated proxy allow for this method/path only.
 - [x] Check canonical duplicates before fetching; forward `source` and `forceRefresh` to the Neon CAS-backed importer; fail closed without `DATABASE_URL`.
-- [x] Re-run `node --test tests/lib/cloud-tracker-management.test.mjs` from `web/` (18 tests pass).
+- [x] Re-run `node --test tests/lib/cloud-tracker-management.test.mjs` from `web/` (19 tests pass, including malformed unrelated legacy Inbox rows).
 
 ### Task 3: Evaluation consumes exact-URL imported JD
 

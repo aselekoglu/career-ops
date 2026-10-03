@@ -239,3 +239,20 @@ test("a concurrent evaluation that checks the Inbox row wins over a pending impo
   assert.match(docs.get("data/pipeline.md"), new RegExp(`^- \\[x\\] ${magnetUrl.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`, "m"));
   assert.equal(docs.has(importedPostingPath(magnetUrl)), false);
 });
+
+test("unrelated malformed checkbox lines do not block a valid import or change their raw text", async () => {
+  const { store, docs } = fixture();
+  const legacyRows = [
+    "- [ ] Review imported roles | task list | legacy note",
+    "- [x] malformed-url | Old role | legacy archive",
+    "- [ ] http://[broken | Broken URL | legacy data",
+    `- [ ] ${magnetUrl} |  |`,
+  ];
+  const original = `${docs.get("data/pipeline.md")}${legacyRows.join("\n")}\n`;
+  docs.set("data/pipeline.md", original);
+  const result = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "imported");
+  const saved = docs.get("data/pipeline.md");
+  for (const line of legacyRows) assert.ok(saved.includes(line), `preserved raw row: ${line}`);
+  assert.ok(saved.includes(`- [ ] ${magnetUrl} | Magnet Forensics | AI & Automation Engineer (Enterprise)`));
+});
