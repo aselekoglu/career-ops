@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { importedPostingPath } from "../../src/lib/job-import.mjs";
 
 const { __test, createCloudEvaluationStore } = await import(new URL("../../src/lib/cloud-evaluation-runs.mjs", import.meta.url));
 const url = "https://careers-kinaxis.icims.com/jobs/35379/co-op-intern-forward-deployed-engineer/job";
@@ -179,6 +180,7 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
     ["modes/_profile.md", "Target software engineering roles."],
     ["data/pipeline.md", `# Pipeline\n\n- [ ] ${url} | Kinaxis | Co-op Intern, Forward Deployed Engineer\n`],
     ["data/applications.md", "# Applications Tracker\n\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n"],
+    [importedPostingPath(url), JSON.stringify({ inboxId: "inb_imported", originalUrl: url, normalizedUrl: url, source: "board", company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer", location: null, jobDescription: posting, createdAt: "2026-10-02T00:00:00.000Z" })],
   ]);
   const run = { id: "33333333-3333-4333-8333-333333333333", state: "queued", request: { url }, target_key: `url:${url}:default`, requested_at: new Date("2026-10-02T00:00:00Z") };
   let nextNumber = 52;
@@ -213,10 +215,12 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
     throw new Error(`Unexpected SQL: ${statement}`);
   } };
   let generatedCount = 0, generated = generatedReport();
-  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => {}, fetchFn: async () => new Response(`<html><body>${posting}</body></html>`, { status: 200 }), generate: async () => { generatedCount++; return generated; } });
+  let networkFetches = 0;
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => {}, fetchFn: async () => { networkFetches++; return new Response(`<html><body>${posting}</body></html>`, { status: 200 }); }, generate: async () => { generatedCount++; return generated; } });
   const queued = await store.start({ url });
   const completed = await store.process(queued.runId);
   assert.equal(completed.status, "completed");
+  assert.equal(networkFetches, 0, "the canonical stored import must supply evidence without refetching the job URL");
   assert.equal(completed.applicationNumber, "52");
   assert.match(completed.reportPath, /^reports\/052-kinaxis-\d{4}-\d{2}-\d{2}\.md$/);
   assert.match(files.get("data/applications.md"), /^\| 52 \|.*\| Evaluated \|.*\[52\]\(\.\.\/reports\/052-kinaxis-/m);

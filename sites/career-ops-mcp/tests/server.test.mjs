@@ -9,7 +9,8 @@ test('discovery is public, read-only and includes the native panel extension', a
   const response = await worker.fetch(rpc('tools/list', {}, false), env);
   const body = await response.json();
   assert.ok(body.result.tools.length >= 4);
-  assert.ok(body.result.tools.filter(t => !['career_ops_cv_generate_start', 'career_ops_evaluation_start'].includes(t.name)).every(t => t.annotations.readOnlyHint));
+  assert.ok(body.result.tools.filter(t => !['career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import'].includes(t.name)).every(t => t.annotations.readOnlyHint));
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_job_import').annotations.idempotentHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_start').annotations.idempotentHint, false);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_status').annotations.readOnlyHint, true);
   assert.ok(body.result.tools.find(t => t.name === 'open_career_ops')._meta['openai/ui'].entrypoints.some(e => e.type === 'thread'));
@@ -54,6 +55,97 @@ test('does not relay upstream error bodies or auth secrets', async t => {
   const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_health', arguments: {} }), env)).json();
   assert.equal(body.result.isError, true);
   assert.ok(!JSON.stringify(body).includes('test-password'));
+});
+
+test('job import advertises an explicit schema and rejects malformed/private URLs before upstream access', async t => {
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const definition = listed.result.tools.find(tool => tool.name === 'career_ops_job_import');
+  assert.ok(definition);
+  assert.equal(definition.inputSchema.additionalProperties, false);
+  assert.deepEqual(definition.inputSchema.required, ['url']);
+  assert.equal(definition.inputSchema.properties.url.maxLength, 2048);
+  assert.equal(definition.inputSchema.properties.source.maxLength, 500);
+  assert.equal(definition.inputSchema.properties.forceRefresh.type, 'boolean');
+  assert.match(definition.description, /before evaluation or CV generation/i);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  for (const args of [
+    {}, { url: 'https://jobs.example/role', extra: true }, { url: 'https://jobs.example/role', forceRefresh: 'yes' },
+    { url: 'https://jobs.example/role', source: 'x'.repeat(501) },
+  ]) {
+    const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_job_import', arguments: args }), env)).json();
+    assert.equal(body.error.code, -32602, JSON.stringify(args));
+  }
+  for (const [url, code] of [
+    ['not-a-url', 'INVALID_URL'], ['file:///etc/passwd', 'UNSUPPORTED_SCHEME'], ['https://user:pass@jobs.example/role', 'INVALID_URL'],
+    ['http://127.0.0.1/role', 'PRIVATE_NETWORK_BLOCKED'], ['http://192.168.1.2/role', 'PRIVATE_NETWORK_BLOCKED'],
+    ['https://jobs.example/role\n', 'INVALID_URL'],
+  ]) {
+    const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_job_import', arguments: { url } }), env)).json();
+    assert.equal(body.result.structuredContent.status, 'failed', url);
+    assert.equal(body.result.structuredContent.error.code, code, url);
+  }
+  assert.equal(calls, 0);
+});
+
+test('job import requires a Sites user before any upstream mutation', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({ status: 'imported' }); });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_job_import', arguments: { url: 'https://jobs.lever.co/example/123' } }, false), env)).json();
+  assert.equal(body.error.code, -32001);
+  assert.equal(calls, 0);
+});
+
+test('job import uses only fixed Basic-authenticated endpoint and allowlists imported and duplicate results', async t => {
+  const expectedUrl = 'https://jobs.lever.co/magnetforensics/454d7903-cb1b-40ff-b7a8-5bc2e87e7329/apply?source=LinkedIn';
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/job-import');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.redirect, 'manual');
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    assert.deepEqual(JSON.parse(options.body), calls === 1
+      ? { url: expectedUrl, source: 'LinkedIn', forceRefresh: true }
+      : { url: expectedUrl.replace('LinkedIn', 'Indeed'), source: 'Indeed', forceRefresh: false });
+    return Response.json(calls === 1
+      ? { status: 'imported', inboxId: 'inbox-123', applicationNumber: null, company: 'Magnet Forensics', role: 'Security Analyst', location: 'Waterloo, ON', normalizedUrl: 'https://jobs.lever.co/magnetforensics/454d7903-cb1b-40ff-b7a8-5bc2e87e7329', originalUrl: expectedUrl, source: 'wrong backend source', createdAt: '2026-10-03T10:00:00.000Z', existing: false, jobDescription: 'must not escape', downloadUrl: 'https://private.example/token', internalToken: 'secret' }
+      : { status: 'already_exists', inboxId: 'inbox-123', company: 'Magnet Forensics', role: 'Security Analyst', normalizedUrl: 'https://jobs.lever.co/magnetforensics/454d7903-cb1b-40ff-b7a8-5bc2e87e7329', existing: true });
+  });
+  const request = { name: 'career_ops_job_import', arguments: { url: expectedUrl, source: 'LinkedIn', forceRefresh: true } };
+  const imported = await (await worker.fetch(rpc('tools/call', request), env)).json();
+  assert.equal(imported.result.structuredContent.status, 'imported');
+  assert.equal(imported.result.structuredContent.inboxId, 'inbox-123');
+  assert.equal(imported.result.structuredContent.applicationNumber, null);
+  assert.equal(imported.result.structuredContent.role, 'Security Analyst');
+  assert.equal(imported.result.structuredContent.source, 'LinkedIn');
+  assert.equal(imported.result.structuredContent.originalUrl, expectedUrl);
+  assert.ok(!JSON.stringify(imported).includes('must not escape'));
+  assert.ok(!JSON.stringify(imported).includes('private.example'));
+  assert.ok(!JSON.stringify(imported).includes('internalToken'));
+  const duplicateRequest = { name: 'career_ops_job_import', arguments: { url: expectedUrl.replace('LinkedIn', 'Indeed'), source: 'Indeed', forceRefresh: false } };
+  const duplicate = await (await worker.fetch(rpc('tools/call', duplicateRequest), env)).json();
+  assert.equal(duplicate.result.structuredContent.status, 'already_exists');
+  assert.equal(duplicate.result.structuredContent.existing, true);
+  assert.equal(duplicate.result.structuredContent.inboxId, 'inbox-123');
+  assert.equal(calls, 2);
+});
+
+test('job import preserves known backend errors and excludes unrelated failure fields', async t => {
+  t.mock.method(globalThis, 'fetch', async url => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/job-import');
+    return Response.json({ error: { code: 'POSTING_NOT_FOUND', message: 'Request failed at postgresql://importer:raw-secret@db.internal/private.' }, secret: 'test-password', stack: 'private stack' }, { status: 404 });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_job_import', arguments: { url: 'https://jobs.example/expired' } }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.deepEqual(body.result.structuredContent, {
+    status: 'failed', originalUrl: 'https://jobs.example/expired', error: { code: 'POSTING_NOT_FOUND', message: 'The job posting was not found or is no longer available.' },
+  });
+  assert.ok(!JSON.stringify(body).includes('test-password'));
+  assert.ok(!JSON.stringify(body).includes('private stack'));
+  assert.ok(!JSON.stringify(body).includes('raw-secret'));
+  assert.ok(!JSON.stringify(body).includes('db.internal'));
 });
 
 test('rejects redirects without forwarding credentials to another destination', async t => {
@@ -200,7 +292,8 @@ test('evaluation tools are advertised with write start and read-only status/repo
   assert.equal(start.annotations.readOnlyHint, false);
   assert.equal(body.result.tools.find(tool => tool.name === 'career_ops_evaluation_status').annotations.readOnlyHint, true);
   assert.equal(body.result.tools.find(tool => tool.name === 'career_ops_evaluation_report').annotations.readOnlyHint, true);
-  assert.match(start.description, /exact URL already in the inbox/);
+  assert.match(start.description, /exact URL already in the Inbox/);
+  assert.match(start.description, /career_ops_job_import first/);
   assert.match(start.description, /completed/);
 });
 

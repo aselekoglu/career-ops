@@ -10,6 +10,7 @@ import {
   cloudReadReport,
 } from "./cloud-career-ops";
 import { getCloudDocument } from "./cloud-store";
+import { loadJobDescription } from "./cloud-job-import.mjs";
 import { workerAuthorized } from "./cloud-scans.mjs";
 import { createCloudPdfArtifactStore, ensureCvArtifactSchema, persistRenderedCvArtifact, reportUrlFromContent } from "./cloud-pdf-artifacts.mjs";
 
@@ -213,7 +214,7 @@ async function generateCvHtml(args) {
   };
 }
 
-async function resolveTarget(input) {
+async function resolveTarget(input, options = {}) {
   const applicationNumber = typeof input?.applicationNumber === "string" ? input.applicationNumber.trim() : "";
   const rawUrl = typeof input?.url === "string" ? input.url.trim() : "";
   if (Boolean(applicationNumber) === Boolean(rawUrl)) throw new Error("ONE_TARGET_REQUIRED");
@@ -238,15 +239,18 @@ async function resolveTarget(input) {
 
   const normalized = normalizeUrl(rawUrl);
   if (!normalized || !safePublicHost(normalized)) throw new Error("INVALID_JOB_URL");
-  const job = (await cloudReadInbox()).find((item) => normalizeUrl(item.url) === normalized);
+  const readInbox = options.readInbox || cloudReadInbox;
+  const job = (await readInbox()).find((item) => normalizeUrl(item.url) === normalized);
   if (!job) throw new Error("JOB_NOT_IN_INBOX");
+  const readDocument = options.readDocument || getCloudDocument;
+  const fetchFallback = options.fetchFallback || (url => fetchPostingText(url));
   return {
     selector: { url: job.url },
     company: job.company,
     role: job.role,
     location: job.location || "",
     url: job.url,
-    evidence: await fetchPostingText(job.url),
+    evidence: await loadJobDescription(job.url, { readDocument, fetchFallback, maxChars: MAX_POSTING_CHARS }),
   };
 }
 
@@ -313,7 +317,7 @@ export function createCloudCvStore(options = {}) {
     async start(input) {
       if (!cvWorkerConfigured(env)) throw new Error("CV_WORKER_NOT_CONFIGURED");
       const format = input?.pageFormat === "a4" ? "a4" : "letter";
-      const target = await resolveTarget(input);
+      const target = await resolveTarget(input, { readDocument: options.readDocument || getCloudDocument });
       const cv = await cloudReadCv();
       if (!cv) throw new Error("CV_NOT_FOUND");
       const profileRow = await getCloudDocument("config/profile.yml");
@@ -510,4 +514,5 @@ export const __test = {
   assertSafeHtml,
   htmlToText,
   buildPrompt,
+  resolveTarget,
 };

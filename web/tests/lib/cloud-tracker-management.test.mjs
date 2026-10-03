@@ -4,6 +4,7 @@ import test from "node:test";
 
 const { createCloudTrackerManagement } = await import(new URL("../../src/lib/cloud-tracker-management.mjs", import.meta.url));
 const { reserveCareerOpsReportNumber } = await import(new URL("../../src/lib/cloud-report-numbering.mjs", import.meta.url));
+const { importedPostingPath } = await import(new URL("../../src/lib/job-import.mjs", import.meta.url));
 const url = "https://jobs.example.test/roles/alpha";
 const aliases = JSON.stringify({"#":"num",date:"date",company:"company",via:"via",role:"role",location:"location",score:"score",status:"status",pdf:"pdf",report:"report",notes:"notes"});
 const tracker = `# Applications Tracker\n\n| # | Date | Company | Via | Role | Location | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|---|---|\n| 1 | 2026-09-01 | Existing Co | Direct | Engineer | Remote | 4.0/5 | Evaluated | ❌ | [001](../reports/001-existing.md) | Applied 2026-09-15 |\n`;
@@ -28,6 +29,9 @@ function fixture({ beforeCommit = null, trackerText = tracker } = {}) {
     }
     if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
       const content = docs.get(params[0]); return content === undefined ? [] : [row(params[0], content)];
+    }
+    if (statement.startsWith("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%'")) {
+      return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => ({ path, content, content_encoding: "utf8" }));
     }
     if (statement.startsWith("WITH incoming AS MATERIALIZED")) {
       before?.(docs); before = null;
@@ -146,4 +150,92 @@ test("operation IDs cannot replay across tracker and inbox command kinds", async
   const afterTrackerWrite = [...docs.entries()];
   await assert.rejects(store.mutate("inbox", { operationId: id, operation: "delete", targetUrl: url, confirm: true }), { message: "IDEMPOTENCY_KEY_CONFLICT" });
   assert.deepEqual([...docs.entries()], afterTrackerWrite);
+});
+
+const magnet = {
+  company: "Magnet Forensics", role: "AI & Automation Engineer (Enterprise)", location: "Toronto, Ontario",
+  workArrangement: null, postingDate: null, employmentType: "Full-time", compensation: null,
+  jobDescription: "Build automation for enterprise workflows.\n\nRequirements: experience building reliable systems.",
+  ats: "lever", externalPostingId: "454d7903-cb1b-40ff-b7a8-5bc2e87e7329", source: "LinkedIn",
+};
+const magnetUrl = "https://jobs.lever.co/magnetforensics/454d7903-cb1b-40ff-b7a8-5bc2e87e7329";
+
+test("job import atomically creates the canonical Inbox row and durable posting record", async () => {
+  const { store, docs } = fixture();
+  const result = await store.importPosting({ originalUrl: `${magnetUrl}/apply?source=LinkedIn`, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "imported");
+  assert.equal(result.existing, false);
+  assert.match(result.inboxId, /^inb_[a-f0-9]{32}$/);
+  assert.equal(result.normalizedUrl, magnetUrl);
+  assert.match(docs.get("data/pipeline.md"), new RegExp(`^- \\[ \\] ${magnetUrl.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")} \\| Magnet Forensics \\| AI & Automation Engineer \\(Enterprise\\)` , "m"));
+  const saved = JSON.parse(docs.get(importedPostingPath(magnetUrl)));
+  assert.equal(saved.normalizedUrl, magnetUrl);
+  assert.match(saved.jobDescription, /Requirements/);
+  assert.equal(saved.source, "LinkedIn");
+});
+
+test("canonical URL variants deduplicate and preserve the checked Inbox lifecycle", async () => {
+  const { store, docs } = fixture();
+  const url = "https://jobs.lever.co/example/12345678-abcd-4abc-8abc-123456789abc";
+  docs.set("data/pipeline.md", `${docs.get("data/pipeline.md")}- [x] ${url}/apply?source=Indeed | Example Co | Engineer\n`);
+  const before = docs.get("data/pipeline.md");
+  const result = await store.importPosting({ originalUrl: `${url}/apply?source=LinkedIn`, normalizedUrl: url, posting: magnet, forceRefresh: true });
+  assert.equal(result.status, "already_exists");
+  assert.equal(result.existing, true);
+  assert.equal(result.normalizedUrl, `${url}/apply?source=Indeed`);
+  assert.equal(docs.get("data/pipeline.md"), before);
+  assert.equal(docs.has(importedPostingPath(url)), false);
+});
+
+test("concurrent identical imports produce one row and a replayable stable ID", async () => {
+  const { store, docs } = fixture();
+  const input = { originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet };
+  const results = await Promise.all([store.importPosting(input), store.importPosting(input)]);
+  assert.equal(results.filter(result => result.status === "imported").length, 1);
+  assert.equal(results.filter(result => result.status === "already_exists").length, 1);
+  assert.equal((docs.get("data/pipeline.md").match(new RegExp(magnetUrl, "g")) ?? []).length, 1);
+});
+
+test("report-linked URL is recognized without rewriting or re-adding the Inbox item", async () => {
+  const { store, docs } = fixture();
+  docs.set("reports/001-existing.md", `# Existing\n**URL:** ${magnetUrl}\n`);
+  const before = docs.get("data/pipeline.md");
+  const result = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "already_exists");
+  assert.equal(result.applicationNumber, "1");
+  assert.equal(docs.get("data/pipeline.md"), before);
+});
+
+test("refresh preserves checked rows and an existing good sidecar", async () => {
+  const { store, docs } = fixture();
+  const original = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  const path = importedPostingPath(magnetUrl), before = docs.get(path);
+  docs.set("data/pipeline.md", docs.get("data/pipeline.md").replace(`- [ ] ${magnetUrl}`, `- [x] ${magnetUrl}`));
+  const updatedPosting = { ...magnet, jobDescription: "Changed content that must not replace the existing evaluated record." };
+  const refreshed = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: updatedPosting, forceRefresh: true });
+  assert.equal(refreshed.status, "already_exists");
+  assert.equal(docs.get(path), before);
+  assert.equal(refreshed.inboxId, original.inboxId);
+});
+
+test("redirect aliases deduplicate to the canonical Inbox item before another fetch", async () => {
+  const { store, docs } = fixture();
+  const alias = "https://jobs.example.test/redirect";
+  await store.importPosting({ originalUrl: alias, requestedNormalizedUrl: alias, normalizedUrl: magnetUrl, posting: magnet });
+  const existing = await store.findImport({ originalUrl: alias, normalizedUrl: alias });
+  assert.equal(existing.status, "already_exists");
+  assert.equal(existing.normalizedUrl, magnetUrl);
+  assert.equal(existing.inboxId, `inb_${createHash("sha256").update(magnetUrl).digest("hex").slice(0, 32)}`);
+  assert.ok(docs.has(importedPostingPath(alias)));
+});
+
+test("a concurrent evaluation that checks the Inbox row wins over a pending import refresh", async () => {
+  const { store, docs } = fixture({ beforeCommit(current) {
+    current.set("data/pipeline.md", `${current.get("data/pipeline.md")}- [x] ${magnetUrl} | Magnet Forensics | AI & Automation Engineer (Enterprise)\n`);
+  } });
+  const result = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "already_exists");
+  assert.equal(result.normalizedUrl, magnetUrl);
+  assert.match(docs.get("data/pipeline.md"), new RegExp(`^- \\[x\\] ${magnetUrl.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`, "m"));
+  assert.equal(docs.has(importedPostingPath(magnetUrl)), false);
 });

@@ -5,6 +5,7 @@ import { load as parseYaml } from "js-yaml";
 import { HOSTED_EVALUATION_RULES, HOSTED_MACHINE_SUMMARY_SCHEMA } from "./ai/hosted-evaluation-assets.mjs";
 import { parseApplications as parseTrackerApplications } from "./tracker-table.mjs";
 import { ensureCareerOpsReportNumbering, reserveCareerOpsReportNumber, MAX_STORED_REPORT_NUMBER_SQL } from "./cloud-report-numbering.mjs";
+import { loadJobDescription } from "./cloud-job-import.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
@@ -229,7 +230,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     const existingTrackerRows=await parseTracker(trackerDoc?.content);
     if(request.url){const priorReports=await sql.query("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8'",[]);const prior=priorReports.find(x=>reportUrl(x.content)===job.url);const num=String(prior?.path||"").match(/^reports\/(\d+)-/)?.[1];if(num&&existingTrackerRows.some(x=>x.n===String(Number(num))))applicationNumber=String(Number(num));}
     const reportNumber=applicationNumber||await reserveCareerOpsReportNumber(sql);
-    const posting=await fetchPosting(job.url,fetchFn);
+    const posting=await loadJobDescription(job.url,{readDocument:readDoc,fetchFallback:url=>fetchPosting(url,fetchFn),maxChars:MAX_JD_CHARS});
     if(blacklist && isBlacklisted(blacklist.content,job.company)) throw new Error("BLACKLIST_GATE_BLOCKED");
     const generated=await generate({url:job.url,company:job.company,role:job.role,posting,cv:cv.content,profile:profile.content,profileRules:profileRules.content,oferta:HOSTED_EVALUATION_RULES,shared:"",custom:custom?.content||"",machineSummary:HOSTED_MACHINE_SUMMARY_SCHEMA,articleDigest:articleDigest?.content||"",applicationNumber:reportNumber,today:new Date().toISOString().slice(0,10)});
     invalidDraft=generated.slice(0,MAX_REPORT_CHARS);

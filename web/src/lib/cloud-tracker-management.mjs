@@ -1,8 +1,9 @@
 import { neon } from "@neondatabase/serverless";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { parseApplications, detectColumnMap } from "./tracker-table.mjs";
 import { load as parseYaml } from "js-yaml";
 import { reserveCareerOpsReportNumber } from "./cloud-report-numbering.mjs";
+import { importedPostingPath, normalizeJobUrl, validateJobUrl } from "./job-import.mjs";
 
 const APP = "data/applications.md", INBOX = "data/pipeline.md", STATUS_LOG = "data/status-log.tsv", FOLLOWUPS = "data/follow-ups.md", ALIASES = "data/tracker-aliases.json", PROFILE = "config/profile.yml";
 // Keep this checked-in table aligned with templates/states.yml. That system file
@@ -43,6 +44,11 @@ function parseTable(md, aliases) {
   return {lines,headers,cols,rows};
 }
 function formatRow(cells) { return `| ${cells.join(" | ")} |`; }
+function inboxAddLine({ url, company, role, location, compensation }) {
+  const tail = [location, compensation].map(value => value ? clean(value) : "");
+  while (tail.length && !tail.at(-1)) tail.pop();
+  return `- [ ] ${url} | ${clean(company)} | ${clean(role)}${tail.map(value => ` | ${value}`).join("")}`;
+}
 function parseInbox(md) {
   return md.split(/\r?\n/).map((line,index)=>{
     const m=line.match(/^(\s*-\s*\[)([ xX])(\]\s*)(.+)$/); if(!m)return null;
@@ -140,6 +146,145 @@ export function createCloudTrackerManagement({ sql, now = () => new Date() }) {
     const content=followupSeed(follow.content,{number},appliedDate(explicitDate,notes,today),today,appliedDays);
     if(content!==follow.content)docs.push({path:FOLLOWUPS,old:follow.sha256,content});
   }
+  async function findImport(input) {
+    await ready();
+    if (!input || typeof input !== "object" || typeof input.normalizedUrl !== "string" || typeof input.originalUrl !== "string") throw new Error("INVALID_REQUEST");
+    const normalizedUrl = normalizeJobUrl(input.normalizedUrl);
+    if (normalizedUrl !== input.normalizedUrl) throw new Error("INVALID_URL");
+    const [tracker, inbox, aliasMap, aliasDoc, reportDocs] = await Promise.all([
+      read(APP), read(INBOX), aliases(), optional(importedPostingPath(normalizedUrl)),
+      sql.query("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8'", []),
+    ]);
+    let canonicalUrl = normalizedUrl, priorRecord = null;
+    if (aliasDoc.content) {
+      try {
+        const aliasRecord = JSON.parse(aliasDoc.content);
+        if (aliasRecord.aliasFor) canonicalUrl = normalizeJobUrl(aliasRecord.aliasFor);
+        else if (aliasRecord.normalizedUrl === normalizedUrl) priorRecord = aliasRecord;
+      } catch { throw new Error("IMPORT_RECORD_INVALID"); }
+    }
+    if (!priorRecord && canonicalUrl !== normalizedUrl) {
+      const canonicalDoc = await optional(importedPostingPath(canonicalUrl));
+      if (canonicalDoc.content) { try { priorRecord = JSON.parse(canonicalDoc.content); } catch { throw new Error("IMPORT_RECORD_INVALID"); } }
+    }
+    const entries = parseInbox(inbox.content);
+    const existingEntry = entries.find(entry => {
+      try { return normalizeJobUrl(entry.url) === canonicalUrl; } catch { return entry.url === canonicalUrl; }
+    });
+    let reportMatch = null;
+    const trackerRows = parseApplications(tracker.content, "", aliasMap);
+    for (const report of reportDocs) {
+      const foundUrl = report.content?.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1];
+      if (!foundUrl) continue;
+      let matches = false; try { matches = normalizeJobUrl(foundUrl) === canonicalUrl; } catch { matches = foundUrl === canonicalUrl; }
+      if (!matches) continue;
+      const number = String(report.path).match(/^reports\/(\d+)-/)?.[1];
+      const row = number ? trackerRows.find(item => item.n === String(Number(number))) : null;
+      if (row) { reportMatch = { number: String(Number(number)), company: row.company, role: row.role }; break; }
+    }
+    if (reportMatch) return { status: "already_exists", existing: true, inboxId: priorRecord?.inboxId ?? `inb_${sha(normalizedUrl).slice(0, 32)}`,
+      originalUrl: input.originalUrl, normalizedUrl: existingEntry?.url ?? normalizedUrl, company: reportMatch.company, role: reportMatch.role,
+      source: input.source ?? priorRecord?.source ?? null, applicationNumber: reportMatch.number, createdAt: priorRecord?.createdAt ?? null };
+    if (existingEntry && (existingEntry.done || !input.forceRefresh)) return { status: "already_exists", existing: true, inboxId: priorRecord?.inboxId ?? `inb_${sha(normalizedUrl).slice(0, 32)}`,
+      originalUrl: input.originalUrl, normalizedUrl: existingEntry.url, company: existingEntry.pieces[1] || null, role: existingEntry.pieces[2] || null,
+      source: priorRecord?.source ?? input.source ?? null, applicationNumber: null, createdAt: priorRecord?.createdAt ?? null };
+    return null;
+  }
+  async function importPosting(input) {
+    await ready();
+    if (!input || typeof input !== "object" || typeof input.originalUrl !== "string" || typeof input.normalizedUrl !== "string" ||
+        !input.posting || typeof input.posting !== "object" || Array.isArray(input.posting) || typeof input.forceRefresh !== "undefined" && typeof input.forceRefresh !== "boolean") throw new Error("INVALID_REQUEST");
+    const url = validateJobUrl(input.normalizedUrl);
+    validateJobUrl(input.originalUrl);
+    if (normalizeJobUrl(url.href) !== input.normalizedUrl || input.originalUrl.length > 2048) throw new Error("INVALID_URL");
+    const requestedNormalizedUrl = input.requestedNormalizedUrl ?? input.normalizedUrl;
+    if (typeof requestedNormalizedUrl !== "string" || normalizeJobUrl(requestedNormalizedUrl) !== requestedNormalizedUrl) throw new Error("INVALID_URL");
+    const posting = input.posting;
+    const company = typeof posting.company === "string" ? posting.company.trim() : "";
+    const role = typeof posting.role === "string" ? posting.role.trim() : "";
+    const description = typeof posting.jobDescription === "string" ? posting.jobDescription.trim() : "";
+    if (!company || company.length > 500 || !role || role.length > 500 || !description || description.length > 24_000) throw new Error("INVALID_POSTING");
+    for (const key of ["location", "workArrangement", "employmentType", "compensation", "ats", "externalPostingId"]) {
+      if (posting[key] != null && (typeof posting[key] !== "string" || posting[key].length > 500)) throw new Error("INVALID_FIELD");
+    }
+    if (input.source != null && (typeof input.source !== "string" || input.source.length > 500)) throw new Error("INVALID_FIELD");
+    const inboxId = `inb_${sha(input.normalizedUrl).slice(0, 32)}`;
+    const sidecarPath = importedPostingPath(input.normalizedUrl);
+    const aliasPath = requestedNormalizedUrl !== input.normalizedUrl ? importedPostingPath(requestedNormalizedUrl) : null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const [tracker, inbox, aliasMap, sidecar, aliasDoc, reportDocs] = await Promise.all([
+        read(APP), read(INBOX), aliases(), optional(sidecarPath), aliasPath ? optional(aliasPath) : Promise.resolve(null),
+        sql.query("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8'", []),
+      ]);
+      const trackerRows = parseApplications(tracker.content, "", aliasMap);
+      const entries = parseInbox(inbox.content);
+      const existingEntry = entries.find(entry => {
+        try { return normalizeJobUrl(entry.url) === input.normalizedUrl || normalizeJobUrl(entry.url) === requestedNormalizedUrl; } catch { return entry.url === input.normalizedUrl; }
+      });
+      let reportMatch = null;
+      for (const report of reportDocs) {
+        const foundUrl = report.content?.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1];
+        if (!foundUrl) continue;
+        let matches = false;
+        try { matches = normalizeJobUrl(foundUrl) === input.normalizedUrl; } catch { matches = foundUrl === input.normalizedUrl; }
+        if (!matches) continue;
+        const number = String(report.path).match(/^reports\/(\d+)-/)?.[1];
+        const trackerRow = number ? trackerRows.find(row => row.n === String(Number(number))) : null;
+        if (trackerRow) { reportMatch = { report, number: String(Number(number)), company: trackerRow.company, role: trackerRow.role }; break; }
+      }
+      const priorRecord = sidecar.content ? (() => { try { const record = JSON.parse(sidecar.content); return record.normalizedUrl === input.normalizedUrl ? record : null; } catch { throw new Error("IMPORT_RECORD_INVALID"); } })() : null;
+      if (reportMatch) {
+        return { status: "already_exists", existing: true, inboxId, originalUrl: input.originalUrl, normalizedUrl: existingEntry?.url ?? input.normalizedUrl,
+          company: reportMatch.company, role: reportMatch.role, source: input.source ?? priorRecord?.source ?? null, applicationNumber: reportMatch.number, createdAt: priorRecord?.createdAt ?? null };
+      }
+      if (existingEntry && (existingEntry.done || !input.forceRefresh)) {
+        return { status: "already_exists", existing: true, inboxId, originalUrl: input.originalUrl, normalizedUrl: existingEntry.url,
+          company: existingEntry.pieces[1] || null, role: existingEntry.pieces[2] || null, source: priorRecord?.source ?? input.source ?? null,
+          applicationNumber: null, createdAt: priorRecord?.createdAt ?? null };
+      }
+      const nowValue = now().toISOString();
+      const createdAt = priorRecord?.createdAt ?? nowValue;
+      const normalizedPosting = {
+        inboxId, originalUrl: input.originalUrl, normalizedUrl: input.normalizedUrl, source: input.source?.trim() || posting.source || priorRecord?.source || null,
+        company, role, location: typeof posting.location === "string" ? posting.location.trim() || null : null,
+        workArrangement: typeof posting.workArrangement === "string" ? posting.workArrangement.trim() || null : null,
+        postingDate: typeof posting.postingDate === "string" ? posting.postingDate.trim() || null : null,
+        sourceCreatedAt: typeof posting.sourceCreatedAt === "string" ? posting.sourceCreatedAt.trim() || null : null,
+        sourceUpdatedAt: typeof posting.sourceUpdatedAt === "string" ? posting.sourceUpdatedAt.trim() || null : null,
+        employmentType: typeof posting.employmentType === "string" ? posting.employmentType.trim() || null : null,
+        compensation: typeof posting.compensation === "string" ? posting.compensation.trim() || null : null,
+        jobDescription: description, ats: typeof posting.ats === "string" ? posting.ats.trim() || null : null,
+        externalPostingId: typeof posting.externalPostingId === "string" ? posting.externalPostingId.trim() || null : null,
+        createdAt, importedAt: nowValue, ...(priorRecord && input.forceRefresh ? { refreshedAt: nowValue } : {}),
+      };
+      const lines = inbox.content.split(/\r?\n/);
+      if (existingEntry) {
+        // A refresh updates the durable JD but preserves the canonical Inbox row.
+      } else {
+        const dateLabel = /^\d{4}-\d{2}-\d{2}$/.test(normalizedPosting.postingDate ?? "") ? ` | posted: ${clean(normalizedPosting.postingDate)}` : "";
+        const sourceLabel = normalizedPosting.source ? ` | source: ${clean(normalizedPosting.source)}` : "";
+        const importedLabel = ` | imported: ${nowValue.slice(0, 10)}`;
+        lines.push(`${inboxAddLine({ url: input.normalizedUrl, company, role, location: normalizedPosting.location, compensation: normalizedPosting.compensation })}${dateLabel}${sourceLabel}${importedLabel}`);
+      }
+      const docs = [];
+      docs.push({ path: INBOX, old: inbox.sha256, content: existingEntry ? inbox.content : lines.join("\n").replace(/\n*$/, "\n") });
+      docs.push({ path: APP, old: tracker.sha256, content: tracker.content });
+      const keepGoodRecord = priorRecord && !input.forceRefresh;
+      const stored = keepGoodRecord ? priorRecord : normalizedPosting;
+      docs.push({ path: sidecarPath, old: sidecar.sha256, content: JSON.stringify(stored) });
+      if (aliasPath) docs.push({ path: aliasPath, old: aliasDoc?.sha256 ?? null, content: JSON.stringify({ inboxId, normalizedUrl: input.normalizedUrl, aliasFor: input.normalizedUrl, originalUrl: input.originalUrl, source: stored.source }) });
+      const result = { status: existingEntry ? "already_exists" : "imported", existing: Boolean(existingEntry), inboxId,
+        originalUrl: input.originalUrl, normalizedUrl: input.normalizedUrl, company: stored.company, role: stored.role,
+        source: stored.source, applicationNumber: null, createdAt: stored.createdAt };
+      try {
+        const committed = await commit(randomUUID(), "job-import", { url: input.normalizedUrl, forceRefresh: Boolean(input.forceRefresh), source: input.source ?? null, inboxId }, docs, result);
+        return committed;
+      } catch (error) {
+        if (error?.message !== "WRITE_CONFLICT" || attempt === 4) throw error;
+      }
+    }
+    throw new Error("WRITE_CONFLICT");
+  }
   async function mutate(kind,input) {
     if(!["tracker","inbox"].includes(kind))throw new Error("INVALID_OPERATION");
     await ready(); checkFields(kind,input);
@@ -175,13 +320,13 @@ export function createCloudTrackerManagement({ sql, now = () => new Date() }) {
       if(statusLine){const log=await optional(STATUS_LOG);if(!SOURCES.has("set-status"))throw new Error("STATUS_SOURCE_INVALID");docs.push({path:STATUS_LOG,old:log.sha256,content:log.content+statusLine});}
     } else {
       const op=input.operation, target=validatePublicUrl(op==="add"?input.url:input.targetUrl), lines=inbox.content.split(/\r?\n/), found=parseInbox(inbox.content).filter(x=>x.url===target); if(found.length>1)throw new Error("INBOX_TARGET_AMBIGUOUS"); const item=found[0];
-      if(op==="add"){if(item)throw new Error("INBOX_DUPLICATE_URL");if(!input.company?.trim()||input.company.length>500||!input.role?.trim()||input.role.length>500)throw new Error("REQUIRED_FIELDS");for(const k of ["location","compensation"])if(input[k]!==undefined&&(typeof input[k]!=="string"||input[k].length>500))throw new Error("INVALID_FIELD");const tail=[input.location,input.compensation].filter(Boolean).map(clean);lines.push(`- [ ] ${target} | ${clean(input.company)} | ${clean(input.role)}${tail.map(x=>` | ${x}`).join("")}`);}
+      if(op==="add"){if(item)throw new Error("INBOX_DUPLICATE_URL");if(!input.company?.trim()||input.company.length>500||!input.role?.trim()||input.role.length>500)throw new Error("REQUIRED_FIELDS");for(const k of ["location","compensation"])if(input[k]!==undefined&&(typeof input[k]!=="string"||input[k].length>500))throw new Error("INVALID_FIELD");lines.push(inboxAddLine({ url: target, ...input }));}
       else {if(!item)throw new Error("INBOX_URL_NOT_FOUND");if(op==="archive"){hasConfirm(input.confirm);lines[item.index]=`${item.prefix}x${item.spacer}${item.pieces.join(" | ")}`;}else if(op==="delete"){hasConfirm(input.confirm);lines.splice(item.index,1);}else if(op==="edit"){if(input.newUrl!==undefined){const next=validatePublicUrl(input.newUrl);if(next!==target&&parseInbox(inbox.content).some(x=>x.url===next))throw new Error("INBOX_DUPLICATE_URL");item.pieces[0]=next;}for(const k of ["company","role","location","compensation"]){if(input[k]!==undefined){const at={company:1,role:2,location:3,compensation:4}[k];if(typeof input[k]!=="string"||input[k].length>500||((k==="company"||k==="role")&&!input[k].trim()))throw new Error("INVALID_FIELD");item.pieces[at]=clean(input[k]);} }lines[item.index]=`${item.prefix}${item.done?"x":" "}${item.spacer}${item.pieces.join(" | ")}`;}else throw new Error("INVALID_OPERATION");}
       docs.push({path:INBOX,old:inbox.sha256,content:lines.join("\n").replace(/\n*$/,"\n")});result.url=target;result.operation=op;
     }
     return commit(id,kind,input,docs,result);
   }
-  return { async getApplication(id){await ready();if(!/^\d{1,8}$/.test(id))throw new Error("INVALID_APPLICATION_ID");const [doc,aliasMap]=await Promise.all([read(APP),aliases()]);const matches=parseApplications(doc.content,"",aliasMap).filter(x=>x.n===id);if(!matches.length)throw new Error("APPLICATION_NOT_FOUND");if(matches.length>1)throw new Error("APPLICATION_ID_AMBIGUOUS");return matches[0];}, mutate };
+  return { async getApplication(id){await ready();if(!/^\d{1,8}$/.test(id))throw new Error("INVALID_APPLICATION_ID");const [doc,aliasMap]=await Promise.all([read(APP),aliases()]);const matches=parseApplications(doc.content,"",aliasMap).filter(x=>x.n===id);if(!matches.length)throw new Error("APPLICATION_NOT_FOUND");if(matches.length>1)throw new Error("APPLICATION_ID_AMBIGUOUS");return matches[0];}, mutate, importPosting, findImport };
 }
 
 let envStore;

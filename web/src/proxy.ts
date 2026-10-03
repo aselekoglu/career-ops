@@ -81,7 +81,8 @@ export function proxy(request: NextRequest) {
   }
 
   const pathname = request.nextUrl.pathname;
-  if ((pathname === '/api/scans' && request.method === 'POST') ||
+  if ((pathname === '/api/job-import' && request.method === 'POST') ||
+      (pathname === '/api/scans' && request.method === 'POST') ||
       (pathname === '/api/cv-artifacts' && ['GET','HEAD'].includes(request.method)) ||
       (/^\/api\/cv-artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
       (/^\/api\/cv-artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/associate$/i.test(pathname) && request.method === 'POST') ||
