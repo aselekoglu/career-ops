@@ -12,6 +12,12 @@ async function text(path: string): Promise<string | null> {
   return null;
 }
 
+function validDateLabel(value: string | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : null;
+}
+
 export async function cloudReadInbox(): Promise<InboxJob[]> {
   const md = await text("data/pipeline.md");
   if (!md) return [];
@@ -27,10 +33,11 @@ export async function cloudReadInbox(): Promise<InboxJob[]> {
     }
     if (parts.length < 3 || !parts[0]) continue;
     const posted = labels.get("posted");
+    const discovered = validDateLabel(labels.get("discovered")) ?? validDateLabel(labels.get("imported"));
     jobs.push({ done: m[1].toLowerCase() === "x", url: parts[0], company: parts[1], role: parts[2], location: parts[3] || undefined,
       compensation: parts[4] && !/^\w+:/.test(parts[4]) ? parts[4] : undefined,
       postedAt: posted && /^\d{4}-\d{2}-\d{2}$/.test(posted) ? posted : undefined,
-      ...({ discoveredAt: labels.get('discovered') || null, lastSeenAt: labels.get('last_seen') || null }),
+      ...({ discoveredAt: discovered, lastSeenAt: labels.get('last_seen') || null }),
     });
   }
   return jobs;

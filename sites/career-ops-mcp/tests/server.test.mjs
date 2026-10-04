@@ -254,6 +254,81 @@ test('CV status rejects malformed UUID and completed status preserves exact down
   assert.ok(!JSON.stringify(body).includes('sourceCV'));
 });
 
+test('CV status can verify the exact completed download URL with Basic auth and return only PDF metadata', async t => {
+  const runId = '99999999-9999-4999-8999-999999999999';
+  const pdf = Buffer.from('%PDF-1.7\nprivate-pdf-payload');
+  const configured = { ...env, CAREER_OPS_MCP_READ_TOKEN: 'read-token' };
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const verifyRule = listed.result.tools.find(tool => tool.name === 'career_ops_cv_generate_status').inputSchema.properties.verifyDownload;
+  assert.equal(verifyRule.type, 'boolean');
+  assert.equal(verifyRule.default, false);
+  for (const verifyDownload of ['true', 1]) {
+    const invalid = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId, verifyDownload } }), env)).json();
+    assert.equal(invalid.error.code, -32602);
+  }
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.method, 'GET');
+    assert.equal(options.redirect, 'manual');
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-runs/' + runId);
+      assert.equal(options.headers.Authorization, 'Bearer read-token');
+      return Response.json({ runId, status: 'completed', artifactPath: 'output/exact.pdf', downloadUrl: env.CAREER_OPS_API_ORIGIN + '/api/cv-pdf?artifact=output%2Fexact.pdf', company: 'Example', role: 'Analyst', completedAt: '2026-10-03T12:00:00.000Z' });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-pdf?artifact=output%2Fexact.pdf');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    assert.equal(options.headers.Accept, 'application/pdf');
+    return new Response(pdf, { headers: { 'content-type': 'application/pdf', 'content-length': String(pdf.length) } });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId, verifyDownload: true } }), configured)).json();
+  assert.equal(body.result.structuredContent.status, 'completed');
+  assert.equal(body.result.structuredContent.artifactPath, 'output/exact.pdf');
+  assert.equal(body.result.structuredContent.downloadUrl, env.CAREER_OPS_API_ORIGIN + '/api/cv-pdf?artifact=output%2Fexact.pdf');
+  assert.equal(body.result.structuredContent.downloadVerified, true);
+  assert.equal(body.result.structuredContent.downloadBytes, pdf.length);
+  assert.ok(!JSON.stringify(body).includes('private-pdf-payload'));
+  assert.ok(!JSON.stringify(body).includes('test-password'));
+  assert.equal(calls, 2);
+});
+
+test('CV download verification rejects unsafe URLs, skips active runs and records redirects without relaying PDF', async t => {
+  const runId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const rows = [
+    { status: 'completed', artifactPath: 'output/exact.pdf', downloadUrl: 'https://attacker.example/api/cv-pdf?artifact=output%2Fexact.pdf' },
+    { status: 'running', artifactPath: null, downloadUrl: null },
+    { status: 'completed', artifactPath: 'output/exact.pdf', downloadUrl: env.CAREER_OPS_API_ORIGIN + '/api/cv-pdf?artifact=output%2Fexact.pdf' },
+  ];
+  let statusCalls = 0, calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.redirect, 'manual');
+    if (String(url).includes('/api/cv-runs/')) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-runs/' + runId);
+      const row = rows[statusCalls++];
+      return Response.json({ runId, company: 'Example', role: 'Analyst', ...row });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-pdf?artifact=output%2Fexact.pdf');
+    return new Response(null, { status: 302, headers: { location: 'https://attacker.example/payload.pdf' } });
+  });
+  const unsafe = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId, verifyDownload: true } }), env)).json();
+  assert.equal(unsafe.result.structuredContent.status, 'completed');
+  assert.equal(unsafe.result.structuredContent.downloadVerified, false);
+  assert.equal(unsafe.result.structuredContent.downloadErrorCode, 'CV_DOWNLOAD_URL_INVALID');
+  assert.equal(calls, 1);
+
+  const active = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId, verifyDownload: true } }), env)).json();
+  assert.equal(active.result.structuredContent.status, 'running');
+  assert.equal(active.result.structuredContent.downloadVerified, undefined);
+  assert.equal(calls, 2);
+
+  const redirected = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId, verifyDownload: true } }), env)).json();
+  assert.equal(redirected.result.structuredContent.status, 'completed');
+  assert.equal(redirected.result.structuredContent.downloadVerified, false);
+  assert.equal(redirected.result.structuredContent.downloadErrorCode, 'CV_DOWNLOAD_REDIRECT_DENIED');
+  assert.equal(calls, 4);
+});
+
 test('CV backend stable error code and safe failed-run metadata propagate without arbitrary messages or secrets', async t => {
   t.mock.method(globalThis, 'fetch', async () => Response.json({ errorCode: 'GEMINI_GENERATION_FAILED', message: 'secret raw backend detail', runId: '44444444-4444-4444-8444-444444444444', status: 'failed', artifactPath: null, completedAt: null, internalToken: 'supersecret', sourceCV: 'private' }, { status: 502 }));
   const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_start', arguments: { applicationNumber: '17' } }), env)).json();
