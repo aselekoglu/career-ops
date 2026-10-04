@@ -35,6 +35,10 @@ test('discovery is public, read-only and includes the native panel extension', a
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_profile_edit_preview').annotations.destructiveHint, false);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_source_apply').annotations.destructiveHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_artifact_export').annotations.readOnlyHint, true);
+  assert.match(body.result.tools.find(t => t.name === 'career_ops_cv_artifact_associate').description, /exact report URL\/path matches the evaluated application or the immutable target URL matches a reportless manual application/i);
+  assert.match(body.result.tools.find(t => t.name === 'career_ops_tracker_add').description, /binds the exact URL\/company\/role immutably/);
+  assert.match(body.result.tools.find(t => t.name === 'career_ops_evaluation_start').description, /a URL mentioned only in notes is insufficient/);
+  assert.match(body.result.tools.find(t => t.name === 'career_ops_cv_generate_start').description, /a URL mentioned only in notes is insufficient/);
   assert.ok(body.result.tools.find(t => t.name === 'open_career_ops')._meta['openai/ui'].entrypoints.some(e => e.type === 'thread'));
   assert.ok(!JSON.stringify(body).includes('test-password'));
 });
@@ -527,6 +531,34 @@ test('tracker and Inbox failures preserve only canonical backend codes and exclu
   assert.ok(!JSON.stringify(body).includes('db.internal'));
   assert.ok(!JSON.stringify(body).includes('raw stack'));
   assert.ok(!JSON.stringify(body).includes('secret'));
+});
+
+test('manual target-binding errors propagate safely through tracker add, evaluation, CV start and artifact association', async t => {
+  const configured = { ...env, CAREER_OPS_MCP_READ_TOKEN: 'read-token' };
+  const runId = '99999999-9999-4999-8999-999999999999';
+  const calls = [
+    ['career_ops_tracker_add', { operationId: '11111111-1111-4111-8111-111111111111', company: 'Synthetic Co', role: 'Analyst', url: 'https://jobs.example/canary-target', source: 'User', status: 'SKIP' }, '/api/tracker/commands', 'TRACKER_TARGET_URL_CONFLICT', 409],
+    ['career_ops_evaluation_start', { applicationNumber: '39' }, '/api/evaluation-runs', 'TRACKER_TARGET_REPORT_MISMATCH', 409],
+    ['career_ops_cv_generate_start', { applicationNumber: '39' }, '/api/cv-runs', 'TRACKER_TARGET_NOT_FOUND', 409],
+    ['career_ops_cv_artifact_associate', { runId, applicationNumber: '39', idempotencyKey: 'target-error-test' }, '/api/cv-artifacts/' + runId + '/associate', 'TRACKER_TARGETS_INVALID', 503],
+  ];
+  let index = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const [, , path, code, status] = calls[index++];
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + path);
+    if (path === '/api/tracker/commands' || path.endsWith('/associate')) assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    else assert.equal(options.headers.Authorization, 'Bearer read-token');
+    return Response.json({ code, message: 'private target URL and database details', stack: 'raw stack', internalToken: 'secret' }, { status });
+  });
+  for (const [name, args, , expectedCode] of calls) {
+    const body = await (await worker.fetch(rpc('tools/call', { name, arguments: args }), configured)).json();
+    assert.equal(body.result.isError, true, name);
+    assert.ok(body.result.content[0].text.startsWith(expectedCode + ':'), name);
+    assert.ok(!JSON.stringify(body).includes('private target URL'));
+    assert.ok(!JSON.stringify(body).includes('raw stack'));
+    assert.ok(!JSON.stringify(body).includes('internalToken'));
+  }
+  assert.equal(index, calls.length);
 });
 
 test('tracker operation IDs remain stable across retries and backend replay is allowlisted', async t => {

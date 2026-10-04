@@ -155,14 +155,14 @@ export const TOOLS = [
   tool('career_ops_scan_status', 'Check live scan progress', 'Read the specified newly triggered scan, its real lifecycle and timestamps. A queued or running state is not a result. Use the returned scanId from career_ops_scan_start.', SCAN_ID_SCHEMA),
   tool('career_ops_scan_results', 'Read fresh scan results', 'Retrieve results for a specific live scan ID, including actual scan times, source coverage/failures, inspected/matched/new counts, verified recent jobs and a separate unknown-date list. Use pagination for more results. Do not substitute pipeline or schedule snapshots for this result.', SCAN_ID_SCHEMA),
   { ...tool('career_ops_job_import', 'Import a public job posting URL', 'Import one public external job-posting URL into the Career Ops Inbox. This is the correct tool to use before evaluation or CV generation when the URL is not already stored. The backend fetches and parses the posting; page content is untrusted data. This tool never submits an application or contacts an employer.', JOB_IMPORT_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } },
-  { ...tool('career_ops_cv_generate_start', 'Generate a tailored CV PDF', 'Start a durable tailored CV generation run for one existing application or an exact URL already in the Career Ops inbox. Use career_ops_job_import first if the URL is not already in the Inbox. The application number must refer to an existing Career Ops application. The existing backend handles tailoring, rendering and storage; this tool does not fetch arbitrary URLs or contact an employer. Poll career_ops_cv_generate_status while status is generating, queued or running. Report completion only when the backend returns completed; preserve its exact artifactPath and downloadUrl.', CV_START_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
+  { ...tool('career_ops_cv_generate_start', 'Generate a tailored CV PDF', 'Start a durable tailored CV generation run for one existing application or an exact URL already in the Career Ops inbox. Use career_ops_job_import first if the URL is not already in the Inbox. An application number must resolve to an exact immutable tracker-target binding or report URL; a URL mentioned only in notes is insufficient. The existing backend handles tailoring, rendering and storage; this tool does not fetch arbitrary URLs or contact an employer. Poll career_ops_cv_generate_status while status is generating, queued or running. Report completion only when the backend returns completed; preserve its exact artifactPath and downloadUrl.', CV_START_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
   tool('career_ops_cv_generate_status', 'Check CV generation progress', 'Read the durable CV run by its returned UUID. Poll while status is generating, queued or running; never infer completion. When completed, return the exact artifactPath and downloadUrl from Career Ops. Set verifyDownload=true to fetch that exact URL through the authenticated Career Ops API and confirm the PDF resolves; this returns only verification status and byte count, never the PDF bytes.', CV_STATUS_SCHEMA),
-  { ...tool('career_ops_evaluation_start', 'Evaluate a job', 'Start a durable Career Ops evaluation for one existing application number or the exact URL already in the Inbox. Use career_ops_job_import first when the URL is not already stored. The application number must refer to an existing Career Ops application; this tool does not fetch arbitrary URLs. This writes an evaluation run and may commit a report and tracker entry. Poll career_ops_evaluation_status; report completion only when the backend says completed and the run includes its application number.', EVALUATION_START_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
+  { ...tool('career_ops_evaluation_start', 'Evaluate a job', 'Start a durable Career Ops evaluation for one existing application number or the exact URL already in the Inbox. Use career_ops_job_import first when the URL is not already stored. An application number must resolve to an exact immutable tracker-target binding or report URL; a URL mentioned only in notes is insufficient. This tool does not fetch arbitrary URLs. This writes an evaluation run and may commit a report and tracker entry. Poll career_ops_evaluation_status; report completion only when the backend says completed and the run includes its application number.', EVALUATION_START_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } },
   tool('career_ops_evaluation_status', 'Check evaluation progress', 'Read the durable evaluation run by its returned UUID. Poll through queued, running and committing; report completion only when the backend returns completed. Preserve the exact score, reportPath and applicationNumber supplied by the backend.', EVALUATION_STATUS_SCHEMA),
   tool('career_ops_evaluation_report', 'Read completed evaluation report', 'Retrieve the persisted report for a completed evaluation run. This is read-only and only returns the report stored by Career Ops.', EVALUATION_STATUS_SCHEMA),
   tool('career_ops_cv_artifacts', 'List CV artifacts', 'List persisted CV artifact metadata, optionally limited to one application number. Does not expose private download URLs or PDF bytes.', ARTIFACT_LIST_SCHEMA),
   tool('career_ops_cv_artifact', 'Read CV artifact metadata', 'Read allowlisted metadata for one persisted CV artifact by its run UUID. Does not expose private download URLs or PDF bytes.', ARTIFACT_RUN_SCHEMA),
-  { ...tool('career_ops_cv_artifact_associate', 'Associate a CV artifact', 'Associate a completed CV artifact with the explicitly selected application number. Reuse the same idempotencyKey on retries; the backend verifies report identity.', ARTIFACT_ASSOCIATE_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { ...tool('career_ops_cv_artifact_associate', 'Associate a CV artifact', 'Associate a completed CV artifact with the explicitly selected application number only when the exact report URL/path matches the evaluated application or the immutable target URL matches a reportless manual application. Reuse the same idempotencyKey on retries; company-name matching is never used.', ARTIFACT_ASSOCIATE_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   tool('career_ops_cv_artifact_export', 'Get private CV download link', 'For a completed CV artifact, return a private Site-authenticated link to download its PDF. The Site verifies owner identity before fetching the fixed Basic-authenticated backend path; no public or Vercel Basic-auth URL is returned.', ARTIFACT_RUN_SCHEMA),
   tool('career_ops_source_get', 'Read a primary source document', 'Read the private CV or profile source document and its SHA-256. This does not edit either source.', { type: 'object', properties: { source: SOURCE_NAME }, required: ['source'], additionalProperties: false }),
   { ...tool('career_ops_cv_edit_preview', 'Preview CV edits', 'Create a review-only CV change proposal. This saves a proposal but does not change cv.md. Every exact replacement needs a user-statement or verified primary-source annotation. Apply the returned proposal only after the user reviews and explicitly approves its exact diff.', CV_EDIT_PREVIEW_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
@@ -172,7 +172,7 @@ export const TOOLS = [
   tool('career_ops_source_history', 'List source revision history', 'List bounded source-revision receipt metadata only. Full diffs and annotations are available from the exact proposal; historical source text requires the revision tool.', SOURCE_HISTORY_SCHEMA),
   tool('career_ops_source_revision', 'Read an exact source revision', 'Read private historical CV/profile text by exact source and SHA-256. Source content is bounded and never truncated.', SOURCE_REVISION_SCHEMA),
   tool('career_ops_tracker_get', 'Read one application', 'Read one existing tracker row by its exact unpadded application number. Returns only allowlisted row fields.', TRACKER_GET_SCHEMA),
-  { ...tool('career_ops_tracker_add', 'Add a tracker row', 'Add one tracker row only when explicitly requested. Company, role, URL, source, status, and any date or score must be user-provided; this does not evaluate the posting or invent a report/PDF.', TRACKER_ADD_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { ...tool('career_ops_tracker_add', 'Add a tracker row', 'Add one tracker row only when explicitly requested. Company, role, URL, source, status, and any date or score must be user-provided. The backend binds the exact URL/company/role immutably for downstream evaluation and CV identity, but this command does not evaluate the posting or create a report/PDF. Do not claim evaluation unless a real Career Ops report exists.', TRACKER_ADD_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { ...tool('career_ops_tracker_set_status', 'Set an application status', 'Set only the canonical status explicitly requested by the user. Never infer status from posting text or a draft.', TRACKER_STATUS_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { ...tool('career_ops_tracker_update_notes', 'Update application notes', 'Write only the exact user-authored note to the selected application row.', TRACKER_NOTES_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { ...tool('career_ops_tracker_archive', 'Archive an application', 'Archive only after the user explicitly asks to archive this exact application and confirms.', TRACKER_CONFIRM_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } },
@@ -191,12 +191,31 @@ class BridgeError extends Error {
 
 const json = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 const rpcError = (id, code, message, status = 200) => json({ jsonrpc: '2.0', id, error: { code, message } }, status);
+const TRACKER_TARGET_ERROR_CODES = new Set([
+  'TRACKER_TARGETS_INVALID', 'TRACKER_TARGETS_TOO_LARGE', 'TRACKER_TARGET_REPORT_SCAN_TOO_LARGE', 'TRACKER_TARGET_URL_CONFLICT',
+  'TRACKER_TARGET_IMMUTABLE', 'TRACKER_TARGET_INVALID', 'TRACKER_TARGET_APPLICATION_INVALID', 'TRACKER_TARGET_REPORT_MISMATCH',
+  'TRACKER_TARGET_ROW_MISMATCH', 'TRACKER_TARGET_NOT_FOUND',
+]);
 const TRACKER_ERROR_CODES = new Set([
   'APPLICATION_NOT_FOUND', 'INBOX_URL_NOT_FOUND', 'INVALID_APPLICATION_ID', 'INVALID_OPERATION_ID', 'APPLICATION_ID_AMBIGUOUS', 'INVALID_OPERATION',
   'INVALID_REQUEST', 'REQUIRED_FIELDS', 'INVALID_URL', 'INBOX_FORMAT_INVALID', 'TRACKER_FORMAT_INVALID', 'INVALID_STATUS', 'INVALID_DATE',
   'INVALID_SCORE', 'INVALID_NOTES', 'INVALID_FIELD', 'CONFIRMATION_REQUIRED', 'INBOX_DUPLICATE_URL', 'INBOX_TARGET_AMBIGUOUS',
   'IDEMPOTENCY_KEY_CONFLICT', 'WRITE_CONFLICT', 'DOCUMENT_UNAVAILABLE', 'STATE_CONFIG_INVALID', 'TRACKER_ALIASES_INVALID',
-  'CLOUD_DATA_UNAVAILABLE', 'FIELD_TOO_LONG', 'TRACKER_REQUEST_FAILED',
+  'CLOUD_DATA_UNAVAILABLE', 'FIELD_TOO_LONG', 'TRACKER_REQUEST_FAILED', ...TRACKER_TARGET_ERROR_CODES,
+]);
+const EVALUATION_START_ERROR_CODES = new Set([
+  'ONE_TARGET_REQUIRED', 'INVALID_EVALUATION_REQUEST', 'INVALID_APPLICATION_NUMBER', 'INVALID_IDEMPOTENCY_KEY', 'INVALID_JOB_URL',
+  'APPLICATION_NOT_FOUND', 'APPLICATION_REPORT_NOT_FOUND', 'URL_NOT_IN_INBOX', 'CV_NOT_FOUND', 'PROFILE_NOT_FOUND',
+  'EVALUATION_INPUTS_NOT_IMPORTED', 'EVALUATION_INVALID_RESULT', 'TRACKER_FORMAT_INVALID', 'BLACKLIST_GATE_BLOCKED',
+  'IDEMPOTENCY_KEY_CONFLICT', 'EVALUATION_WORKER_NOT_CONFIGURED', 'HOSTED_AI_UNAVAILABLE', 'EVALUATION_WRITE_CONFLICT',
+  'EVALUATION_API_FAILED', 'REPORT_NOT_READY', ...TRACKER_TARGET_ERROR_CODES,
+]);
+const CV_RUN_ERROR_CODES = new Set([
+  'ONE_TARGET_REQUIRED', 'INVALID_APPLICATION_NUMBER', 'INVALID_JOB_URL', 'APPLICATION_NOT_FOUND', 'APPLICATION_REPORT_NOT_FOUND',
+  'JOB_NOT_IN_INBOX', 'CV_NOT_FOUND', 'POSTING_FETCH_EMPTY', 'POSTING_FETCH_FAILED', 'POSTING_TOO_LARGE', 'CV_WORKER_NOT_CONFIGURED',
+  'HOSTED_AI_UNAVAILABLE', 'CV_API_FAILED', 'CV_GENERATION_UNAVAILABLE', 'CV_GENERATION_FAILED', 'GEMINI_GENERATION_FAILED',
+  'CV_HTML_INVALID', 'CV_HTML_TOO_LARGE', 'CV_HTML_UNSAFE', 'CV_OUTPUT_TOO_LARGE', 'CV_ENVELOPE_INVALID',
+  'CV_WORKER_DISPATCH_FAILED', 'CV_WORKER_FAILED', 'WORKER_TIMEOUT', 'CV_RUN_NOT_FOUND', ...TRACKER_TARGET_ERROR_CODES,
 ]);
 const SOURCE_ERROR_CODES = new Set([
   'INVALID_SOURCE', 'DOCUMENT_UNAVAILABLE', 'SOURCE_NOT_FOUND', 'PROPOSAL_NOT_FOUND', 'REVISION_NOT_FOUND', 'INVALID_REQUEST', 'JSON_REQUIRED',
@@ -213,14 +232,16 @@ const CV_ARTIFACT_ERROR_CODES = new Set([
   'CV_ARTIFACT_TRACKER_ALIASES_INVALID', 'CV_ARTIFACT_APPLICATION_NOT_FOUND', 'CV_ARTIFACT_APPLICATION_AMBIGUOUS',
   'CV_ARTIFACT_REPORT_LINK_INVALID', 'CV_ARTIFACT_REPORT_NOT_FOUND', 'CV_ARTIFACT_IDENTITY_MISMATCH', 'CV_ARTIFACT_TRACKER_INVALID',
   'CV_ARTIFACT_TRACKER_PDF_STATE_INVALID', 'CV_ARTIFACT_INDEX_INVALID', 'CV_ARTIFACT_WRITE_CONFLICT', 'CV_ARTIFACT_CORRUPT_PDF',
-  'CV_ARTIFACT_REQUEST_FAILED',
+  'CV_ARTIFACT_ASSOCIATION_FAILED', 'CV_ARTIFACT_ASSOCIATION_INVALID', 'CV_ARTIFACT_INVALID', 'CV_ARTIFACT_INDEX_ROW_INVALID',
+  'CV_ARTIFACT_INVALID_ASSOCIATION', 'CV_ARTIFACT_INVALID_LIMIT', 'CV_ARTIFACT_INVALID_OFFSET', 'CV_ARTIFACT_INVALID_QUERY',
+  'CV_ARTIFACT_REQUEST_TOO_LARGE', 'CV_ARTIFACT_REQUEST_FAILED', 'CV_ARTIFACTS_UNAVAILABLE', ...TRACKER_TARGET_ERROR_CODES,
 ]);
 
 async function safeBackendErrorCode(response, allowedCodes, fallback) {
   try {
     if (!response.headers.get('content-type')?.includes('application/json')) return fallback;
     const body = JSON.parse(await boundedText(response.body, 64000));
-    const candidate = body?.error?.code ?? body?.code;
+    const candidate = body?.error?.code ?? body?.code ?? body?.errorCode;
     return allowedCodes.has(candidate) ? candidate : fallback;
   } catch { return fallback; }
 }
@@ -279,11 +300,15 @@ async function upstream(env, pathname, body, { requireBasic = false, responseTyp
     }
     if (!response.ok && (pathname === '/api/cv-runs' || /^\/api\/cv-runs\/[0-9a-f-]{36}$/i.test(pathname))) {
       let failure = {};
-      try { if (response.headers.get('content-type')?.includes('application/json')) failure = await response.json(); } catch { /* Keep a generic safe error. */ }
+      try { if (response.headers.get('content-type')?.includes('application/json')) failure = JSON.parse(await boundedText(response.body, 64000)); } catch { /* Keep a generic safe error. */ }
       const candidateCode = failure.code ?? failure.errorCode;
-      const errorCode = typeof candidateCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(candidateCode) ? candidateCode : 'CV_GENERATION_UNAVAILABLE';
+      const errorCode = CV_RUN_ERROR_CODES.has(candidateCode) ? candidateCode : 'CV_GENERATION_UNAVAILABLE';
       const metadata = Object.fromEntries(CV_FIELDS.filter(key => failure[key] === null || ['string', 'number', 'boolean'].includes(typeof failure[key])).map(key => [key, failure[key]]));
       throw new BridgeError(errorCode, 'Career Ops could not complete the CV request.', { ...metadata, errorCode });
+    }
+    if (!response.ok && pathname === '/api/evaluation-runs' && body !== undefined) {
+      const code = await safeBackendErrorCode(response, EVALUATION_START_ERROR_CODES, 'EVALUATION_API_FAILED');
+      throw new BridgeError(code, 'Career Ops could not start the evaluation.');
     }
     if (!response.ok && (pathname === '/api/tracker/commands' || pathname === '/api/inbox/commands' || /^\/api\/tracker\/[1-9][0-9]{0,7}$/.test(pathname))) {
       const fallback = response.status === 404 ? 'APPLICATION_NOT_FOUND' : 'TRACKER_REQUEST_FAILED';
@@ -563,7 +588,7 @@ function safeCvResult(raw) {
   if (normalized.associationStatus && typeof normalized.associationPending === 'boolean' && normalized.associationPending !== (normalized.associationStatus === 'pending')) throw new BridgeError('INVALID_CV_RUN', 'Career Ops returned an invalid CV run response.');
   if (normalized.applicationNumber != null && (typeof normalized.applicationNumber !== 'string' || !/^[1-9][0-9]{0,7}$/.test(normalized.applicationNumber))) throw new BridgeError('INVALID_CV_RUN', 'Career Ops returned an invalid CV run response.');
   if (normalized.reportPath != null && (typeof normalized.reportPath !== 'string' || !REPORT_PATH_RE.test(normalized.reportPath))) throw new BridgeError('INVALID_CV_RUN', 'Career Ops returned an invalid CV run response.');
-  if (normalized.associationErrorCode != null && (typeof normalized.associationErrorCode !== 'string' || !/^[A-Z][A-Z0-9_]{0,79}$/.test(normalized.associationErrorCode))) throw new BridgeError('INVALID_CV_RUN', 'Career Ops returned an invalid CV run response.');
+  if (normalized.associationErrorCode != null && !CV_ARTIFACT_ERROR_CODES.has(normalized.associationErrorCode)) throw new BridgeError('INVALID_CV_RUN', 'Career Ops returned an invalid CV run response.');
   return Object.fromEntries(CV_FIELDS.filter(key => normalized[key] === null || ['string', 'number', 'boolean'].includes(typeof normalized[key])).map(key => [key, normalized[key]]));
 }
 
@@ -744,7 +769,7 @@ function safeArtifactMetadata(source, expectedRunId = null) {
   };
   if (typeof raw.runId !== 'string' || !new RegExp(UUID_PATTERN, 'i').test(raw.runId) || (expectedRunId && raw.runId.toLowerCase() !== expectedRunId.toLowerCase()) || !ARTIFACT_STATES.includes(raw.status) ||
       !ASSOCIATION_STATES.includes(raw.associationStatus) || typeof raw.associationPending !== 'boolean' || raw.associationPending !== (raw.associationStatus === 'pending') ||
-      !(raw.associationErrorCode === null || (typeof raw.associationErrorCode === 'string' && /^[A-Z][A-Z0-9_]{0,79}$/.test(raw.associationErrorCode))) ||
+      !(raw.associationErrorCode === null || CV_ARTIFACT_ERROR_CODES.has(raw.associationErrorCode)) ||
       !(raw.applicationNumber === null || (typeof raw.applicationNumber === 'string' && /^[1-9][0-9]{0,7}$/.test(raw.applicationNumber))) ||
       !(raw.targetApplicationNumber === null || (typeof raw.targetApplicationNumber === 'string' && /^[1-9][0-9]{0,7}$/.test(raw.targetApplicationNumber))) ||
       !(raw.reportPath === null || (typeof raw.reportPath === 'string' && raw.reportPath.length <= 256 && REPORT_PATH_RE.test(raw.reportPath))) ||
