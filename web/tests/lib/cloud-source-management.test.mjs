@@ -343,6 +343,26 @@ test("history uses limit-plus-one metadata pagination without returning annotati
   assert.equal("sourceAnnotations" in page.history[0], false);
 });
 
+test("history at the maximum offset does not advertise an unsupported next page", async () => {
+  const sql = { async query(statement, params = []) {
+    if (statement.startsWith("CREATE TABLE IF NOT EXISTS career_ops_tracker_mutations")) return [];
+    if (statement.startsWith("SELECT path,updated_at,")) {
+      assert.equal(params[1], 101);
+      assert.equal(params[2], 10_000);
+      return Array.from({ length: 101 }, (_, index) => ({
+        path: `data/source-receipts/cv/${uuid(index + 30)}.json`, updated_at: "2026-10-04T12:00:00.000Z",
+        operation_id: uuid(index + 30), proposal_id: uuid(index + 130), source: "cv",
+        before_sha256: sha(`before-${index}`), after_sha256: sha(`after-${index}`), status: "applied",
+        annotation_count: 1, created_at: "2026-10-04T12:00:00.000Z",
+      }));
+    }
+    throw new Error(`Unexpected SQL: ${statement}`);
+  } };
+  const page = await createCloudSourceManagement({ sql }).listHistory("cv", { limit: 100, offset: 10_000 });
+  assert.equal(page.history.length, 100);
+  assert.deepEqual(page.pagination, { limit: 100, offset: 10_000, nextOffset: null });
+});
+
 test("editable primary source paths bypass warm document caching", () => {
   for (const path of ["cv.md", "config/profile.yml", "modes/_profile.md", "modes/_custom.md", "article-digest.md", "portals.yml", "reports/001-example.md", "data/source-revisions/cv/abc.json"]) assert.equal(shouldCacheCloudDocument(path), false, path);
   assert.equal(shouldCacheCloudDocument("templates/cv-template.html"), true);

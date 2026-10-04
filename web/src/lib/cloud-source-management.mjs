@@ -13,6 +13,7 @@ const MAX_EDIT_COUNT = 20;
 const MAX_REPLACEMENT_CHARS = 20_000;
 const MAX_REFERENCE_CHARS = 2_000;
 const MAX_BODY_BYTES = 256_000;
+const MAX_HISTORY_OFFSET = 10_000;
 const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
 const PROFILE_FIELDS = new Set(["name", "email", "location", "roles", "compMin", "compMax", "currency", "remote"]);
 const ALWAYS_FRESH_PATHS = new Set(["cv.md", "config/profile.yml", "modes/_profile.md", "modes/_custom.md", "article-digest.md", "portals.yml"]);
@@ -286,7 +287,7 @@ export function createCloudSourceManagement({ sql, now = () => new Date() }) {
     sourcePath(source);
     const limit = options.limit == null ? 50 : options.limit;
     const offset = options.offset == null ? 0 : options.offset;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0 || offset > 10_000) throw new Error("INVALID_HISTORY_QUERY");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0 || offset > MAX_HISTORY_OFFSET) throw new Error("INVALID_HISTORY_QUERY");
     await ready();
     const rows = await sql.query(`SELECT path,updated_at,
       content::jsonb->>'operationId' AS operation_id,content::jsonb->>'proposalId' AS proposal_id,
@@ -300,7 +301,8 @@ export function createCloudSourceManagement({ sql, now = () => new Date() }) {
       if (row.source !== source || !UUID_RE.test(row.operation_id ?? "") || !UUID_RE.test(row.proposal_id ?? "") || !SHA_RE.test(row.before_sha256 ?? "") || !SHA_RE.test(row.after_sha256 ?? "") || !["applied", "unchanged"].includes(row.status) || !row.created_at || !Number.isInteger(Number(row.annotation_count)) || Number(row.annotation_count) < 0) throw new Error("RECEIPT_INVALID");
       return { operationId: row.operation_id, proposalId: row.proposal_id, source, beforeSha256: row.before_sha256, afterSha256: row.after_sha256, status: row.status, sourceAnnotationCount: Number(row.annotation_count), createdAt: row.created_at, updatedAt: row.updated_at };
     });
-    return { history, pagination: { limit, offset, nextOffset: hasMore ? offset + limit : null } };
+    const nextOffset = hasMore && offset + limit <= MAX_HISTORY_OFFSET ? offset + limit : null;
+    return { history, pagination: { limit, offset, nextOffset } };
   }
   async function getRevision(source, contentHash) {
     sourcePath(source);

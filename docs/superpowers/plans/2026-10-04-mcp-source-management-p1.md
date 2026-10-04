@@ -89,5 +89,6 @@
 - [x] Send route schemas to the MCP bridge owner; history returns bounded metadata pagination and proposal reads carry the reviewed diff/annotations.
 - [x] Run `node --test tests/lib/cloud-source-management.test.mjs` from `web/`: 23 passed, 0 failed.
 - [x] Root integrated Next production build passed (session 33925, exit 0): TypeScript compiled and all six fixed source route paths appeared in the route manifest.
+- [x] Pagination boundary follow-up: `nextOffset` is now null if the next page would exceed the accepted offset 10,000; targeted test passed (1/1) and `node --check` passed.
 - [ ] Native CV/profile no-op acceptance remains pending deployment of the MCP bridge. No live source apply, browser QA, or broad repository suite was run.
 - [ ] Confirm the source-management P1 roadmap remains scoped to this capability; do not mark remaining CV intake, exports, or unrelated P1/P2/P3 work complete.
