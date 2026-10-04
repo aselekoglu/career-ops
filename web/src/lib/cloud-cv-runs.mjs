@@ -11,6 +11,7 @@ import {
 } from "./cloud-career-ops";
 import { getCloudDocument } from "./cloud-store";
 import { loadJobDescription } from "./cloud-job-import.mjs";
+import { fetchPublicPosting, normalizeJobUrl, validateJobUrl } from "./job-import.mjs";
 import { workerAuthorized } from "./cloud-scans.mjs";
 import { createCloudPdfArtifactStore, ensureCvArtifactSchema, persistRenderedCvArtifact, reportUrlFromContent } from "./cloud-pdf-artifacts.mjs";
 
@@ -30,28 +31,11 @@ const json = (body, status = 200) => Response.json(body, {
 });
 
 function normalizeUrl(value) {
-  try {
-    const parsed = new URL(String(value || ""));
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
-    parsed.hash = "";
-    parsed.search = "";
-    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
-    return parsed.toString();
-  } catch {
-    return "";
-  }
+  try { return normalizeJobUrl(String(value || "")); } catch { return ""; }
 }
 
 function safePublicHost(url) {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    if (!host || host === "localhost" || host.endsWith(".local")) return false;
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
-    if (host === "::1" || host.startsWith("[") || host.includes(":")) return false;
-    return true;
-  } catch {
-    return false;
-  }
+  try { validateJobUrl(url); return true; } catch { return false; }
 }
 
 function slug(value, fallback = "cv") {
@@ -117,17 +101,21 @@ function htmlToText(input) {
 }
 
 async function fetchPostingText(url, fetchFn = fetch) {
-  const normalized = normalizeUrl(url);
-  if (!normalized || !safePublicHost(normalized)) throw new Error("INVALID_JOB_URL");
-  const response = await fetchFn(normalized, {
-    redirect: "error",
-    signal: AbortSignal.timeout(20_000),
-    headers: { "User-Agent": "Career-Ops/1.0 CV Tailor" },
-  });
-  if (!response.ok) throw new Error("POSTING_FETCH_FAILED");
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength > MAX_POSTING_BYTES) throw new Error("POSTING_TOO_LARGE");
-  const raw = await response.text();
+  try { validateJobUrl(url); } catch { throw new Error("INVALID_JOB_URL"); }
+  const testTransport = fetchFn !== fetch ? {
+    resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+    request: async ({ url: target, signal }) => {
+      const response = await fetchFn(target.href, { redirect: "error", signal, headers: { "User-Agent": "Career-Ops/1.0 CV Tailor" } });
+      return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() };
+    },
+  } : {};
+  const fetched = await fetchPublicPosting(url, { ...testTransport, maxBytes: MAX_POSTING_BYTES, timeoutMs: 20_000 });
+  if (!fetched.ok) {
+    if (fetched.error === "FETCH_TOO_LARGE") throw new Error("POSTING_TOO_LARGE");
+    if (["INVALID_URL", "UNSUPPORTED_SCHEME", "PRIVATE_NETWORK_BLOCKED"].includes(fetched.error)) throw new Error("INVALID_JOB_URL");
+    throw new Error("POSTING_FETCH_FAILED");
+  }
+  const raw = fetched.body;
   if (Buffer.byteLength(raw, "utf8") > MAX_POSTING_BYTES) throw new Error("POSTING_TOO_LARGE");
   const text = htmlToText(raw).slice(0, MAX_POSTING_CHARS);
   if (text.length < 120) throw new Error("POSTING_FETCH_EMPTY");
@@ -243,7 +231,7 @@ async function resolveTarget(input, options = {}) {
   const job = (await readInbox()).find((item) => normalizeUrl(item.url) === normalized);
   if (!job) throw new Error("JOB_NOT_IN_INBOX");
   const readDocument = options.readDocument || getCloudDocument;
-  const fetchFallback = options.fetchFallback || (url => fetchPostingText(url));
+  const fetchFallback = options.fetchFallback || (url => fetchPostingText(url, options.fetchFn || fetch));
   return {
     selector: { url: job.url },
     company: job.company,

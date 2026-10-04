@@ -28,9 +28,8 @@ const cell = x => String(x ?? "").trim();
 const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export function validatePublicUrl(value) {
-  if (typeof value !== "string" || value.length > 2048 || value.trim() !== value) throw new Error("INVALID_URL");
-  let u; try { u = new URL(value); } catch { throw new Error("INVALID_URL"); }
-  if (!/^https?:$/.test(u.protocol) || !u.hostname || u.username || u.password || u.hostname === "localhost" || u.hostname.endsWith(".local") || /^\d+(?:\.\d+){3}$/.test(u.hostname) || /[|\r\n\s]/.test(value)) throw new Error("INVALID_URL");
+  try { validateJobUrl(value); } catch { throw new Error("INVALID_URL"); }
+  if (value.includes("|")) throw new Error("INVALID_URL"); // The Inbox uses pipe-delimited cells.
   return value;
 }
 

@@ -6,6 +6,7 @@ import { HOSTED_EVALUATION_RULES, HOSTED_MACHINE_SUMMARY_SCHEMA } from "./ai/hos
 import { parseApplications as parseTrackerApplications } from "./tracker-table.mjs";
 import { ensureCareerOpsReportNumbering, reserveCareerOpsReportNumber, MAX_STORED_REPORT_NUMBER_SQL } from "./cloud-report-numbering.mjs";
 import { loadJobDescription } from "./cloud-job-import.mjs";
+import { fetchPublicPosting } from "./job-import.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
@@ -126,10 +127,17 @@ function htmlToText(input) {
   .replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/\s+/g," ").trim();
 }
 async function fetchPosting(url, fetchFn = fetch) {
- const response = await fetchFn(url,{ redirect:"error",signal:AbortSignal.timeout(20000),headers:{"User-Agent":"Career-Ops/1.0 Evaluation"} });
- if (!response.ok) throw new Error("POSTING_FETCH_FAILED");
- const declared=Number(response.headers.get("content-length")||0); if (declared>MAX_JD_BYTES) throw new Error("POSTING_TOO_LARGE");
- const raw=await response.text(); if (Buffer.byteLength(raw,"utf8")>MAX_JD_BYTES) throw new Error("POSTING_TOO_LARGE");
+ const testTransport = fetchFn !== fetch ? {
+  resolve: async () => [{ address:"93.184.216.34", family:4 }],
+  request: async ({url:target,signal}) => {
+   const response=await fetchFn(target.href,{redirect:"error",signal,headers:{"User-Agent":"Career-Ops/1.0 Evaluation"}});
+   return {status:response.status,headers:Object.fromEntries(response.headers.entries()),body:await response.text()};
+  },
+ } : {};
+ const fetched=await fetchPublicPosting(url,{...testTransport,maxBytes:MAX_JD_BYTES,timeoutMs:20000});
+ if (!fetched.ok) { if(fetched.error==="FETCH_TOO_LARGE")throw new Error("POSTING_TOO_LARGE"); throw new Error("POSTING_FETCH_FAILED"); }
+ const raw=fetched.body;
+ if (Buffer.byteLength(raw,"utf8")>MAX_JD_BYTES) throw new Error("POSTING_TOO_LARGE");
  const text=htmlToText(raw).slice(0,MAX_JD_CHARS); if(text.length<120) throw new Error("POSTING_FETCH_EMPTY"); return text;
 }
 function buildEvaluationPrompt(args) {
@@ -303,4 +311,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};

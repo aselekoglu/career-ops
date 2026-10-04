@@ -213,11 +213,16 @@ export function prepareArtifactAssociation({ run, app, reportContent, pdfDocumen
   };
 }
 
-export function artifactMetadata(run, pdfDocument = null) {
+export function artifactMetadata(run, pdfDocument = null, pdfMetadata = null) {
   const request = typeof run?.request === "string" ? safeJson(run.request) : run?.request;
   const targetApplicationNumber = request?.applicationNumber ? String(request.applicationNumber) : null;
   let bytes = null;
   if (pdfDocument) bytes = validatePdfDocument(pdfDocument);
+  const storedSize = Number(pdfMetadata?.byte_size);
+  const storedPdfMetadata = pdfMetadata?.path === run?.artifact_path && pdfMetadata?.content_encoding === "base64" &&
+    Number.isSafeInteger(storedSize) && storedSize >= 500 && storedSize <= MAX_PDF_BYTES &&
+    typeof pdfMetadata?.sha256 === "string" && SHA_RE.test(pdfMetadata.sha256)
+    ? pdfMetadata : null;
   return {
     runId: run.id,
     status: run.state,
@@ -231,8 +236,8 @@ export function artifactMetadata(run, pdfDocument = null) {
     role: run.role || null,
     artifactPath: run.artifact_path || null,
     contentType: "application/pdf",
-    byteSize: bytes?.byteLength ?? null,
-    sha256: pdfDocument?.sha256 || null,
+    byteSize: bytes?.byteLength ?? (storedPdfMetadata ? storedSize : null),
+    sha256: pdfDocument?.sha256 || storedPdfMetadata?.sha256 || null,
     format: run.format || null,
     requestedAt: run.requested_at ? new Date(run.requested_at).toISOString() : null,
     completedAt: run.completed_at ? new Date(run.completed_at).toISOString() : null,
@@ -360,18 +365,33 @@ export function createCloudPdfArtifactStore(options = {}) {
 
   return {
     async get(runId) { return get(runId); },
-    async list(applicationNumber) {
-      if (typeof applicationNumber !== "string" || !/^[1-9]\d{0,5}$/.test(applicationNumber)) throw new Error("CV_ARTIFACT_INVALID_APPLICATION_NUMBER");
+    async list(applicationNumber = null, limit = 25, offset = 0) {
+      if (applicationNumber !== null && (typeof applicationNumber !== "string" || !/^[1-9]\d{0,5}$/.test(applicationNumber))) throw new Error("CV_ARTIFACT_INVALID_APPLICATION_NUMBER");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("CV_ARTIFACT_INVALID_LIMIT");
+      if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) throw new Error("CV_ARTIFACT_INVALID_OFFSET");
       await ready();
-      const rows = await sql.query(`SELECT * FROM career_ops_cv_runs
-        WHERE application_number=$1 OR request->>'applicationNumber'=$1
-        ORDER BY completed_at DESC NULLS LAST, requested_at DESC`, [applicationNumber]);
-      const artifacts = [];
-      for (const row of rows) {
-        const doc = row.state === "completed" && row.artifact_path ? await loadPdf(row) : null;
-        artifacts.push(artifactMetadata(row, doc));
-      }
-      return { applicationNumber, latest: artifacts[0] || null, artifacts };
+      const statement = `SELECT r.id,r.state,
+          CASE WHEN r.request ? 'applicationNumber' THEN jsonb_build_object('applicationNumber',r.request->>'applicationNumber') ELSE '{}'::jsonb END AS request,
+          r.company,r.role,r.format,r.artifact_path,r.requested_at,r.completed_at,
+          r.application_number,r.report_path,r.association_status,r.association_error_code,
+          d.path AS stored_pdf_path,d.content_encoding AS stored_pdf_encoding,
+          d.byte_size AS stored_pdf_size,d.sha256 AS stored_pdf_sha256
+        FROM career_ops_cv_runs r
+        LEFT JOIN career_ops_documents d ON d.path=r.artifact_path
+        WHERE ($1::text IS NULL OR r.application_number=$1 OR r.request->>'applicationNumber'=$1)
+        ORDER BY r.completed_at DESC NULLS LAST, r.requested_at DESC, r.id DESC
+        LIMIT $2 OFFSET $3`;
+      const rows = await sql.query(statement, [applicationNumber, limit + 1, offset]);
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const metadata = row => artifactMetadata(row, null, {
+          path: row.stored_pdf_path, content_encoding: row.stored_pdf_encoding,
+          byte_size: row.stored_pdf_size, sha256: row.stored_pdf_sha256,
+      });
+      const artifacts = page.map(metadata);
+      const latestRow = offset === 0 ? page[0] : (await sql.query(statement, [applicationNumber, 1, 0]))[0];
+      return { applicationNumber, latest: latestRow ? metadata(latestRow) : null, artifacts,
+        pagination: { limit, offset, nextOffset: hasMore ? offset + limit : null } };
     },
     async associate(runId, applicationNumber, idempotencyKey) { return associate(runId, applicationNumber, idempotencyKey); },
     async download(runId) {
@@ -427,10 +447,15 @@ export async function handleCvArtifactRequest(request, runId = null, action = "m
     const store = storeOverride || await getStore();
     if (action === "list") {
       const params = new URL(request.url).searchParams;
-      if ([...params.keys()].some((key) => key !== "applicationNumber")) return json({ code: "CV_ARTIFACT_INVALID_QUERY" }, 400);
+      const allowed = new Set(["applicationNumber", "limit", "offset"]);
+      if ([...params.keys()].some((key) => !allowed.has(key) || params.getAll(key).length !== 1)) return json({ code: "CV_ARTIFACT_INVALID_QUERY" }, 400);
       const applicationNumber = params.get("applicationNumber");
-      if (applicationNumber === null) return json({ code: "CV_ARTIFACT_APPLICATION_NUMBER_REQUIRED" }, 400);
-      return json(await store.list(applicationNumber));
+      const rawLimit = params.get("limit"), rawOffset = params.get("offset");
+      const limit = rawLimit === null ? 25 : /^\d+$/.test(rawLimit) ? Number(rawLimit) : NaN;
+      const offset = rawOffset === null ? 0 : /^\d+$/.test(rawOffset) ? Number(rawOffset) : NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) return json({ code: "CV_ARTIFACT_INVALID_LIMIT" }, 400);
+      if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) return json({ code: "CV_ARTIFACT_INVALID_OFFSET" }, 400);
+      return json(await store.list(applicationNumber, limit, offset));
     }
     if (!API_UUID_RE.test(String(runId || ""))) return json({ code: "CV_ARTIFACT_INVALID_RUN_ID" }, 400);
     if (new URL(request.url).search) return json({ code: "CV_ARTIFACT_INVALID_QUERY" }, 400);

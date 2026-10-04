@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importedPostingPath } from "../../src/lib/job-import.mjs";
+import { importedPostingPath, normalizeJobUrl } from "../../src/lib/job-import.mjs";
 import { loadJobDescription, readStoredJobDescription } from "../../src/lib/cloud-job-import.mjs";
 
 const url = "https://jobs.example.org/roles/42";
@@ -18,6 +18,14 @@ test("stored JD is consumed only when its embedded normalized URL exactly matche
   });
   assert.equal(requestedPath, importedPostingPath(url));
   assert.equal(result, description);
+});
+
+test("CV target URL normalization preserves distinct job-identifying query parameters", () => {
+  const first = normalizeJobUrl("https://careers.example.org/job?jobId=41&utm_source=board");
+  const second = normalizeJobUrl("https://careers.example.org/job?jobId=42&utm_source=board");
+  assert.equal(first, "https://careers.example.org/job?jobId=41");
+  assert.equal(second, "https://careers.example.org/job?jobId=42");
+  assert.notEqual(first, second);
 });
 
 test("a mismatched stored URL falls back to the existing posting fetch", async () => {

@@ -80,6 +80,17 @@ test("input validation preserves exact URL identity and requires an unpadded tra
   assert.throws(() => __test.normalizeInput({ applicationNumber: "052" }), { message: "INVALID_APPLICATION_NUMBER" });
 });
 
+test("legacy Inbox fetch validates private hosts and redirects before invoking the trusted fetch adapter", async () => {
+  let calls = 0;
+  const fetchFn = async () => { calls++; return new Response("unexpected"); };
+  await assert.rejects(__test.fetchPosting("https://legacy.internal/jobs/39", fetchFn), { message: "POSTING_FETCH_FAILED" });
+  assert.equal(calls, 0, ".internal URLs must be denied before an outbound request");
+
+  const redirectingFetch = async () => { calls++; return new Response("", { status: 302, headers: { location: "http://127.0.0.1/admin" } }); };
+  await assert.rejects(__test.fetchPosting("https://jobs.example.com/role", redirectingFetch), { message: "POSTING_FETCH_FAILED" });
+  assert.equal(calls, 1, "redirect to a loopback address must be rejected before the second request");
+});
+
 test("report allocation includes the numeric prefix from stored reports paths", () => {
   assert.match(__test.maxStoredReportNumberSql, /regexp_match\(path,'\^reports\/\(\[0-9\]\+\)-'\)/);
   assert.match(__test.maxStoredReportNumberSql, /path LIKE 'reports\/%'/);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-const { createCloudTrackerManagement } = await import(new URL("../../src/lib/cloud-tracker-management.mjs", import.meta.url));
+const { createCloudTrackerManagement, validatePublicUrl } = await import(new URL("../../src/lib/cloud-tracker-management.mjs", import.meta.url));
 const { reserveCareerOpsReportNumber } = await import(new URL("../../src/lib/cloud-report-numbering.mjs", import.meta.url));
 const { importedPostingPath } = await import(new URL("../../src/lib/job-import.mjs", import.meta.url));
 const url = "https://jobs.example.test/roles/alpha";
@@ -270,4 +270,12 @@ test("tracker CRUD reads legacy Num header through canonical aliases without a N
   await store.mutate("tracker", { operationId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", operation: "update-notes", applicationId: "39", notes: "Updated safely" });
   assert.match(docs.get("data/applications.md"), /^\| 39 \|.*\| Updated safely \|/m);
   assert.equal(docs.has("data/tracker-aliases.json"), false, "fallback aliases must not be copied into Neon");
+});
+
+test("manual Inbox URL validation reuses the public URL boundary and preserves valid identity", () => {
+  const exact = "https://jobs.example.com/role?jobId=42";
+  assert.equal(validatePublicUrl(exact), exact);
+  for (const invalid of ["https://[::1]/job", "https://[::ffff:127.0.0.1]/job", "https://metadata.internal/latest", "http://2130706433/admin"]) {
+    assert.throws(() => validatePublicUrl(invalid), { message: "INVALID_URL" });
+  }
 });

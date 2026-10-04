@@ -143,14 +143,19 @@ test("fixed download handler is UUID-scoped and sends safe PDF headers", async (
 test("artifact metadata routes require fixed application/run selectors and reject extra association fields", async () => {
   const calls = [];
   const store = {
-    async list(number) { calls.push(["list", number]); return { applicationNumber: number, artifacts: [], latest: null }; },
+    async list(...args) { calls.push(["list", ...args]); return { applicationNumber: args[0] ?? null, artifacts: [], latest: null, pagination: { limit: args[1], offset: args[2], nextOffset: null } }; },
     async get(id) { calls.push(["get", id]); return { runId: id, status: "completed", associationStatus: "unlinked", associationPending: false, requestedAt: "2026-10-02T12:00:00.000Z", completedAt: "2026-10-02T12:02:00.000Z" }; },
     async associate(...args) { calls.push(["associate", ...args]); return {}; },
   };
   const list = await handleCvArtifactRequest(new Request("https://career.example/api/cv-artifacts?applicationNumber=38"), null, "list", store);
   assert.equal(list.status, 200);
-  assert.deepEqual(calls[0], ["list", "38"]);
+  assert.deepEqual(calls[0], ["list", "38", 25, 0]);
+  const all = await handleCvArtifactRequest(new Request("https://career.example/api/cv-artifacts?limit=2&offset=4"), null, "list", store);
+  assert.equal(all.status, 200);
+  assert.deepEqual(calls[1], ["list", null, 2, 4]);
   assert.equal((await handleCvArtifactRequest(new Request("https://career.example/api/cv-artifacts?applicationNumber=38&company=Kinaxis"), null, "list", store)).status, 400);
+  assert.equal((await handleCvArtifactRequest(new Request("https://career.example/api/cv-artifacts?limit=1&limit=2"), null, "list", store)).status, 400);
+  assert.equal((await handleCvArtifactRequest(new Request("https://career.example/api/cv-artifacts?limit=101"), null, "list", store)).status, 400);
   const metadata = await handleCvArtifactRequest(new Request(`https://career.example/api/cv-artifacts/${runId}`), runId, "metadata", store);
   assert.equal(metadata.status, 200);
   assert.equal((await metadata.json()).associationStatus, "unlinked");
@@ -170,13 +175,47 @@ test("application lookup returns the newest completed artifact first", async () 
   let orderedQuery = "";
   const sql = { async query(statement, params = []) {
     if (statement.startsWith("CREATE TABLE") || statement.startsWith("ALTER TABLE")) return [];
-    if (statement.includes("WHERE application_number=$1 OR request->>'applicationNumber'=$1")) { orderedQuery = statement; assert.equal(params[0], "38"); return [newer, older]; }
+    if (statement.startsWith("SELECT r.id,r.state,")) {
+      orderedQuery = statement; assert.equal(params[0], "38"); assert.equal(params[1], 26); assert.equal(params[2], 0);
+      return [newer, older].map(row => ({ ...row, stored_pdf_path: row.artifact_path, stored_pdf_encoding: "base64", stored_pdf_size: pdfBytes.length, stored_pdf_sha256: pdfSha }));
+    }
     if (statement.startsWith("SELECT path,content,content_encoding,byte_size,sha256 FROM career_ops_documents WHERE path=$1")) return docs.has(params[0]) ? [docs.get(params[0])] : [];
     throw new Error(`Unexpected SQL in list test: ${statement}`);
   } };
   const result = await createCloudPdfArtifactStore({ sql }).list("38");
-  assert.match(orderedQuery, /ORDER BY completed_at DESC NULLS LAST, requested_at DESC/);
+  assert.match(orderedQuery, /ORDER BY r\.completed_at DESC NULLS LAST, r\.requested_at DESC, r\.id DESC/);
   assert.equal(result.latest.runId, newer.id);
   assert.deepEqual(result.artifacts.map(artifact => artifact.runId), [newer.id, older.id]);
   assert.equal(result.latest.sha256, pdfSha);
+});
+
+test("artifact list is globally bounded and returns only PDF metadata for each page", async () => {
+  const rows = Array.from({ length: 4 }, (_, index) => ({
+    id: `${String(index + 1).repeat(8)}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`, state: "completed", request: {}, company: "Kinaxis", role: `Role ${index + 1}`,
+    format: "letter", artifact_path: `output/cv-${index + 1}.pdf`, requested_at: `2026-10-0${4 - index}T12:00:00.000Z`, completed_at: `2026-10-0${4 - index}T13:00:00.000Z`,
+    application_number: String(44 - index), report_path: `reports/0${44 - index}-role.md`, association_status: "linked",
+    stored_pdf_path: `output/cv-${index + 1}.pdf`, stored_pdf_encoding: "base64", stored_pdf_size: 700 + index, stored_pdf_sha256: String(index + 1).repeat(64),
+  }));
+  let queryText = "";
+  const sql = { async query(statement, params = []) {
+    if (statement.startsWith("CREATE TABLE") || statement.startsWith("ALTER TABLE")) return [];
+    if (statement.startsWith("SELECT r.id,r.state,")) {
+      queryText = statement;
+      if (params[1] === 3) { assert.deepEqual(params, [null, 3, 1]); return rows.slice(params[2], params[2] + params[1]); }
+      assert.deepEqual(params, [null, 1, 0]);
+      return [rows[0]];
+    }
+    throw new Error(`Unexpected SQL in paged list test: ${statement}`);
+  } };
+  const result = await createCloudPdfArtifactStore({ sql }).list(null, 2, 1);
+  assert.match(queryText, /LIMIT \$2 OFFSET \$3/);
+  assert.doesNotMatch(queryText, /d\.content\s*(?:,|AS)/);
+  assert.doesNotMatch(queryText, /r\.\*|r\.html|r\.workflow_url|r\.request\s*(?:,|AS)/);
+  assert.match(queryText, /jsonb_build_object\('applicationNumber',r\.request->>'applicationNumber'\)/);
+  assert.equal(result.applicationNumber, null);
+  assert.equal(result.latest.runId, rows[0].id);
+  assert.equal(result.artifacts.length, 2);
+  assert.equal(result.artifacts[0].byteSize, 701);
+  assert.equal(result.artifacts[0].sha256, String(2).repeat(64));
+  assert.deepEqual(result.pagination, { limit: 2, offset: 1, nextOffset: 3 });
 });
