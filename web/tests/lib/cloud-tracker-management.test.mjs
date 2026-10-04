@@ -10,12 +10,13 @@ const aliases = JSON.stringify({"#":"num",date:"date",company:"company",via:"via
 const tracker = `# Applications Tracker\n\n| # | Date | Company | Via | Role | Location | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|---|---|\n| 1 | 2026-09-01 | Existing Co | Direct | Engineer | Remote | 4.0/5 | Evaluated | ❌ | [001](../reports/001-existing.md) | Applied 2026-09-15 |\n`;
 const pipeline = `# Pipeline\n\n- [ ] ${url} | Example Co | Engineer\n- [ ] https://jobs.example.test/roles/other | Other Co | Analyst\n`;
 
-function fixture({ beforeCommit = null, trackerText = tracker } = {}) {
+function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = true } = {}) {
   const docs = new Map([
-    ["data/applications.md", trackerText], ["data/pipeline.md", pipeline], ["data/tracker-aliases.json", aliases],
+    ["data/applications.md", trackerText], ["data/pipeline.md", pipeline],
     ["data/status-log.tsv", "1\t2026-09-01\t-\tEvaluated\tmanual\tImported\n"],
     ["data/follow-ups.md", "# Follow-ups\n\n"], ["config/profile.yml", "followup_cadence:\n  applied_first_days: 10\n"],
   ]);
+  if (includeAliases) docs.set("data/tracker-aliases.json", aliases);
   const mutations = new Map(); let before = beforeCommit, nextNumber = 1;
   const row = (path, content) => ({ path, content, sha256: createHash("sha256").update(content).digest("hex"), content_encoding: "utf8" });
   const sql = { async query(statement, params = []) {
@@ -255,4 +256,18 @@ test("unrelated malformed checkbox lines do not block a valid import or change t
   const saved = docs.get("data/pipeline.md");
   for (const line of legacyRows) assert.ok(saved.includes(line), `preserved raw row: ${line}`);
   assert.ok(saved.includes(`- [ ] ${magnetUrl} | Magnet Forensics | AI & Automation Engineer (Enterprise)`));
+});
+
+test("tracker CRUD reads legacy Num header through canonical aliases without a Neon alias document", async () => {
+  const legacyTracker = `# Applications Tracker
+
+| Num | Date | Company | Role | Score | Status | PDF | Report | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 39 | 2026-10-03 | Example Corp | Engineer | 4.1/5 | Evaluated | ❌ | [039](../reports/039-example-2026-10-03.md) | Preserve legacy note |
+`;
+  const { store, docs } = fixture({ trackerText: legacyTracker, includeAliases: false });
+  assert.equal((await store.getApplication("39")).company, "Example Corp");
+  await store.mutate("tracker", { operationId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", operation: "update-notes", applicationId: "39", notes: "Updated safely" });
+  assert.match(docs.get("data/applications.md"), /^\| 39 \|.*\| Updated safely \|/m);
+  assert.equal(docs.has("data/tracker-aliases.json"), false, "fallback aliases must not be copied into Neon");
 });

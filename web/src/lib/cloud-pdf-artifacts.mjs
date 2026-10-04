@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { detectColumnMap, parseApplications } from "./tracker-table.mjs";
+import { resolveTrackerAliases } from "./cloud-tracker-aliases.mjs";
 
 const PDF_PATH_RE = /^output\/[A-Za-z0-9._-]+\.pdf$/;
 const REPORT_PATH_RE = /^reports\/[A-Za-z0-9._-]+\.md$/;
@@ -253,11 +254,8 @@ export function createCloudPdfArtifactStore(options = {}) {
   async function applicationBundle(applicationNumber) {
     const [tracker, aliasesDoc] = await Promise.all([readDocument("data/applications.md"), readDocument("data/tracker-aliases.json")]);
     if (!tracker || tracker.content_encoding !== "utf8") throw new Error("CV_ARTIFACT_TRACKER_UNAVAILABLE");
-    let aliases = {};
-    if (aliasesDoc?.content_encoding === "utf8") {
-      try { const parsed = JSON.parse(aliasesDoc.content); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) aliases = parsed; }
-      catch { throw new Error("CV_ARTIFACT_TRACKER_ALIASES_INVALID"); }
-    }
+    if (aliasesDoc && aliasesDoc.content_encoding !== "utf8") throw new Error("CV_ARTIFACT_TRACKER_ALIASES_INVALID");
+    const aliases = resolveTrackerAliases(aliasesDoc?.content ?? null, "CV_ARTIFACT_TRACKER_ALIASES_INVALID");
     const apps = parseApplications(tracker.content, "", aliases);
     const matched = apps.filter((app) => app.n === applicationNumber);
     if (!matched.length) throw new Error("CV_ARTIFACT_APPLICATION_NOT_FOUND");

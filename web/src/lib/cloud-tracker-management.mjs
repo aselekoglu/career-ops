@@ -4,6 +4,7 @@ import { parseApplications, detectColumnMap } from "./tracker-table.mjs";
 import { load as parseYaml } from "js-yaml";
 import { reserveCareerOpsReportNumber } from "./cloud-report-numbering.mjs";
 import { importedPostingPath, normalizeJobUrl, validateJobUrl } from "./job-import.mjs";
+import { resolveTrackerAliases } from "./cloud-tracker-aliases.mjs";
 
 const APP = "data/applications.md", INBOX = "data/pipeline.md", STATUS_LOG = "data/status-log.tsv", FOLLOWUPS = "data/follow-ups.md", ALIASES = "data/tracker-aliases.json", PROFILE = "config/profile.yml";
 // Keep this checked-in table aligned with templates/states.yml. That system file
@@ -98,7 +99,7 @@ export function createCloudTrackerManagement({ sql, now = () => new Date() }) {
   const ready=()=>initialized??=(async()=>{await sql.query(`CREATE TABLE IF NOT EXISTS career_ops_tracker_mutations (id UUID PRIMARY KEY, payload_sha256 TEXT NOT NULL, result JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,[]);})();
   async function read(path) { const r=(await sql.query("SELECT path,content,sha256,content_encoding FROM career_ops_documents WHERE path=$1",[path]))[0]; if(!r||r.content_encoding!=="utf8")throw new Error("DOCUMENT_UNAVAILABLE"); return r; }
   async function optional(path) { const r=(await sql.query("SELECT path,content,sha256,content_encoding FROM career_ops_documents WHERE path=$1",[path]))[0]; if(r&&r.content_encoding!=="utf8")throw new Error("DOCUMENT_UNAVAILABLE"); return r??{path,content:"",sha256:null}; }
-  async function aliases() { const doc=await optional(ALIASES); if(!doc.content)return {}; try {const parsed=JSON.parse(doc.content);return parsed&&typeof parsed==="object"&&!Array.isArray(parsed)?parsed:{};}catch{throw new Error("TRACKER_ALIASES_INVALID");} }
+  async function aliases() { const doc=await optional(ALIASES); return resolveTrackerAliases(doc.sha256 == null ? null : doc.content, "TRACKER_ALIASES_INVALID"); }
   async function statusLabels() { return CANONICAL_STATES.map(state=>state.label); }
   async function replay(id,kind,payload) {
     const prior=(await sql.query("SELECT payload_sha256,result FROM career_ops_tracker_mutations WHERE id=$1",[id]))[0];

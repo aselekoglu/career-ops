@@ -18,13 +18,14 @@ const pdfBytes = Buffer.from("%PDF-1.7\nPDF payload".padEnd(700, "x"));
 const pdfBase64 = pdfBytes.toString("base64");
 const pdfSha = createHash("sha256").update(pdfBytes).digest("hex");
 
-function makeSql(initialRequest) {
+function makeSql(initialRequest, { includeAliases = true, legacyNumHeader = false } = {}) {
   const pdfPath = "output/cv-kinaxis-forward-deployed-test.pdf";
+  const storedTracker = legacyNumHeader ? trackerText.replace("| # |", "| Num |") : trackerText;
   const documents = new Map([
-    ["data/applications.md", { path: "data/applications.md", content: trackerText, content_encoding: "utf8", byte_size: Buffer.byteLength(trackerText), sha256: "tracker-sha" }],
-    ["data/tracker-aliases.json", { path: "data/tracker-aliases.json", content: JSON.stringify(aliases), content_encoding: "utf8", byte_size: 100, sha256: "aliases-sha" }],
+    ["data/applications.md", { path: "data/applications.md", content: storedTracker, content_encoding: "utf8", byte_size: Buffer.byteLength(storedTracker), sha256: "tracker-sha" }],
     ["reports/038-kinaxis-2026-10-02.md", { path: "reports/038-kinaxis-2026-10-02.md", content: reportText, content_encoding: "utf8", byte_size: Buffer.byteLength(reportText), sha256: "report-sha" }],
   ]);
+  if (includeAliases) documents.set("data/tracker-aliases.json", { path: "data/tracker-aliases.json", content: JSON.stringify(aliases), content_encoding: "utf8", byte_size: 100, sha256: "aliases-sha" });
   const run = {
     id: runId, state: "running", request: initialRequest, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer", format: "letter",
     html: "<!doctype html><html><body>CV</body></html>", lease, requested_at: "2026-10-02T12:00:00.000Z", started_at: "2026-10-02T12:01:00.000Z",
@@ -106,6 +107,18 @@ test("application-target render stays completed with explicit pending error afte
   const replay = await artifactStore.associate(runId, "52", "manual:retry-1");
   assert.equal(replay.associationStatus, "linked");
   assert.equal(db.associationWrites(), writes, "idempotent replay must not write documents a second time");
+});
+
+test("artifact association uses canonical aliases when the Neon alias document is absent", async () => {
+  const db = makeSql({ applicationNumber: "52", reportPath: "reports/038-kinaxis-2026-10-02.md", reportUrl: url }, { includeAliases: false, legacyNumHeader: true });
+  await persistRenderedCvArtifact({ sql: db.sql, run: db.run, lease, htmlPath: "output/cv-kinaxis-forward-deployed-test.html", pdfPath: "output/cv-kinaxis-forward-deployed-test.pdf", pdfBytes });
+  db.enableAssociationWrite();
+  const linked = await createCloudPdfArtifactStore({ sql: db.sql }).associate(runId, "52", "auto:canonical-fallback");
+  assert.equal(linked.associationStatus, "linked");
+  assert.equal(linked.applicationNumber, "52");
+  assert.match(db.documents.get("data/applications.md").content, /^\| 52 \|.*\| ✅ \|/m);
+  assert.match(db.documents.get("data/applications.md").content, /Preserve me/);
+  assert.equal(db.documents.has("data/tracker-aliases.json"), false, "canonical fallback must remain read-only");
 });
 
 test("CV worker rejects invalid PDF receipt before document writes", async () => {
