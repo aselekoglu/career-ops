@@ -4,15 +4,30 @@ import worker from '../src/server.mjs';
 
 const env = { CAREER_OPS_API_ORIGIN: 'https://career-ops-aselekoglu.vercel.app', CAREER_OPS_WEB_AUTH_USER: 'test-user', CAREER_OPS_WEB_AUTH_PASSWORD: 'test-password' };
 const rpc = (method, params = {}, authenticated = true) => new Request('https://bridge.example/mcp', { method: 'POST', headers: { 'content-type': 'application/json', ...(authenticated ? { 'oai-authenticated-user-id': 'test-owner' } : {}) }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+const testArtifact = (overrides = {}) => ({
+  runId: '99999999-9999-4999-8999-999999999999', status: 'completed', association_status: 'linked', association_pending: false, association_error_code: null,
+  applicationNumber: '39', targetApplicationNumber: '39', reportPath: 'reports/039-example-2026-10-03.md', company: 'Example', role: 'Analyst',
+  artifactPath: 'output/cv-example.pdf', contentType: 'application/pdf', byteSize: 600, sha256: 'a'.repeat(64), format: 'letter',
+  requestedAt: '2026-10-03T12:00:00.000Z', completedAt: '2026-10-03T12:01:00.000Z', downloadUrl: 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=private', privateToken: 'must-not-escape',
+  ...overrides,
+});
 
 test('discovery is public, read-only and includes the native panel extension', async () => {
   const response = await worker.fetch(rpc('tools/list', {}, false), env);
   const body = await response.json();
   assert.ok(body.result.tools.length >= 4);
-  assert.ok(body.result.tools.filter(t => !['career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import'].includes(t.name)).every(t => t.annotations.readOnlyHint));
+  const mutating = new Set([
+    'career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import', 'career_ops_cv_artifact_associate',
+    'career_ops_tracker_add', 'career_ops_tracker_set_status', 'career_ops_tracker_update_notes', 'career_ops_tracker_archive', 'career_ops_tracker_delete',
+    'career_ops_inbox_add', 'career_ops_inbox_edit', 'career_ops_inbox_archive', 'career_ops_inbox_delete',
+  ]);
+  assert.ok(body.result.tools.every(t => mutating.has(t.name) ? t.annotations.readOnlyHint === false : t.annotations.readOnlyHint === true));
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_job_import').annotations.idempotentHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_start').annotations.idempotentHint, false);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_status').annotations.readOnlyHint, true);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_tracker_delete').annotations.destructiveHint, true);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_inbox_delete').annotations.destructiveHint, true);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_artifact_export').annotations.readOnlyHint, true);
   assert.ok(body.result.tools.find(t => t.name === 'open_career_ops')._meta['openai/ui'].entrypoints.some(e => e.type === 'thread'));
   assert.ok(!JSON.stringify(body).includes('test-password'));
 });
@@ -55,6 +70,18 @@ test('does not relay upstream error bodies or auth secrets', async t => {
   const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_health', arguments: {} }), env)).json();
   assert.equal(body.result.isError, true);
   assert.ok(!JSON.stringify(body).includes('test-password'));
+});
+
+test('health and initialization accurately describe the bridge write capabilities', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ status: 'ok' }));
+  const health = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_health', arguments: {} }), env)).json();
+  assert.equal(health.result.structuredContent.readOnlyBridge, false);
+  const initialized = await (await worker.fetch(rpc('initialize', { protocolVersion: '2025-06-18' }), env)).json();
+  const instructions = initialized.result.instructions;
+  assert.match(instructions, /Tracker and Inbox writes are available only for exact rows\/URLs/);
+  assert.match(instructions, /Archive\/delete require explicit user confirmation/);
+  assert.match(instructions, /Source CV\/profile writes/);
+  assert.doesNotMatch(instructions, /Application submission and edits stay disabled/);
 });
 
 test('job import advertises an explicit schema and rejects malformed/private URLs before upstream access', async t => {
@@ -146,6 +173,240 @@ test('job import preserves known backend errors and excludes unrelated failure f
   assert.ok(!JSON.stringify(body).includes('private stack'));
   assert.ok(!JSON.stringify(body).includes('raw-secret'));
   assert.ok(!JSON.stringify(body).includes('db.internal'));
+});
+
+test('tracker, Inbox and artifact schemas enforce IDs, user-only fields and explicit destructive confirmation', async t => {
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const toolByName = name => listed.result.tools.find(tool => tool.name === name);
+  assert.deepEqual(toolByName('career_ops_tracker_set_status').inputSchema.properties.status.enum, ['Evaluated', 'Applied', 'Responded', 'Interview', 'Offer', 'Rejected', 'Discarded', 'SKIP', 'Hired']);
+  assert.equal(toolByName('career_ops_cv_artifacts').inputSchema.required, undefined);
+  assert.equal(toolByName('career_ops_cv_artifacts').inputSchema.properties.limit.maximum, 100);
+  assert.equal(toolByName('career_ops_cv_artifacts').inputSchema.properties.offset.maximum, 100000);
+  assert.equal(toolByName('career_ops_cv_artifact_associate').inputSchema.additionalProperties, false);
+  assert.deepEqual(toolByName('career_ops_tracker_archive').inputSchema.properties.confirm.enum, [true]);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const op = '11111111-1111-4111-8111-111111111111';
+  const invalid = [
+    { name: 'career_ops_tracker_add', arguments: { operationId: 'made-up', company: 'Example', role: 'Analyst', url: 'https://jobs.example/1', source: 'User', status: 'Applied' } },
+    { name: 'career_ops_tracker_add', arguments: { operationId: op, company: 'Example', role: 'Analyst', url: 'https://jobs.example/1', source: 'User', status: 'Applied', score: '6/5' } },
+    { name: 'career_ops_tracker_add', arguments: { operationId: op, company: 'Example', role: 'Analyst', url: 'https://user:pass@jobs.example/1', source: 'User', status: 'Applied' } },
+    { name: 'career_ops_tracker_set_status', arguments: { operationId: op, applicationId: '39', status: 'Submitted' } },
+    { name: 'career_ops_tracker_set_status', arguments: { operationId: op, applicationId: '39', status: 'Interview', date: '2026-02-30' } },
+    { name: 'career_ops_tracker_archive', arguments: { operationId: op, applicationId: '39', confirm: false } },
+    { name: 'career_ops_tracker_delete', arguments: { operationId: op, applicationId: '39' } },
+    { name: 'career_ops_inbox_edit', arguments: { operationId: op, targetUrl: 'https://jobs.example/1' } },
+    { name: 'career_ops_inbox_archive', arguments: { operationId: op, targetUrl: 'https://jobs.example/1', confirm: false } },
+    { name: 'career_ops_inbox_delete', arguments: { operationId: op, targetUrl: 'https://jobs.example/1', confirm: true, extra: 'no' } },
+    { name: 'career_ops_cv_artifact', arguments: { runId: '../artifact' } },
+    { name: 'career_ops_cv_artifact_associate', arguments: { runId: '99999999-9999-4999-8999-999999999999', applicationNumber: '39', idempotencyKey: 'bad key' } },
+  ];
+  for (const args of invalid) {
+    const body = await (await worker.fetch(rpc('tools/call', args), env)).json();
+    assert.equal(body.error.code, -32602, args.name);
+  }
+  assert.equal(calls, 0);
+});
+
+test('tracker and CV artifact mutations require a Sites user before any Basic-authenticated fetch', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({ ok: true }); });
+  const unauthenticated = false;
+  const tracker = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_tracker_delete', arguments: {
+    operationId: '11111111-1111-4111-8111-111111111111', applicationId: '39', confirm: true,
+  } }, unauthenticated), env)).json();
+  const artifact = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_associate', arguments: {
+    runId: '99999999-9999-4999-8999-999999999999', applicationNumber: '39', idempotencyKey: 'associate:synthetic:39',
+  } }, unauthenticated), env)).json();
+  assert.equal(tracker.error.code, -32001);
+  assert.equal(artifact.error.code, -32001);
+  assert.equal(calls, 0);
+});
+
+test('tracker and Inbox operations use fixed Basic-authenticated routes and allowlisted payload/results', async t => {
+  const configured = { ...env, CAREER_OPS_MCP_READ_TOKEN: 'read-token' };
+  const op = i => `11111111-1111-4111-8111-${String(i).padStart(12, '0')}`;
+  const company = { n: '39', date: null, company: 'Synthetic Test Co', via: 'User', role: 'Test Analyst', location: null, score: null, status: 'Applied', pdf: null, report: null, notes: null, privateField: 'hidden' };
+  const operations = [
+    ['career_ops_tracker_get', { applicationId: '39' }, 'GET', '/api/tracker/39', null],
+    ['career_ops_tracker_add', { operationId: op(1), company: 'Synthetic Test Co', role: 'Test Analyst', url: 'https://jobs.example/test-canary', source: 'User', date: '2026-10-03', status: 'Applied', score: '3.5/5' }, 'POST', '/api/tracker/commands', { operationId: op(1), company: 'Synthetic Test Co', role: 'Test Analyst', url: 'https://jobs.example/test-canary', source: 'User', date: '2026-10-03', status: 'Applied', score: '3.5/5', operation: 'add' }],
+    ['career_ops_tracker_set_status', { operationId: op(2), applicationId: '39', status: 'Interview', date: '2026-10-03' }, 'POST', '/api/tracker/commands', { operationId: op(2), applicationId: '39', status: 'Interview', date: '2026-10-03', operation: 'set-status' }],
+    ['career_ops_tracker_update_notes', { operationId: op(3), applicationId: '39', notes: 'User-authored canary note' }, 'POST', '/api/tracker/commands', { operationId: op(3), applicationId: '39', notes: 'User-authored canary note', operation: 'update-notes' }],
+    ['career_ops_tracker_archive', { operationId: op(4), applicationId: '39', confirm: true }, 'POST', '/api/tracker/commands', { operationId: op(4), applicationId: '39', confirm: true, operation: 'archive' }],
+    ['career_ops_tracker_delete', { operationId: op(5), applicationId: '39', confirm: true }, 'POST', '/api/tracker/commands', { operationId: op(5), applicationId: '39', confirm: true, operation: 'delete' }],
+    ['career_ops_inbox_add', { operationId: op(6), url: 'https://jobs.example/test-canary', company: 'Synthetic Test Co', role: 'Test Analyst', location: 'Ottawa', compensation: 'User-stated range' }, 'POST', '/api/inbox/commands', { operationId: op(6), url: 'https://jobs.example/test-canary', company: 'Synthetic Test Co', role: 'Test Analyst', location: 'Ottawa', compensation: 'User-stated range', operation: 'add' }],
+    ['career_ops_inbox_edit', { operationId: op(7), targetUrl: 'https://jobs.example/test-canary', location: 'Toronto' }, 'POST', '/api/inbox/commands', { operationId: op(7), targetUrl: 'https://jobs.example/test-canary', location: 'Toronto', operation: 'edit' }],
+    ['career_ops_inbox_archive', { operationId: op(8), targetUrl: 'https://jobs.example/test-canary', confirm: true }, 'POST', '/api/inbox/commands', { operationId: op(8), targetUrl: 'https://jobs.example/test-canary', confirm: true, operation: 'archive' }],
+    ['career_ops_inbox_delete', { operationId: op(9), targetUrl: 'https://jobs.example/test-canary', confirm: true }, 'POST', '/api/inbox/commands', { operationId: op(9), targetUrl: 'https://jobs.example/test-canary', confirm: true, operation: 'delete' }],
+  ];
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const [name, , method, path, payload] = operations[calls++];
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + path);
+    assert.equal(options.method, method);
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    if (payload) assert.deepEqual(JSON.parse(options.body), payload);
+    else assert.equal(options.body, undefined);
+    if (name === 'career_ops_tracker_get') return Response.json({ application: company, stack: 'hidden' });
+    if (path === '/api/tracker/commands') return Response.json({ ok: true, operation: payload.operation, application: company, secret: 'hidden' });
+    return Response.json({ ok: true, url: 'https://jobs.example/test-canary', privateField: 'hidden' });
+  });
+  for (const [name, args] of operations.map(([name, args]) => [name, args])) {
+    const body = await (await worker.fetch(rpc('tools/call', { name, arguments: args }), configured)).json();
+    assert.ok(body.result, JSON.stringify(body));
+    assert.ok(body.result.structuredContent, JSON.stringify(body));
+    if (name === 'career_ops_tracker_get') assert.equal(body.result.structuredContent.application.company, 'Synthetic Test Co');
+    else assert.equal(body.result.structuredContent.ok, true, name);
+    assert.ok(!JSON.stringify(body).includes('privateField'));
+    assert.ok(!JSON.stringify(body).includes('hidden'));
+  }
+  assert.equal(calls, operations.length);
+});
+
+test('tracker and Inbox failures preserve only canonical backend codes and exclude response details', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ code: 'INVALID_STATUS', message: 'postgres://user:secret@db.internal/path', stack: 'raw stack', internalToken: 'secret' }, { status: 400 }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_tracker_set_status', arguments: { operationId: '11111111-1111-4111-8111-111111111111', applicationId: '39', status: 'Interview' } }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.equal(body.result.content[0].text.startsWith('INVALID_STATUS:'), true);
+  assert.ok(!JSON.stringify(body).includes('db.internal'));
+  assert.ok(!JSON.stringify(body).includes('raw stack'));
+  assert.ok(!JSON.stringify(body).includes('secret'));
+});
+
+test('tracker operation IDs remain stable across retries and backend replay is allowlisted', async t => {
+  const args = { operationId: '22222222-2222-4222-8222-222222222222', company: 'Synthetic Test Co', role: 'Test Analyst', url: 'https://jobs.example/test-canary', source: 'User', status: 'Applied' };
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/tracker/commands');
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.operationId, args.operationId);
+    assert.equal(payload.operation, 'add');
+    return Response.json({ ok: true, operation: 'add', replayed: calls === 2, application: { n: '40', company: args.company, role: args.role, privateField: 'hidden' } });
+  });
+  const first = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_tracker_add', arguments: args }), env)).json();
+  const retry = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_tracker_add', arguments: args }), env)).json();
+  assert.equal(first.result.structuredContent.replayed, undefined);
+  assert.equal(retry.result.structuredContent.replayed, true);
+  assert.ok(!JSON.stringify(retry).includes('privateField'));
+  assert.equal(calls, 2);
+});
+
+test('artifact list/read/associate use fixed Basic-authenticated routes and normalize association aliases', async t => {
+  const runId = '99999999-9999-4999-8999-999999999999';
+  const configured = { ...env, CAREER_OPS_MCP_READ_TOKEN: 'read-token' };
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts?applicationNumber=39');
+      assert.equal(options.method, 'GET');
+      const item = testArtifact({ association_status: 'pending', association_pending: true, association_error_code: 'CV_ARTIFACT_TRACKER_INVALID' });
+      return Response.json({ applicationNumber: '39', latest: item, artifacts: [item], pagination: { limit: 25, offset: 0, nextOffset: null }, downloadUrl: 'private', internalToken: 'secret' });
+    }
+    if (calls === 2) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId);
+      return Response.json(testArtifact({ runId }));
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId + '/associate');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), { applicationNumber: '39', idempotencyKey: 'associate:synthetic:39' });
+    return Response.json(testArtifact({ runId, associationStatus: 'linked', associationPending: false, associationErrorCode: null }));
+  });
+  const listed = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifacts', arguments: { applicationNumber: '39' } }), configured)).json();
+  assert.ok(listed.result, JSON.stringify(listed));
+  assert.ok(listed.result.structuredContent, JSON.stringify(listed));
+  assert.equal(listed.result.structuredContent.latest.associationStatus, 'pending');
+  assert.equal(listed.result.structuredContent.latest.associationPending, true);
+  assert.equal(listed.result.structuredContent.latest.associationErrorCode, 'CV_ARTIFACT_TRACKER_INVALID');
+  assert.ok(!JSON.stringify(listed).includes('downloadUrl'));
+  assert.ok(!JSON.stringify(listed).includes('internalToken'));
+  const read = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact', arguments: { runId } }), configured)).json();
+  assert.ok(read.result, JSON.stringify(read));
+  assert.equal(read.result.structuredContent.runId, runId);
+  assert.ok(!JSON.stringify(read).includes('privateToken'));
+  const linked = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_associate', arguments: { runId, applicationNumber: '39', idempotencyKey: 'associate:synthetic:39' } }), configured)).json();
+  assert.ok(linked.result, JSON.stringify(linked));
+  assert.equal(linked.result.structuredContent.associationStatus, 'linked');
+  assert.equal(linked.result.structuredContent.applicationNumber, '39');
+  assert.equal(calls, 3);
+});
+
+test('artifact list may omit applicationNumber and calls only the fixed collection route', async t => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts?limit=10&offset=20');
+    assert.equal(options.method, 'GET');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    return Response.json({ applicationNumber: null, latest: null, artifacts: [], pagination: { limit: 10, offset: 20, nextOffset: null }, downloadUrl: 'private', internalToken: 'secret' });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifacts', arguments: { limit: 10, offset: 20 } }), env)).json();
+  assert.deepEqual(body.result.structuredContent, { applicationNumber: null, latest: null, artifacts: [], pagination: { limit: 10, offset: 20, nextOffset: null } });
+  assert.ok(!JSON.stringify(body).includes('private'));
+  assert.ok(!JSON.stringify(body).includes('internalToken'));
+});
+
+test('CV artifact failures preserve safe backend codes without forwarding messages or stack data', async t => {
+  const runId = '99999999-9999-4999-8999-999999999999';
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ code: 'CV_ARTIFACT_TRACKER_INVALID', message: 'private posting detail', stack: 'secret stack', token: 'secret' }, { status: 409 }));
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_associate', arguments: { runId, applicationNumber: '39', idempotencyKey: 'associate:synthetic:39' } }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(body.result.content[0].text.startsWith('CV_ARTIFACT_TRACKER_INVALID:'));
+  assert.ok(!JSON.stringify(body).includes('private posting detail'));
+  assert.ok(!JSON.stringify(body).includes('secret stack'));
+  assert.ok(!JSON.stringify(body).includes('token'));
+});
+
+test('artifact export returns a private Site resource link and its download route checks owner auth before fixed PDF fetch', async t => {
+  const runId = '99999999-9999-4999-8999-999999999999';
+  const pdf = Buffer.from('%PDF-1.7\n' + 'x'.repeat(600));
+  const siteOrigin = 'https://career-ops-chatgpt.aselekoglu.chatgpt.site';
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.method, 'GET');
+    assert.equal(options.redirect, 'manual');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId);
+      return Response.json(testArtifact({ runId, byteSize: pdf.length }));
+    }
+    if (calls === 2) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId + '/download');
+      assert.equal(options.headers.Accept, 'application/pdf');
+    } else {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId + '/download');
+      assert.equal(options.headers.Accept, 'application/pdf');
+      assert.equal(options.headers['oai-authenticated-user-id'], undefined);
+    }
+    return new Response(pdf, { headers: { 'content-type': 'application/pdf', 'content-length': String(pdf.length) } });
+  });
+  const exported = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_export', arguments: { runId } }), env)).json();
+  assert.ok(exported.result, JSON.stringify(exported));
+  assert.ok(exported.result.structuredContent, JSON.stringify(exported));
+  const privateUrl = siteOrigin + '/artifacts/' + runId + '/download';
+  assert.equal(exported.result.structuredContent.privateDownloadUrl, privateUrl);
+  assert.equal(exported.result.structuredContent.downloadVerified, true);
+  assert.equal(exported.result.structuredContent.downloadBytes, pdf.length);
+  assert.ok(exported.result.content.some(item => item.type === 'resource_link' && item.uri === privateUrl && item.mimeType === 'application/pdf'));
+  assert.ok(!JSON.stringify(exported).includes('career-ops-aselekoglu.vercel.app'));
+  assert.ok(!JSON.stringify(exported).includes('privateToken'));
+  assert.equal(calls, 2);
+
+  const unauthorized = await worker.fetch(new Request(privateUrl));
+  assert.equal(unauthorized.status, 401);
+  assert.equal(calls, 2);
+  const wrongOrigin = await worker.fetch(new Request('https://attacker.example/artifacts/' + runId + '/download', { headers: { 'oai-authenticated-user-id': 'test-owner' } }));
+  assert.equal(wrongOrigin.status, 403);
+  assert.equal(calls, 2);
+  const response = await worker.fetch(new Request(privateUrl, { headers: { 'oai-authenticated-user-id': 'test-owner' } }), env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/pdf');
+  assert.equal(response.headers.get('content-disposition'), 'attachment; filename="career-ops-cv-' + runId + '.pdf"');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), pdf);
+  assert.equal(calls, 3);
 });
 
 test('rejects redirects without forwarding credentials to another destination', async t => {
@@ -245,12 +506,16 @@ test('CV URL is passed to backend without fetching it; status preserves exact ar
 test('CV status rejects malformed UUID and completed status preserves exact download URL', async t => {
   const invalid = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId: '../cv' } }), env)).json();
   assert.equal(invalid.error.code, -32602);
-  t.mock.method(globalThis, 'fetch', async () => Response.json({ runId: '33333333-3333-4333-8333-333333333333', status: 'completed', artifactPath: 'output/exact.pdf', downloadUrl: 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=exact', startedAt: null, completedAt: '2026-10-02T00:00:00Z', errorCode: null, sourceCV: 'private' }));
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ runId: '33333333-3333-4333-8333-333333333333', status: 'completed', artifactPath: 'output/exact.pdf', downloadUrl: 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=exact', startedAt: null, completedAt: '2026-10-02T00:00:00Z', errorCode: null, applicationNumber: '39', report_path: 'reports/039-example-2026-10-02.md', association_status: 'linked', association_pending: false, association_error_code: null, sourceCV: 'private' }));
   const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId: '33333333-3333-4333-8333-333333333333' } }), env)).json();
   assert.equal(body.result.structuredContent.downloadUrl, 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=exact');
   assert.equal(body.result.structuredContent.artifactPath, 'output/exact.pdf');
   assert.equal(body.result.structuredContent.startedAt, null);
   assert.equal(body.result.structuredContent.errorCode, null);
+  assert.equal(body.result.structuredContent.associationStatus, 'linked');
+  assert.equal(body.result.structuredContent.associationPending, false);
+  assert.equal(body.result.structuredContent.applicationNumber, '39');
+  assert.equal(body.result.structuredContent.reportPath, 'reports/039-example-2026-10-02.md');
   assert.ok(!JSON.stringify(body).includes('sourceCV'));
 });
 
