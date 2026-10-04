@@ -1,4 +1,5 @@
 import { neon } from "@neondatabase/serverless";
+import { shouldCacheCloudDocument } from "./cloud-source-management.mjs";
 
 export type DocumentRow = {
   path: string;
@@ -25,9 +26,9 @@ function getClient() {
 
 export async function getCloudDocument(relativePath: string): Promise<DocumentRow | null> {
   const key = relativePath.replaceAll("\\", "/");
-  // Mutable scan documents must be read afresh across warm serverless calls.
-  const mutable = key.startsWith('data/');
-  if (!mutable && cache.has(key)) return cache.get(key) ?? null;
+  // Mutable data and editable primary sources must be fresh across warm calls.
+  const cacheable = shouldCacheCloudDocument(key);
+  if (cacheable && cache.has(key)) return cache.get(key) ?? null;
   const sql = getClient();
   if (!sql) return null;
   const rows = await sql`
@@ -37,7 +38,7 @@ export async function getCloudDocument(relativePath: string): Promise<DocumentRo
     LIMIT 1
   `;
   const row = (Array.from(rows as unknown as Array<unknown>)[0] as DocumentRow | undefined) ?? null;
-  if (!mutable) cache.set(key, row);
+  if (cacheable) cache.set(key, row);
   return row;
 }
 
