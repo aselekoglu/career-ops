@@ -2,7 +2,7 @@
 
 ## Current deployed capability
 
-The private Career Ops Site v7 exposes 16 MCP tools. This includes the new arbitrary public job URL importer plus the existing health, pipeline, source CV, schedules, portals, AI status, applications panel, live scan, durable evaluation, and CV generation tools. The import → evaluation → CV flow was accepted with a real Magnet Forensics posting; details are in [the acceptance record](superpowers/plans/2026-10-03-job-import-acceptance.md).
+The private Career Ops Site v8 exposes 30 MCP tools. In addition to health, pipeline, source CV, schedules, portals, AI status, the applications panel, live scan, durable evaluation, CV generation, and arbitrary public job URL import, it now provides tracker/Inbox CRUD and CV artifact list/get/association/private export. The Magnet Forensics import → evaluation → CV flow remains accepted; P1 tracker/artifact and Inbox operations are recorded in [the P1 acceptance record](superpowers/plans/2026-10-04-mcp-tracker-artifacts-acceptance.md).
 
 | MCP function | Current behavior |
 |---|---|
@@ -16,7 +16,10 @@ The private Career Ops Site v7 exposes 16 MCP tools. This includes the new arbit
 | career_ops_scan_start, career_ops_scan_status, career_ops_scan_results | Start a durable live portal scan, poll its ID, and read results. These tools are gated by the Sites scan setting; queued/running is not completion. |
 | career_ops_job_import | Imports one public job URL through the fixed authenticated backend endpoint. Returns an idempotent canonical Inbox result or a fixed safe error. Input is `{url: string (1–2048 chars), source?: string (≤500 chars), forceRefresh?: boolean}`; additional fields are rejected. It does not require a portals.yml entry. |
 | career_ops_evaluation_start, career_ops_evaluation_status, career_ops_evaluation_report | Evaluate an existing exact Inbox URL or application number on the durable worker, poll the lifecycle, and read the persisted report after completion. |
-| career_ops_cv_generate_start, career_ops_cv_generate_status | Start hosted CV tailoring/render/storage for an application number or exact Inbox URL and poll the durable run. Artifact path and exact download URL come from Career Ops. The verified PDF download returned 65,124 bytes and passed PDF content checks. |
+| career_ops_cv_generate_start, career_ops_cv_generate_status | Start hosted CV tailoring/render/storage for an application number or exact Inbox URL and poll the durable run. Artifact path and exact download URL come from Career Ops. Optional `verifyDownload: true` checks the completed PDF response and returns only verification status and byte count. |
+| career_ops_tracker_get, career_ops_tracker_add, career_ops_tracker_set_status, career_ops_tracker_update_notes, career_ops_tracker_archive, career_ops_tracker_delete | Read one exact row and perform explicitly requested writes using caller-supplied operation UUIDs. Manual fields are user-provided; archive/delete require explicit confirmation. |
+| career_ops_inbox_add, career_ops_inbox_edit, career_ops_inbox_archive, career_ops_inbox_delete | Add, edit, archive, or delete an exact Inbox URL with caller-supplied operation UUIDs. Destructive operations require explicit confirmation. |
+| career_ops_cv_artifacts, career_ops_cv_artifact, career_ops_cv_artifact_associate, career_ops_cv_artifact_export | List artifacts globally or by application number with bounded pagination, inspect allowlisted metadata, associate by exact run/application IDs and stable idempotency key, and return a private Site PDF link. Backend download URLs and PDF bytes are not exposed in MCP JSON. |
 
 ## Import contract and stored data
 
@@ -30,7 +33,7 @@ Evaluation and URL-based CV tailoring read the sidecar only when its top-level `
 
 ## Verified Magnet Forensics flow
 
-The native `career_ops_job_import` tool imported the LinkedIn `/apply` URL and created one unchecked canonical Inbox row. Repeating the original and an Indeed-tracked variant returned `already_exists` with the same stable ID. Native evaluation completed as application #39, score 4.1/5, with the archived JD validated against the canonical URL. Native CV tailoring completed for application #39; the exact Career Ops download URL passed an authenticated HTTP, MIME, and PDF-byte check. A post-completion repeat of the Magnet import returned `already_exists` with the same Inbox ID and `applicationNumber: "39"` without reopening the completed record.
+The native `career_ops_job_import` tool imported the LinkedIn `/apply` URL and created one unchecked canonical Inbox row. Repeating the original and an Indeed-tracked variant returned `already_exists` with the same stable ID. Native evaluation completed as application #39, score 4.1/5, with the archived JD validated against the canonical URL. Native CV tailoring completed for application #39; the exact Career Ops download URL returned an authenticated PDF response with valid MIME and PDF signature. This transport/byte check does not audit CV content, layout, or factual claims. A post-completion repeat of the Magnet import returned `already_exists` with the same Inbox ID and `applicationNumber: "39"` without reopening the completed record.
 
 An earlier READY deployment attempt returned `DATABASE_WRITE_FAILED` because an unrelated malformed legacy Inbox checkbox caused the reader to throw `INVALID_URL`. That historical failure is resolved: the parser now preserves raw legacy lines while skipping malformed unrelated entries, and incoming job URLs remain strictly validated. It is not the current deployment state or a remaining import blocker.
 
@@ -38,10 +41,11 @@ An earlier READY deployment attempt returned `DATABASE_WRITE_FAILED` because an 
 
 | Priority | User function | Current boundary |
 |---|---|---|
-| **P0 complete** | Import a public job URL, evaluate it, and tailor a CV | The fixed authenticated import bridge and live Magnet import → evaluation → CV flow are deployed and verified. The tracker PDF marker still shows ❌; artifact association/sync is a separate pending item and must not be manually written. |
+| **P0 complete** | Import a public job URL, evaluate it, and tailor a CV | The fixed authenticated import bridge and live Magnet import → evaluation → CV flow are deployed and verified. P1 later associated the completed Magnet PDF with application #39; its tracker PDF marker is now ✅. |
 | **P0 complete** | Evaluate a specific Inbox role; record it as Evaluated | Durable evaluation start/status/report tools use the normal lifecycle. Kinaxis application #38 at 2.5/5 is historical proof for this separate evaluation path. |
-| **P1** | Tracker and Inbox management | Broader tracker/Inbox mutation tools are not verified as deployed. Later support exact-row reads/status changes, manual tracker adds, and Inbox edit/archive/delete through canonical flows; do not manufacture evaluations. Require explicit confirmation for destructive edits. |
-| **P1** | Finish CV artifact lifecycle | Generation and the exact PDF download were verified. Artifact association/sync to tracker rows and remaining list/get/association bridges still need verification. Preserve exact report identity; source CV stays read-only. |
+| **P1 complete** | Tracker and Inbox management | Exact tracker reads/status/notes/add/archive/delete and Inbox add/edit/archive/delete are deployed and passed native synthetic-canary acceptance. Writes use stable operation UUIDs, canonical statuses, user-provided fields, and explicit destructive confirmation. |
+| **P1 complete** | CV artifact lifecycle | Global/per-application list, metadata read, exact-run association, and private Site export are deployed and passed native acceptance. Application #39 now links its existing completed PDF. `downloadVerified: true` proves the authenticated route returned bounded `application/pdf` bytes with a PDF signature; it is not a CV content, layout, or factual-claims audit. |
+| **P1 remaining** | Manual tracker row → evaluation/CV lifecycle | Manual tracker CRUD is available, but a standalone tracker row does not prove an exact durable Inbox target or completed report/evaluation. A URL written only in notes is insufficient identity evidence. Do not claim a manually added row was evaluated or manufacture its report/PDF; durable target binding and the downstream lifecycle remain separate work. |
 | **P1** | Master CV and profile | Source-annotated intake proposals, explicitly approved scoped edits, history/backup, ATS/plain-text/LaTeX exports, and tailored PDF support. Keep claims grounded in primary files. Cloud CV/profile writes are not enabled. |
 | **P1** | Portals and blacklist | Portal verification is read-only. Cloud profile/portal/blacklist mutations and repair remain unavailable. |
 | **P2** | Cover letters and application assistance | Fact-grounded cover-letter artifacts and draft-only application answers may be added later. Form driving and submission remain separate and must never auto-submit. |
@@ -56,7 +60,15 @@ An earlier READY deployment attempt returned `DATABASE_WRITE_FAILED` because an 
 
 Focused evidence: importer/store 33/33 before parser regression; parser regression 19/19; malformed-metadata and safe-logging regressions 1/1 each; API/consumer 28/28; final MCP bridge 28/28. The Next.js production build passed with TypeScript and the `/api/job-import` route manifest; final date-reader TypeScript checking passed. No broad repository, browser, or computer-use QA was repeated.
 
-Production backend READY deployment `dpl_2sCsg2raXgXWz5Fe5uR9yRRETM2d` runs SHA `3e6f36a17b763286c77ebbda7189be215f06182f` at https://career-ops-aselekoglu.vercel.app. Private Site v7 succeeded from source `65f4d9d95523ee62be953bcbc41f3090165b257f`, environment revision 5, at https://career-ops-chatgpt.aselekoglu.chatgpt.site. Commits `592b4950`, `1e23a86a`, and `3e6f36a1` are pushed to `codex/vercel-hobby-fix`; they are not merged to `main`.
+Historical P0 acceptance release: backend READY deployment `dpl_2sCsg2raXgXWz5Fe5uR9yRRETM2d` ran SHA `3e6f36a17b763286c77ebbda7189be215f06182f` at https://career-ops-aselekoglu.vercel.app. Private Site v7 succeeded from source `65f4d9d95523ee62be953bcbc41f3090165b257f`, environment revision 5, at https://career-ops-chatgpt.aselekoglu.chatgpt.site. Commits `592b4950`, `1e23a86a`, and `3e6f36a1` were pushed to `codex/vercel-hobby-fix`; they are not merged to `main`. Current v8 deployment evidence is recorded below.
+
+### Native P1 acceptance and v8 deployments
+
+The 2026-10-04 native acceptance record is `docs/superpowers/plans/2026-10-04-mcp-tracker-artifacts-acceptance.md`. It confirms the existing Magnet Forensics application **#39** remained `Evaluated` at **4.1/5** with its original notes and report; only its existing completed PDF artifact was associated. Artifact run `65de8258-d65a-446c-ad6b-9beeee40e4f2` is linked to #39 with size **65,124 bytes** and SHA-256 `8081ee49a0c6732b1ba4e095425075d1fd1347ab02a037d7bcbcac33459939b5`. The repeated association with the same idempotency key returned the same linked result. The already-linked run was rejected for nonexistent application #999999 without changing #39.
+
+Tracker canary application #40 and the Inbox canary were clearly labeled as tests and deleted; the final exact-canary pipeline query returned zero rows. No real application was created, evaluated, or emailed for CRUD coverage. The accepted canary verified authorization, fixed routes, operation UUID replay/conflict behavior, explicit destructive confirmation, and final state through the normal readers.
+
+For this acceptance, backend was READY at SHA `5fd719ff6cfad84bfdb9d93ef37176c98676a8f6`, deployment `dpl_8Hp3FpLncvNWyyfgyu7n7Xev8N3H`, at https://career-ops-aselekoglu.vercel.app. Private Site v8 SUCCEEDED from source SHA `09cd02e21226e7cb895fa6e39df96ca4f2646302`, deployment `appgdep_6ac1d1af95e4819182da958bd03decaa`, at https://career-ops-chatgpt.aselekoglu.chatgpt.site.
 
 ## Tool and data safety
 
@@ -69,3 +81,4 @@ Keep the MCP bridge fixed-path and authenticated. Never expose arbitrary endpoin
 - Cloud readers and consumers: `web/src/lib/cloud-career-ops.ts`, `web/src/lib/cloud-evaluation-runs.mjs`, `web/src/lib/cloud-cv-runs.mjs`
 - MCP bridge: `sites/career-ops-mcp/src/server.mjs`
 - Live acceptance details: `docs/superpowers/plans/2026-10-03-job-import-acceptance.md`
+- Native tracker/Inbox/artifact P1 acceptance: `docs/superpowers/plans/2026-10-04-mcp-tracker-artifacts-acceptance.md`
