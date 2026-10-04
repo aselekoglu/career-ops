@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import worker from '../src/server.mjs';
 
 const env = { CAREER_OPS_API_ORIGIN: 'https://career-ops-aselekoglu.vercel.app', CAREER_OPS_WEB_AUTH_USER: 'test-user', CAREER_OPS_WEB_AUTH_PASSWORD: 'test-password' };
@@ -11,22 +12,28 @@ const testArtifact = (overrides = {}) => ({
   requestedAt: '2026-10-03T12:00:00.000Z', completedAt: '2026-10-03T12:01:00.000Z', downloadUrl: 'https://career-ops-aselekoglu.vercel.app/api/cv-pdf?artifact=private', privateToken: 'must-not-escape',
   ...overrides,
 });
+const sha256 = value => createHash('sha256').update(value, 'utf8').digest('hex');
+const sourceAnnotation = { kind: 'user_statement', reference: 'The user stated this exact change.' };
 
 test('discovery is public, read-only and includes the native panel extension', async () => {
-  const response = await worker.fetch(rpc('tools/list', {}, false), env);
+  const response = await worker.fetch(rpc('tools/list', {}, false), { ...env, CAREER_OPS_LIVE_SCANS_ENABLED: '1' });
   const body = await response.json();
-  assert.ok(body.result.tools.length >= 4);
+  assert.equal(body.result.tools.length, 37);
   const mutating = new Set([
-    'career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import', 'career_ops_cv_artifact_associate',
+    'career_ops_scan_start', 'career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import', 'career_ops_cv_artifact_associate',
+    'career_ops_cv_edit_preview', 'career_ops_profile_edit_preview', 'career_ops_source_apply',
     'career_ops_tracker_add', 'career_ops_tracker_set_status', 'career_ops_tracker_update_notes', 'career_ops_tracker_archive', 'career_ops_tracker_delete',
     'career_ops_inbox_add', 'career_ops_inbox_edit', 'career_ops_inbox_archive', 'career_ops_inbox_delete',
   ]);
-  assert.ok(body.result.tools.every(t => mutating.has(t.name) ? t.annotations.readOnlyHint === false : t.annotations.readOnlyHint === true));
+  assert.deepEqual(body.result.tools.filter(t => mutating.has(t.name) ? t.annotations.readOnlyHint !== false : t.annotations.readOnlyHint !== true).map(t => [t.name, t.annotations.readOnlyHint]), []);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_job_import').annotations.idempotentHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_start').annotations.idempotentHint, false);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_generate_status').annotations.readOnlyHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_tracker_delete').annotations.destructiveHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_inbox_delete').annotations.destructiveHint, true);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_edit_preview').annotations.destructiveHint, false);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_profile_edit_preview').annotations.destructiveHint, false);
+  assert.equal(body.result.tools.find(t => t.name === 'career_ops_source_apply').annotations.destructiveHint, true);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_cv_artifact_export').annotations.readOnlyHint, true);
   assert.ok(body.result.tools.find(t => t.name === 'open_career_ops')._meta['openai/ui'].entrypoints.some(e => e.type === 'thread'));
   assert.ok(!JSON.stringify(body).includes('test-password'));
@@ -80,7 +87,7 @@ test('health and initialization accurately describe the bridge write capabilitie
   const instructions = initialized.result.instructions;
   assert.match(instructions, /Tracker and Inbox writes are available only for exact rows\/URLs/);
   assert.match(instructions, /Archive\/delete require explicit user confirmation/);
-  assert.match(instructions, /Source CV\/profile writes/);
+  assert.match(instructions, /Source CV\/profile edits require/);
   assert.doesNotMatch(instructions, /Application submission and edits stay disabled/);
 });
 
@@ -173,6 +180,255 @@ test('job import preserves known backend errors and excludes unrelated failure f
   assert.ok(!JSON.stringify(body).includes('private stack'));
   assert.ok(!JSON.stringify(body).includes('raw-secret'));
   assert.ok(!JSON.stringify(body).includes('db.internal'));
+});
+
+test('source schemas reject unknown sources, nested keys, invalid annotations, incomplete profile fields and unconfirmed apply', async t => {
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const byName = name => listed.result.tools.find(tool => tool.name === name);
+  assert.equal(byName('career_ops_source_get').inputSchema.properties.source.enum.join(','), 'cv,profile');
+  assert.equal(byName('career_ops_cv_edit_preview').inputSchema.properties.edits.items.additionalProperties, false);
+  assert.equal(byName('career_ops_profile_edit_preview').inputSchema.properties.patch.additionalProperties, false);
+  assert.deepEqual(byName('career_ops_source_apply').inputSchema.properties.confirm.enum, [true]);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const operationId = '11111111-1111-4111-8111-111111111111';
+  const proposalId = '22222222-2222-4222-8222-222222222222';
+  const expectedSha256 = 'a'.repeat(64);
+  const annotation = { kind: 'user_statement', reference: 'The user stated this exact change.' };
+  const validCv = { expectedSha256, operationId, edits: [{ oldText: 'old content', newText: 'new content', sourceAnnotation: annotation }] };
+  const invalid = [
+    ['career_ops_source_get', { source: 'portals' }],
+    ['career_ops_source_get', { source: 'cv', path: 'portals.yml' }],
+    ['career_ops_cv_edit_preview', { ...validCv, source: 'cv' }],
+    ['career_ops_cv_edit_preview', { ...validCv, operationId: 'preview-operation' }],
+    ['career_ops_cv_edit_preview', { ...validCv, edits: [{ ...validCv.edits[0], extra: 'unknown' }] }],
+    ['career_ops_cv_edit_preview', { ...validCv, edits: [{ oldText: 'old', newText: 'new', sourceAnnotation: { kind: 'guessed', reference: 'unverified' } }] }],
+    ['career_ops_cv_edit_preview', { ...validCv, edits: [{ oldText: 'old', newText: 'new', sourceAnnotation: { kind: 'primary_source', reference: 'portals.yml#' + expectedSha256 + '#A verified-looking snippet longer than 24 chars.' } }] }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { portals: 'invented' }, sourceAnnotations: { portals: annotation } }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { location: 'Toronto' }, sourceAnnotations: {} }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { compMin: 100 }, sourceAnnotations: { compMin: annotation } }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { name: 'Name' }, sourceAnnotations: { name: { ...annotation, private: 'unknown' } } }],
+    ['career_ops_source_proposal', { source: 'cv', proposalId: '../proposal' }],
+    ['career_ops_source_apply', { source: 'cv', proposalId, expectedSha256, operationId, confirm: false }],
+    ['career_ops_source_history', { source: 'profile', limit: 101 }],
+    ['career_ops_source_history', { source: 'profile', offset: 10001 }],
+    ['career_ops_source_revision', { source: 'cv', sha256: 'A'.repeat(64) }],
+  ];
+  for (const [name, args] of invalid) {
+    const body = await (await worker.fetch(rpc('tools/call', { name, arguments: args }), env)).json();
+    assert.equal(body.error.code, -32602, name + ': ' + JSON.stringify(args));
+  }
+  assert.equal(calls, 0);
+});
+
+test('source previews use fixed Basic-authenticated proposal routes and never call apply', async t => {
+  const configured = { ...env, CAREER_OPS_MCP_READ_TOKEN: 'read-token' };
+  const baseSha = 'a'.repeat(64), proposedSha = 'b'.repeat(64);
+  const cvOperationId = '33333333-3333-4333-8333-333333333333';
+  const profileOperationId = '44444444-4444-4444-8444-444444444444';
+  const annotation = { kind: 'user_statement', reference: 'The user stated this exact change.' };
+  const makeEdit = (n, length) => ({ oldText: `OLD-${n}-` + 'a'.repeat(length), newText: `NEW-${n}-` + 'b'.repeat(length), sourceAnnotation: annotation });
+  const edits = [makeEdit(1, 9000), makeEdit(2, 9000)];
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/cv/proposals');
+      const body = JSON.parse(options.body);
+      assert.deepEqual(body, { source: 'cv', expectedSha256: baseSha, operationId: cvOperationId, edits });
+      assert.ok(Buffer.byteLength(options.body, 'utf8') > 32000);
+      assert.ok(Buffer.byteLength(options.body, 'utf8') <= 256000);
+      return Response.json({ proposalId: cvOperationId, source: 'cv', status: 'preview', baseSha256: baseSha, proposedSha256: proposedSha, diff: edits, expiresAt: '2026-10-05T00:00:00.000Z', proposedContent: 'must-not-escape' });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/profile/proposals');
+    assert.deepEqual(JSON.parse(options.body), {
+      source: 'profile', expectedSha256: baseSha, operationId: profileOperationId,
+      patch: { location: 'Toronto' }, sourceAnnotations: { location: annotation },
+    });
+    return Response.json({ proposalId: profileOperationId, source: 'profile', status: 'preview', baseSha256: baseSha, proposedSha256: proposedSha,
+      diff: [{ path: 'candidate.location', before: 'Ottawa', after: 'Toronto', fields: ['location'], sourceAnnotations: [annotation] }], expiresAt: '2026-10-05T00:00:00.000Z', proposedContent: 'must-not-escape' });
+  });
+  const cv = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_edit_preview', arguments: { expectedSha256: baseSha, operationId: cvOperationId, edits } }), configured)).json();
+  assert.equal(cv.result.structuredContent.status, 'preview');
+  assert.equal(cv.result.structuredContent.diff.length, 2);
+  assert.ok(!JSON.stringify(cv).includes('must-not-escape'));
+  const profile = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_profile_edit_preview', arguments: {
+    expectedSha256: baseSha, operationId: profileOperationId, patch: { location: 'Toronto' }, sourceAnnotations: { location: annotation },
+  } }), configured)).json();
+  assert.equal(profile.result.structuredContent.diff[0].path, 'candidate.location');
+  assert.equal(profile.result.structuredContent.source, 'profile');
+  assert.equal(calls, 2);
+});
+
+test('source request parser keeps legacy 32KB cap and bounded preview exception with 256KB forwarded cap', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const legacy = await worker.fetch(rpc('tools/call', { name: 'career_ops_pipeline', arguments: { query: 'q'.repeat(32000) } }), env);
+  assert.equal(legacy.status, 400);
+  assert.equal((await legacy.json()).error.code, -32700);
+  const annotation = { kind: 'user_statement', reference: 'User statement for size-bound test.' };
+  const oversizedEdits = Array.from({ length: 8 }, (_, index) => ({ oldText: `OLD${index}` + 'a'.repeat(17000), newText: `NEW${index}` + 'b'.repeat(17000), sourceAnnotation: annotation }));
+  const beyondApiCap = await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_edit_preview', arguments: {
+    expectedSha256: 'a'.repeat(64), operationId: '55555555-5555-4555-8555-555555555555', edits: oversizedEdits,
+  } }), env);
+  assert.equal((await beyondApiCap.json()).error.code, -32602);
+  assert.equal(calls, 0);
+  const beyondMcpCapEdits = Array.from({ length: 9 }, (_, index) => ({ oldText: `OLD${index}` + 'a'.repeat(17000), newText: `NEW${index}` + 'b'.repeat(17000), sourceAnnotation: annotation }));
+  const beyondMcpCap = await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_edit_preview', arguments: {
+    expectedSha256: 'a'.repeat(64), operationId: '66666666-6666-4666-8666-666666666666', edits: beyondMcpCapEdits,
+  } }), env);
+  assert.equal(beyondMcpCap.status, 400);
+  assert.equal((await beyondMcpCap.json()).error.code, -32700);
+  assert.equal(calls, 0);
+});
+
+test('source reads, proposal review, confirmed apply, history and revision use fixed Basic-auth routes', async t => {
+  const configured = { ...env, CAREER_OPS_MCP_READ_TOKEN: 'read-token' };
+  const cvContent = '# Synthetic CV source\n';
+  const oldContent = '# Prior source revision\n';
+  const cvSha = sha256(cvContent), oldSha = sha256(oldContent), profileSha = 'c'.repeat(64), proposedSha = 'b'.repeat(64);
+  const proposalId = '77777777-7777-4777-8777-777777777777';
+  const operationId = '88888888-8888-4888-8888-888888888888';
+  const diff = [{ oldText: 'Prior wording', newText: 'Reviewed wording', sourceAnnotation }];
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/cv');
+      assert.equal(options.method, 'GET');
+      return Response.json({ source: 'cv', content: cvContent, sha256: cvSha, privatePath: 'hidden' });
+    }
+    if (calls === 2) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/cv/proposals/' + proposalId);
+      return Response.json({ proposalId, source: 'cv', status: 'preview', baseSha256: cvSha, proposedSha256: proposedSha,
+        diff, sourceAnnotations: [sourceAnnotation], createdAt: '2026-10-04T10:00:00.000Z', expiresAt: '2026-10-05T10:00:00.000Z', proposedContent: 'hidden content' });
+    }
+    if (calls === 3) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/profile/apply');
+      assert.equal(options.method, 'POST');
+      assert.deepEqual(JSON.parse(options.body), { proposalId, expectedSha256: profileSha, operationId, confirm: true });
+      return Response.json({ ok: true, status: 'applied', operationId, proposalId, source: 'profile', beforeSha256: profileSha, afterSha256: proposedSha, receiptPath: `data/source-receipts/profile/${operationId}.json`, privateField: 'hidden' });
+    }
+    if (calls === 4) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/profile/history?limit=2&offset=4');
+      return Response.json({ source: 'profile', history: [{ operationId, proposalId, beforeSha256: profileSha, afterSha256: proposedSha, status: 'applied', sourceAnnotationCount: 1, createdAt: '2026-10-04T10:00:00.000Z', updatedAt: '2026-10-04T10:00:01.000Z', sourceAnnotations: [sourceAnnotation], diff: ['hidden'] }], pagination: { limit: 2, offset: 4, nextOffset: null } });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/cv/history/' + oldSha);
+    return Response.json({ source: 'cv', sha256: oldSha, content: oldContent, createdAt: '2026-10-03T10:00:00.000Z', privatePath: 'hidden' });
+  });
+  const current = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'cv' } }), configured)).json();
+  assert.equal(current.result.structuredContent.content, cvContent);
+  assert.equal(current.result.structuredContent.sha256, cvSha);
+  assert.ok(!JSON.stringify(current).includes('privatePath'));
+  const review = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_proposal', arguments: { source: 'cv', proposalId } }), configured)).json();
+  assert.deepEqual(review.result.structuredContent.diff, diff);
+  assert.ok(!JSON.stringify(review).includes('proposedContent'));
+  const applied = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_apply', arguments: { source: 'profile', proposalId, expectedSha256: profileSha, operationId, confirm: true } }), configured)).json();
+  assert.equal(applied.result.structuredContent.status, 'applied');
+  assert.equal(applied.result.structuredContent.receiptPath, `data/source-receipts/profile/${operationId}.json`);
+  const history = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_history', arguments: { source: 'profile', limit: 2, offset: 4 } }), configured)).json();
+  assert.equal(history.result.structuredContent.history[0].sourceAnnotationCount, 1);
+  assert.deepEqual(history.result.structuredContent.pagination, { limit: 2, offset: 4, nextOffset: null });
+  assert.ok(!JSON.stringify(history).includes('sourceAnnotations'));
+  assert.ok(!JSON.stringify(history).includes('hidden'));
+  const revision = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_revision', arguments: { source: 'cv', sha256: oldSha } }), configured)).json();
+  assert.equal(revision.result.structuredContent.content, oldContent);
+  assert.equal(revision.result.structuredContent.sha256, oldSha);
+  assert.equal(calls, 5);
+});
+
+test('stored stale and expired source proposals remain reviewable with their exact saved diff and annotations', async t => {
+  const proposalId = '77777777-7777-4777-8777-777777777777';
+  const baseSha = 'a'.repeat(64), proposedSha = 'b'.repeat(64);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/cv/proposals/' + proposalId);
+    assert.equal(options.method, 'GET');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    return Response.json({ proposalId, source: 'cv', status: calls === 1 ? 'stale' : 'expired', baseSha256: baseSha, proposedSha256: proposedSha,
+      diff: [{ oldText: 'saved old wording', newText: 'saved reviewed wording', sourceAnnotation }], sourceAnnotations: [sourceAnnotation],
+      createdAt: '2026-10-04T10:00:00.000Z', expiresAt: '2026-10-05T10:00:00.000Z', proposedContent: 'must-not-escape' });
+  });
+  const stale = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_proposal', arguments: { source: 'cv', proposalId } }), env)).json();
+  const expired = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_proposal', arguments: { source: 'cv', proposalId } }), env)).json();
+  for (const [body, expectedStatus] of [[stale, 'stale'], [expired, 'expired']]) {
+    assert.equal(body.result.structuredContent.status, expectedStatus);
+    assert.equal(body.result.structuredContent.diff[0].newText, 'saved reviewed wording');
+    assert.deepEqual(body.result.structuredContent.sourceAnnotations, [sourceAnnotation]);
+    assert.ok(!JSON.stringify(body).includes('must-not-escape'));
+  }
+  assert.equal(calls, 2);
+});
+
+test('source reads are private, verify exact UTF-8 hashes and reject oversized or mismatched documents without truncation', async t => {
+  let calls = 0;
+  const validContent = 'Source bytes are private.';
+  const maxContent = 'm'.repeat(200000);
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    if (calls === 1) return Response.json({ source: 'cv', content: validContent, sha256: sha256(validContent) });
+    if (calls === 2) return Response.json({ source: 'cv', content: maxContent, sha256: sha256(maxContent) });
+    if (calls === 3) return Response.json({ source: 'profile', content: validContent, sha256: 'a'.repeat(64) });
+    return Response.json({ source: 'cv', content: 'x'.repeat(200001), sha256: 'b'.repeat(64) });
+  });
+  const unauthorized = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'cv' } }, false), env)).json();
+  assert.equal(unauthorized.error.code, -32001);
+  const unauthorizedApply = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_apply', arguments: {
+    source: 'cv', proposalId: '77777777-7777-4777-8777-777777777777', expectedSha256: 'a'.repeat(64), operationId: '88888888-8888-4888-8888-888888888888', confirm: true,
+  }, }, false), env)).json();
+  assert.equal(unauthorizedApply.error.code, -32001);
+  assert.equal(calls, 0);
+  const good = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'cv' } }), env)).json();
+  assert.equal(good.result.structuredContent.content, validContent);
+  const maximum = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'cv' } }), env)).json();
+  assert.equal(Buffer.byteLength(maximum.result.structuredContent.content, 'utf8'), 200000);
+  assert.equal(maximum.result.structuredContent.sha256, sha256(maxContent));
+  const mismatch = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'profile' } }), env)).json();
+  assert.ok(mismatch.result.content[0].text.startsWith('DOCUMENT_HASH_MISMATCH:'));
+  assert.ok(!JSON.stringify(mismatch).includes(validContent));
+  const oversized = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'cv' } }), env)).json();
+  assert.ok(oversized.result.content[0].text.startsWith('SOURCE_TOO_LARGE:'));
+  assert.ok(!JSON.stringify(oversized).includes('x'.repeat(1000)));
+  assert.equal(calls, 4);
+});
+
+test('source backend errors preserve only canonical codes and never relay messages or stacks', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    return Response.json(calls === 1
+      ? { error: { code: 'SOURCE_STALE', message: 'private source content' }, stack: 'raw stack', token: 'secret' }
+      : { code: 'INTERNAL_DB_URL', message: 'PRIVATE_DIAGNOSTIC_SENTINEL', stack: 'secret stack' }, { status: 409 });
+  });
+  const known = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_edit_preview', arguments: { expectedSha256: 'a'.repeat(64), operationId: '99999999-9999-4999-8999-999999999999', edits: [] } }), env)).json();
+  assert.ok(known.result.content[0].text.startsWith('SOURCE_STALE:'));
+  assert.ok(!JSON.stringify(known).includes('private source content'));
+  assert.ok(!JSON.stringify(known).includes('raw stack'));
+  const unknown = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_get', arguments: { source: 'cv' } }), env)).json();
+  assert.ok(unknown.result.content[0].text.startsWith('SOURCE_REQUEST_FAILED:'));
+  assert.ok(!JSON.stringify(unknown).includes('PRIVATE_DIAGNOSTIC_SENTINEL'));
+  assert.ok(!JSON.stringify(unknown).includes('secret stack'));
+});
+
+test('source error allowlist preserves SOURCE_RECORD_TOO_LARGE and INVALID_HISTORY_QUERY safely', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    const code = ++calls === 1 ? 'SOURCE_RECORD_TOO_LARGE' : 'INVALID_HISTORY_QUERY';
+    return Response.json({ error: { code, message: 'private source content' }, trace: 'secret stack' }, { status: 413 });
+  });
+  const oversized = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_edit_preview', arguments: {
+    expectedSha256: 'a'.repeat(64), operationId: '99999999-9999-4999-8999-999999999999', edits: [],
+  } }), env)).json();
+  const invalidHistory = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_source_history', arguments: { source: 'cv' } }), env)).json();
+  assert.ok(oversized.result.content[0].text.startsWith('SOURCE_RECORD_TOO_LARGE:'));
+  assert.ok(invalidHistory.result.content[0].text.startsWith('INVALID_HISTORY_QUERY:'));
+  assert.ok(!JSON.stringify(oversized).includes('private source content'));
+  assert.ok(!JSON.stringify(invalidHistory).includes('secret stack'));
+  assert.equal(calls, 2);
 });
 
 test('tracker, Inbox and artifact schemas enforce IDs, user-only fields and explicit destructive confirmation', async t => {
