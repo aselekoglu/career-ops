@@ -41,4 +41,3 @@ Canary identity: operation UUID 3f42c5b6-3a3b-4b2d-93b6-70fe06ae51de; created ap
 ## Result
 
 Native P1 acceptance passed for the requested tracker/artifact and Inbox paths. The sole intended real-user-data mutation was linking the existing completed Magnet CV PDF to application 39. Both test canaries were cleaned up.
-
