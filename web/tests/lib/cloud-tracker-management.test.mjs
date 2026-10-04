@@ -10,12 +10,13 @@ const aliases = JSON.stringify({"#":"num",date:"date",company:"company",via:"via
 const tracker = `# Applications Tracker\n\n| # | Date | Company | Via | Role | Location | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|---|---|\n| 1 | 2026-09-01 | Existing Co | Direct | Engineer | Remote | 4.0/5 | Evaluated | ❌ | [001](../reports/001-existing.md) | Applied 2026-09-15 |\n`;
 const pipeline = `# Pipeline\n\n- [ ] ${url} | Example Co | Engineer\n- [ ] https://jobs.example.test/roles/other | Other Co | Analyst\n`;
 
-function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = true } = {}) {
+function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = true, reportDocs = [] } = {}) {
   const docs = new Map([
     ["data/applications.md", trackerText], ["data/pipeline.md", pipeline],
     ["data/status-log.tsv", "1\t2026-09-01\t-\tEvaluated\tmanual\tImported\n"],
     ["data/follow-ups.md", "# Follow-ups\n\n"], ["config/profile.yml", "followup_cadence:\n  applied_first_days: 10\n"],
   ]);
+  for (const [path, content] of reportDocs) docs.set(path, content);
   if (includeAliases) docs.set("data/tracker-aliases.json", aliases);
   const mutations = new Map(); let before = beforeCommit, nextNumber = 1;
   const row = (path, content) => ({ path, content, sha256: createHash("sha256").update(content).digest("hex"), content_encoding: "utf8" });
@@ -30,6 +31,12 @@ function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = 
     }
     if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
       const content = docs.get(params[0]); return content === undefined ? [] : [row(params[0], content)];
+    }
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) {
+      const content = docs.get(params[0]); return content === undefined ? [] : [{ ...row(params[0], content), too_large: false }];
+    }
+    if (statement.startsWith("SELECT path,") && statement.includes("regexp_match(content")) {
+      return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => ({ path, url: content.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1] ?? null }));
     }
     if (statement.startsWith("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%'")) {
       return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => ({ path, content, content_encoding: "utf8" }));
@@ -68,12 +75,37 @@ test("manual tracker add requires canonical explicit status and never invents sc
   assert.equal(result.application.n, "2");
   assert.equal(result.application.score, null);
   assert.equal(result.application.report, null);
-  assert.match(docs.get("data/applications.md"), /^\| 2 \| 2026-10-01 \| New Co \| user supplied \| Data Engineer \|  \|  \| Interview \|  \|  \| Added manually from /m);
+  assert.match(docs.get("data/applications.md"), /^\| 2 \| 2026-10-01 \| New Co \| user supplied \| Data Engineer \|  \|  \| Interview \| ❌ \|  \| Added manually from /m);
   assert.match(docs.get("data/status-log.tsv"), /2\t2026-10-01\t-\tInterview\tmanual\tManual tracker entry\n$/);
+  assert.match(docs.get("data/applications.md"), /^\| 2 \|[^\n]*\| Interview \| ❌ \|  \| Added manually from /m);
   const replay = await store.mutate("tracker", { ...base, status: "Interview" });
   assert.equal(replay.application.n, "2");
   assert.equal(replay.replayed, true);
   assert.equal((docs.get("data/applications.md").match(/^\| 2 \|/gm) || []).length, 1);
+  const targetMap = JSON.parse(docs.get("data/tracker-targets.json"));
+  assert.deepEqual(targetMap.targets["2"], { url, company: "New Co", role: "Data Engineer" });
+});
+
+test("manual target URL ownership conflicts with another binding and delete removes only its own binding", async () => {
+  const { store, docs } = fixture();
+  await store.mutate("tracker", { operationId, operation: "add", company: "New Co", role: "Engineer", url, source: "user supplied", status: "Interview" });
+  await assert.rejects(store.mutate("tracker", { operationId: "abababab-abab-4bab-8bab-abababababab", operation: "add", company: "Other Co", role: "Analyst", url: `${url}?utm_source=board`, source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_URL_CONFLICT" });
+  await store.mutate("tracker", { operationId: "acacacac-acac-4cac-8cac-acacacacacac", operation: "delete", applicationId: "2", confirm: true });
+  assert.deepEqual(JSON.parse(docs.get("data/tracker-targets.json")), { version: 1, targets: {} });
+  assert.doesNotMatch(docs.get("data/applications.md"), /^\| 2 \|/m);
+});
+
+test("manual target URL cannot duplicate a report-backed tracker application", async () => {
+  const { store } = fixture({ reportDocs: [["reports/001-existing.md", "**URL:** https://jobs.example.test/roles/alpha\n"]] });
+  await assert.rejects(store.mutate("tracker", { operationId, operation: "add", company: "Existing Co", role: "Engineer", url: "https://jobs.example.test/roles/alpha", source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_URL_CONFLICT" });
+});
+
+test("raw legacy report scan limit fails closed before filtering unlinked report rows", async () => {
+  const reportDocs = Array.from({ length: 10_001 }, (_, index) => [`reports/${String(index + 1000).padStart(5, "0")}-orphan.md`, `**URL:** https://jobs.example.test/roles/orphan-${index}\n`]);
+  const { store, docs } = fixture({ reportDocs });
+  await assert.rejects(store.mutate("tracker", { operationId, operation: "add", company: "New Co", role: "Engineer", url: "https://jobs.example.test/roles/new", source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_REPORT_SCAN_TOO_LARGE" });
+  assert.equal(docs.has("data/tracker-targets.json"), false);
+  assert.equal(docs.get("data/applications.md"), tracker);
 });
 
 test("manual add explicitly marked Applied seeds its follow-up from the supplied date", async () => {

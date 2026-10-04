@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { createCloudPdfArtifactStore, handleCvArtifactRequest, persistRenderedCvArtifact } from "../../src/lib/cloud-pdf-artifacts.mjs";
+import { createCloudPdfArtifactStore, handleCvArtifactRequest, matchArtifactToApplication, persistRenderedCvArtifact, prepareArtifactAssociation } from "../../src/lib/cloud-pdf-artifacts.mjs";
+import { createCloudTrackerManagement } from "../../src/lib/cloud-tracker-management.mjs";
 
 const runId = "451cd973-d7e2-4e76-b1fc-50c32771a9e9";
 const lease = "11111111-1111-4111-8111-111111111111";
@@ -18,16 +19,42 @@ const pdfBytes = Buffer.from("%PDF-1.7\nPDF payload".padEnd(700, "x"));
 const pdfBase64 = pdfBytes.toString("base64");
 const pdfSha = createHash("sha256").update(pdfBytes).digest("hex");
 
-function makeSql(initialRequest, { includeAliases = true, legacyNumHeader = false } = {}) {
+test("reportless manual target artifact requires exact bound URL and never fabricates a report/index row", () => {
+  const boundUrl = "https://jobs.example.test/role?jobId=one";
+  const app = { n: "39", company: "Example Corp", role: "Engineer", report: "" };
+  const run = { id: runId, state: "completed", request: { applicationNumber: "39", url: boundUrl }, artifact_path: "output/cv-manual-target.pdf", format: "letter" };
+  const pdfDocument = { path: run.artifact_path, content: pdfBase64, content_encoding: "base64", byte_size: pdfBytes.length, sha256: pdfSha };
+  const prepared = prepareArtifactAssociation({ run, app, reportContent: null, targetUrl: boundUrl, pdfDocument, trackerContent: trackerText.replace("| 52 |", "| 39 |").replace("| Kinaxis |", "| Example Corp |").replace("| Co-op Intern, Forward Deployed Engineer |", "| Engineer |"), trackerSha: "tracker-sha", pdfIndexContent: "existing-index\n", pdfIndexSha: "index-sha", aliases, idempotencyKey: "manual:1", completedAt: "2026-10-03T12:00:00.000Z" });
+  assert.equal(prepared.reportPath, null);
+  assert.equal(prepared.pdfIndexContent, "existing-index\n");
+  assert.match(prepared.trackerContent, /\| 39 \|[^\n]*\| ✅ \|/);
+  assert.throws(() => prepareArtifactAssociation({ run: { ...run, request: { applicationNumber: "39", url: "https://jobs.example.test/role?jobId=two" } }, app, reportContent: null, targetUrl: boundUrl, pdfDocument, trackerContent: trackerText, trackerSha: "tracker-sha", pdfIndexContent: "", pdfIndexSha: null, aliases, idempotencyKey: "manual:2", completedAt: "2026-10-03T12:00:00.000Z" }), { message: "CV_ARTIFACT_IDENTITY_MISMATCH" });
+});
+
+test("legacy report-backed artifact identity remains URL/path scoped despite presentation metadata differences", () => {
+  const run = { state: "completed", request: { applicationNumber: "52", reportPath: "reports/038-kinaxis-2026-10-02.md", reportUrl: url }, company: "Older imported label", role: "Older imported title" };
+  const app = { n: "52", company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer", report: "[38](../reports/038-kinaxis-2026-10-02.md)" };
+  assert.equal(matchArtifactToApplication(run, app, reportText), true);
+});
+
+function makeSql(initialRequest, { includeAliases = true, legacyNumHeader = false, manualTarget = false } = {}) {
   const pdfPath = "output/cv-kinaxis-forward-deployed-test.pdf";
-  const storedTracker = legacyNumHeader ? trackerText.replace("| # |", "| Num |") : trackerText;
+  const storedTracker = manualTarget
+    ? `# Applications Tracker\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n| 39 | 2026-10-02 | Example Corp | Engineer |  | Interview | ❌ |  | Preserve me |\n`
+    : legacyNumHeader ? trackerText.replace("| # |", "| Num |") : trackerText;
   const documents = new Map([
     ["data/applications.md", { path: "data/applications.md", content: storedTracker, content_encoding: "utf8", byte_size: Buffer.byteLength(storedTracker), sha256: "tracker-sha" }],
     ["reports/038-kinaxis-2026-10-02.md", { path: "reports/038-kinaxis-2026-10-02.md", content: reportText, content_encoding: "utf8", byte_size: Buffer.byteLength(reportText), sha256: "report-sha" }],
   ]);
+  if (manualTarget) {
+    const targetMap = JSON.stringify({ version: 1, targets: { "39": { url, company: "Example Corp", role: "Engineer" } } });
+    documents.set("data/tracker-targets.json", { path: "data/tracker-targets.json", content: targetMap, content_encoding: "utf8", byte_size: Buffer.byteLength(targetMap), sha256: createHash("sha256").update(targetMap).digest("hex") });
+  }
   if (includeAliases) documents.set("data/tracker-aliases.json", { path: "data/tracker-aliases.json", content: JSON.stringify(aliases), content_encoding: "utf8", byte_size: 100, sha256: "aliases-sha" });
+  documents.set("data/status-log.tsv", { path: "data/status-log.tsv", content: "", content_encoding: "utf8", byte_size: 0, sha256: "status-sha" });
+  const mutations = new Map(); let nextApplicationNumber = 52;
   const run = {
-    id: runId, state: "running", request: initialRequest, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer", format: "letter",
+    id: runId, state: "running", request: initialRequest, company: manualTarget ? "Example Corp" : "Kinaxis", role: manualTarget ? "Engineer" : "Co-op Intern, Forward Deployed Engineer", format: "letter",
     html: "<!doctype html><html><body>CV</body></html>", lease, requested_at: "2026-10-02T12:00:00.000Z", started_at: "2026-10-02T12:01:00.000Z",
     completed_at: null, artifact_path: null, application_number: null, report_path: null, association_status: "unlinked", association_error_code: null,
     association_idempotency_key: null, association_request_hash: null,
@@ -37,7 +64,20 @@ function makeSql(initialRequest, { includeAliases = true, legacyNumHeader = fals
   const sql = { async query(statement, params = []) {
     if (statement.startsWith("CREATE TABLE") || statement.startsWith("ALTER TABLE") || statement.startsWith("UPDATE career_ops_cv_runs SET state='failed'")) return [];
     if (statement.startsWith("SELECT * FROM career_ops_cv_runs WHERE id=$1")) return [{ ...run }];
+    if (statement.startsWith("SELECT payload_sha256,result FROM career_ops_tracker_mutations WHERE id=$1")) { const prior = mutations.get(params[0]); return prior ? [{ payload_sha256: prior.hash, result: prior.result }] : []; }
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [{ num: ++nextApplicationNumber }];
+    if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents WHERE path=$1")) return documents.has(params[0]) ? [{ ...documents.get(params[0]) }] : [];
     if (statement.startsWith("SELECT path,content,content_encoding,byte_size,sha256 FROM career_ops_documents WHERE path=$1")) return documents.has(params[0]) ? [{ ...documents.get(params[0]) }] : [];
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) return documents.has(params[0]) ? [{ ...documents.get(params[0]), too_large: false }] : [];
+    if (statement.startsWith("SELECT path,") && statement.includes("regexp_match(content")) return [...documents.values()].filter((doc) => doc.path.startsWith("reports/")).map((doc) => ({ path: doc.path, url: doc.content.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1] ?? null }));
+    if (statement.startsWith("WITH incoming AS MATERIALIZED")) {
+      const [id, payloadHash, encodedDocs, encodedResult] = params, incoming = JSON.parse(encodedDocs);
+      const cas = incoming.every((doc) => (documents.get(doc.path)?.sha256 ?? null) === doc.expected_sha);
+      if (!cas) return [{ payload_sha256: null, result: null, applied: false, cas_ok: false, writes_ok: true }];
+      for (const doc of incoming) documents.set(doc.path, { path: doc.path, content: doc.content, content_encoding: "utf8", byte_size: doc.byte_size, sha256: doc.sha256 });
+      const result = JSON.parse(encodedResult); mutations.set(id, { hash: payloadHash, result });
+      return [{ payload_sha256: payloadHash, result, applied: true, cas_ok: true, writes_ok: true }];
+    }
     if (statement.includes("WITH claimed AS")) {
       assert.match(statement, /total=4 THEN 1 ELSE 1\/\(total-total\)/);
       run.state = "completed"; run.artifact_path = pdfPath; run.completed_at = "2026-10-02T12:02:00.000Z";
@@ -49,11 +89,12 @@ function makeSql(initialRequest, { includeAliases = true, legacyNumHeader = fals
     if (statement.startsWith("WITH locked AS")) {
       associationWrites++;
       assert.match(statement, /WHERE path='data\/applications\.md' AND sha256=\$8/);
+      assert.match(statement, /path='data\/tracker-targets\.json' AND sha256=\$14/);
       assert.match(statement, /IS NOT DISTINCT FROM \$12/);
       assert.match(statement, /total=3 THEN 1 ELSE 1\/\(total-total\)/);
       if (!allowAssociationWrite) throw Object.assign(new Error("division by zero"), { code: "22012" });
       documents.set("data/applications.md", { path: "data/applications.md", content: params[4], content_encoding: "utf8", byte_size: params[6], sha256: params[5] });
-      documents.set("data/pdf-index.tsv", { path: "data/pdf-index.tsv", content: params[8], content_encoding: "utf8", byte_size: params[10], sha256: params[9] });
+      if (params[12] !== null) documents.set("data/pdf-index.tsv", { path: "data/pdf-index.tsv", content: params[8], content_encoding: "utf8", byte_size: params[10], sha256: params[9] });
       run.application_number = params[1]; run.report_path = params[12]; run.association_status = "linked"; run.association_error_code = null;
       run.association_idempotency_key = params[2]; run.association_request_hash = params[3];
       return [{ ...run }];
@@ -73,6 +114,26 @@ test("valid exact inbox CV persists as completed but stays unlinked and does not
   assert.match(db.documents.get("data/applications.md").content, /\| ❌ \|/);
   assert.equal(db.documents.get(db.run.artifact_path).content_encoding, "base64");
   assert.equal(db.associationWrites(), 0);
+});
+
+test("actual manual-add row starts PDF-pending and its exact binding supports no-report artifact association", async () => {
+  const targetUrl = "https://jobs.example.test/role?jobId=one";
+  const db = makeSql({ url });
+  const tracker = createCloudTrackerManagement({ sql: db.sql, now: () => new Date("2026-10-03T12:00:00.000Z") });
+  const added = await tracker.mutate("tracker", { operationId: "cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf", operation: "add", company: "Example Corp", role: "Engineer", url: targetUrl, source: "user supplied", status: "Offer", date: "2026-10-01" });
+  const applicationNumber = added.application.n;
+  const manualRow = db.documents.get("data/applications.md").content.split(/\r?\n/).find((line) => line.startsWith(`| ${applicationNumber} |`));
+  assert.match(manualRow, /\| ❌ \|\s*\|/);
+  db.run.request = { applicationNumber, url: targetUrl };
+  db.run.company = "Example Corp"; db.run.role = "Engineer";
+  await persistRenderedCvArtifact({ sql: db.sql, run: db.run, lease, htmlPath: "output/cv-kinaxis-forward-deployed-test.html", pdfPath: "output/cv-kinaxis-forward-deployed-test.pdf", pdfBytes });
+  db.enableAssociationWrite();
+  const linked = await createCloudPdfArtifactStore({ sql: db.sql }).associate(runId, applicationNumber, "manual:target");
+  assert.equal(linked.associationStatus, "linked");
+  assert.equal(linked.applicationNumber, applicationNumber);
+  assert.equal(linked.reportPath, null);
+  assert.equal(db.documents.has("data/pdf-index.tsv"), false, "reportless associations do not invent a report-index row");
+  assert.match(db.documents.get("data/applications.md").content, new RegExp(`\\| ${applicationNumber} \\|[^\\n]*\\| ✅ \\|`));
 });
 
 test("application-target render stays completed with explicit pending error after tracker CAS conflict, then links idempotently", async () => {

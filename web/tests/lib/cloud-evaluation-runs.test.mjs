@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { importedPostingPath } from "../../src/lib/job-import.mjs";
 
@@ -172,6 +173,7 @@ test("duplicate exact URL returns durable run before inspecting the checked inbo
   const run = { id: "11111111-1111-4111-8111-111111111111", state: "completed", target_key: `url:${url}:default`, request: { url }, requested_at: new Date("2026-10-02T00:00:00Z"), completed_at: new Date("2026-10-02T00:01:00Z"), application_number: "52", score: "4.2", report_path: "reports/052-kinaxis-2026-10-02.md" };
   const sql = { async query(statement, params = []) {
     if (/^(CREATE |ALTER TABLE |SELECT setval|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) return [];
     if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return params[0] === run.target_key ? [run] : [];
     throw new Error(`Unexpected SQL: ${statement}`);
@@ -268,6 +270,81 @@ test("completed commit keeps tracker number unpadded and fences report, tracker,
   assert.deepEqual([...files.entries()], beforeRetry, "invalid Risk Summary data must not write a report, tracker row, or inbox completion");
 });
 
+test("reportless manual target evaluation writes a real report to the same row and preserves lifecycle fields", async () => {
+  const targetMap = JSON.stringify({ version: 1, targets: { "52": { url, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer" } } });
+  const trackerText = `# Applications Tracker\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n| 52 | 2026-09-22 | Kinaxis | Co-op Intern, Forward Deployed Engineer |  | Offer | ✅ |  | Keep these fields |\n`;
+  const files = new Map([
+    ["cv.md", "# CV\nEngineer.\n".repeat(30)], ["config/profile.yml", "language:\n  output: en\n"],
+    ["modes/_profile.md", "Target software engineering roles."], ["data/pipeline.md", "# Pipeline\n\n"],
+    ["data/applications.md", trackerText], ["data/tracker-targets.json", targetMap],
+    [importedPostingPath(url), JSON.stringify({ normalizedUrl: url, company: "Kinaxis", role: "Co-op Intern, Forward Deployed Engineer", jobDescription: posting })],
+  ]);
+  const run = { id: "44444444-4444-4444-8444-444444444444", state: "queued", request: { applicationNumber: "52" }, target_key: "application:52:default", requested_at: new Date("2026-10-02T00:00:00Z") };
+  const sql = { async query(statement, params = []) {
+    if (/^(CREATE |ALTER TABLE |SELECT setval|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [run];
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) {
+      const content = files.get(params[0]);
+      return content == null ? [] : [{ path: params[0], content, sha256: createHash("sha256").update(content).digest("hex"), content_encoding: "utf8", too_large: false }];
+    }
+    if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
+      const content = files.get(params[0]);
+      return content == null ? [] : [{ path: params[0], content, sha256: `sha:${params[0]}`, content_encoding: "utf8" }];
+    }
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_runs")) { Object.assign(run, { state: "queued", request: JSON.parse(params[1]), application_number: params[6] }); return [run]; }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='running'")) { Object.assign(run, { state: "running", lease: params[1] }); return [run]; }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='committing'")) { Object.assign(run, { state: "committing", company: params[2], role: params[3], score: params[4] }); return [run]; }
+    if (statement.startsWith("WITH valid AS")) {
+      assert.equal(params[14], "52");
+      files.set(params[2], params[3]); files.set("data/applications.md", params[6]); files.set("data/pipeline.md", params[9]);
+      Object.assign(run, { state: "completed", report_path: params[2], application_number: params[14], completed_at: new Date("2026-10-02T00:02:00Z") });
+      return [run];
+    }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed'")) { Object.assign(run, { state: "failed", error_code: params[2] }); return []; }
+    throw new Error(`Unexpected SQL in manual evaluation test: ${statement}`);
+  } };
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => {}, generate: async () => generatedReport() });
+  const queued = await store.start({ applicationNumber: "52" });
+  const completed = await store.process(queued.runId);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.applicationNumber, "52");
+  assert.match(completed.reportPath, /^reports\/052-kinaxis-\d{4}-\d{2}-\d{2}-rerun-/);
+  const finalTracker = files.get("data/applications.md");
+  assert.match(finalTracker, /^\| 52 \| 2026-09-22 \| Kinaxis \|.*\| Offer \| ✅ \| \[52\]/m);
+  assert.match(finalTracker, /Keep these fields/);
+  assert.ok(files.get(completed.reportPath).includes(`**URL:** ${url}`));
+});
+
+test("reportless application without an immutable URL binding fails before dispatch or document writes", async () => {
+  const files = new Map([
+    ["cv.md", "# CV\nEngineer.\n".repeat(30)], ["config/profile.yml", "language:\n  output: en\n"],
+    ["modes/_profile.md", "Target software engineering roles."], ["data/pipeline.md", "# Pipeline\n\n"],
+    ["data/applications.md", `# Applications Tracker\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n| 52 | 2026-09-22 | Kinaxis | Co-op Intern, Forward Deployed Engineer |  | Offer | ✅ |  | Keep these fields |\n`],
+  ]);
+  const writes = [];
+  const sql = { async query(statement, params = []) {
+    if (/^(CREATE |ALTER TABLE |UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return [];
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) return [];
+    if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
+      const content = files.get(params[0]);
+      return content == null ? [] : [{ path: params[0], content, sha256: `sha:${params[0]}`, content_encoding: "utf8" }];
+    }
+    writes.push(statement);
+    throw new Error(`Unexpected write before target validation: ${statement}`);
+  } };
+  let dispatches = 0;
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => { dispatches++; } });
+  await assert.rejects(store.start({ applicationNumber: "52" }), { message: "TRACKER_TARGET_NOT_FOUND" });
+  assert.equal(dispatches, 0);
+  assert.deepEqual(writes, []);
+  assert.equal([...files.keys()].some((path) => path.startsWith("reports/")), false);
+});
+
 test("explicit application reevaluation keeps its tracker lifecycle state", async () => {
   const files = new Map([
     ["cv.md", "# CV\nEngineer.\n".repeat(30)],
@@ -280,6 +357,7 @@ test("explicit application reevaluation keeps its tracker lifecycle state", asyn
   const run = { id: "44444444-4444-4444-8444-444444444444", state: "queued", request: { applicationNumber: "52" }, target_key: "application:52:default", application_number: "52", requested_at: new Date("2026-10-02T00:00:00Z") };
   const sql = { async query(statement, params = []) {
     if (/^(CREATE |ALTER TABLE |SELECT setval|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) return [];
     if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [run];
     if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {

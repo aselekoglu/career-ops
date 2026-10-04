@@ -7,6 +7,7 @@ import { parseApplications as parseTrackerApplications } from "./tracker-table.m
 import { ensureCareerOpsReportNumbering, reserveCareerOpsReportNumber, MAX_STORED_REPORT_NUMBER_SQL } from "./cloud-report-numbering.mjs";
 import { loadJobDescription } from "./cloud-job-import.mjs";
 import { fetchPublicPosting } from "./job-import.mjs";
+import { readTrackerTargets, resolveTrackerTarget } from "./cloud-tracker-targets.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
@@ -210,7 +211,8 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     const row=(await parseTracker(trackerDoc.content)).find(x=>x.n===request.applicationNumber); if(!row) throw new Error("APPLICATION_NOT_FOUND");
     // Resolve the canonical report path from the markdown link; report documents are keyed by full path.
     const pathMatch=String(row.report||"").match(/(?:\.\.\/|\/)reports\/([^\s)]+)/); const prior=pathMatch ? await readDoc(`reports/${pathMatch[1]}`) : null;
-    url=reportUrl(prior?.content); if(!url) throw new Error("APPLICATION_REPORT_NOT_FOUND");
+    const target=resolveTrackerTarget({applicationNumber:request.applicationNumber,application:row,reportUrl:reportUrl(prior?.content),targets:(await readTrackerTargets(sql)).targets});
+    url=target.url;
     company=row.company; role=row.role; applicationNumber=request.applicationNumber;
    }
    const id=randomUUID();
@@ -232,7 +234,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
     const [trackerDoc,inboxDoc,cv,profile,profileRules,custom,articleDigest,blacklist]=await Promise.all(["data/applications.md","data/pipeline.md","cv.md","config/profile.yml","modes/_profile.md","modes/_custom.md","article-digest.md","data/blacklist.md"].map(readDoc));
     const request=claimed.request; let job;
     if(request.url) job=parseInbox(inboxDoc?.content).find(x=>x.url===request.url);
-    else { const row=(await parseTracker(trackerDoc?.content)).find(x=>x.n===request.applicationNumber); const pathMatch=String(row?.report||"").match(/(?:\.\.\/|\/)reports\/([^\s)]+)/); const prior=pathMatch?await readDoc(`reports/${pathMatch[1]}`):null; job={url:reportUrl(prior?.content),company:row?.company,role:row?.role}; }
+    else { const row=(await parseTracker(trackerDoc?.content)).find(x=>x.n===request.applicationNumber); if(!row)throw new Error("APPLICATION_NOT_FOUND"); const pathMatch=String(row.report||"").match(/(?:\.\.\/|\/)reports\/([^\s)]+)/); const prior=pathMatch?await readDoc(`reports/${pathMatch[1]}`):null; const target=resolveTrackerTarget({applicationNumber:request.applicationNumber,application:row,reportUrl:reportUrl(prior?.content),targets:(await readTrackerTargets(sql)).targets}); job={url:target.url,company:row.company,role:row.role}; }
     if(!job?.url || !cv || !profile || !profileRules) throw new Error("EVALUATION_INPUTS_NOT_IMPORTED");
     let applicationNumber=request.applicationNumber||null;
     const existingTrackerRows=await parseTracker(trackerDoc?.content);
@@ -277,7 +279,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
       [id,lease,reportPath,reportContent,sha(reportContent),Buffer.byteLength(reportContent),trackerContent,sha(trackerContent),Buffer.byteLength(trackerContent),inboxContent,sha(inboxContent),Buffer.byteLength(inboxContent),tracker.sha256,inbox.sha256,applicationNumber||reportNumber]);
     if(!nowRows[0]) throw new Error("EVALUATION_WRITE_CONFLICT");
     return publicRun(nowRows[0]);
-   } catch(error) { const message=String(error?.message||"");const invalid=message.startsWith("EVALUATION_INVALID_RESULT:");const code=hostedEvaluationErrorCode(error)||(message.startsWith("HOSTED_AI_")?"HOSTED_AI_UNAVAILABLE":message.startsWith("POSTING_")?message:message.includes("division by zero")?"EVALUATION_WRITE_CONFLICT":invalid?"EVALUATION_INVALID_RESULT":["CV_NOT_FOUND","PROFILE_NOT_FOUND","URL_NOT_IN_INBOX","EVALUATION_INPUTS_NOT_IMPORTED","EVALUATION_INVALID_RESULT","TRACKER_FORMAT_INVALID","APPLICATION_NOT_FOUND","APPLICATION_REPORT_NOT_FOUND","BLACKLIST_GATE_BLOCKED","EVALUATION_WRITE_CONFLICT"].includes(message)?message:"EVALUATION_WORKER_FAILED");
+   } catch(error) { const message=String(error?.message||"");const invalid=message.startsWith("EVALUATION_INVALID_RESULT:");const targetError=["TRACKER_TARGETS_INVALID","TRACKER_TARGETS_TOO_LARGE","TRACKER_TARGET_REPORT_SCAN_TOO_LARGE","TRACKER_TARGET_REPORT_MISMATCH","TRACKER_TARGET_ROW_MISMATCH","TRACKER_TARGET_NOT_FOUND"].includes(message);const code=hostedEvaluationErrorCode(error)||(message.startsWith("HOSTED_AI_")?"HOSTED_AI_UNAVAILABLE":message.startsWith("POSTING_")?message:message.includes("division by zero")?"EVALUATION_WRITE_CONFLICT":invalid?"EVALUATION_INVALID_RESULT":["CV_NOT_FOUND","PROFILE_NOT_FOUND","URL_NOT_IN_INBOX","EVALUATION_INPUTS_NOT_IMPORTED","EVALUATION_INVALID_RESULT","TRACKER_FORMAT_INVALID","APPLICATION_NOT_FOUND","APPLICATION_REPORT_NOT_FOUND","BLACKLIST_GATE_BLOCKED","EVALUATION_WRITE_CONFLICT"].includes(message)||targetError?message:"EVALUATION_WORKER_FAILED");
     const reason=invalid?message.slice("EVALUATION_INVALID_RESULT:".length,120):null; diagnosticCode=reason&&VALID_REPORT_DIAGNOSTICS.has(reason)?reason:null;
     await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code=$3,diagnostic_code=$4,failed_draft=$5,completed_at=now() WHERE id=$1 AND lease=$2 AND state IN ('running','committing')",[id,lease,code,diagnosticCode,invalid?invalidDraft:null]); return publicRun(await find(id)); }
   },
@@ -303,7 +305,7 @@ export async function handleEvaluationRequest(request,id=null,reportMode=false){
   if(!request.headers.get("content-type")?.includes("application/json"))return json({code:"JSON_REQUIRED"},415);
   if(Number(request.headers.get("content-length")||0)>MAX_BODY)return json({code:"REQUEST_TOO_LARGE"},413);
   const run=await getStore().start(await request.json()); return json(run,run.status==="failed"?502:202);
- }catch(error){const code=String(error?.message||"EVALUATION_API_FAILED");const bad=/^(ONE_TARGET_REQUIRED|INVALID_|APPLICATION_NOT_FOUND|APPLICATION_REPORT_NOT_FOUND|URL_NOT_IN_INBOX|CV_NOT_FOUND|PROFILE_NOT_FOUND|EVALUATION_INPUTS_NOT_IMPORTED|IDEMPOTENCY_KEY_CONFLICT)$/.test(code);const unavailable=["EVALUATION_WORKER_NOT_CONFIGURED","HOSTED_AI_UNAVAILABLE"].includes(code);const conflict=code==="REPORT_NOT_READY"||code==="EVALUATION_WRITE_CONFLICT";return json({code:bad||unavailable||conflict?code:"EVALUATION_API_FAILED"},unavailable?503:bad?400:conflict?409:500);}
+ }catch(error){const code=String(error?.message||"EVALUATION_API_FAILED");const bad=/^(ONE_TARGET_REQUIRED|INVALID_|APPLICATION_NOT_FOUND|APPLICATION_REPORT_NOT_FOUND|URL_NOT_IN_INBOX|CV_NOT_FOUND|PROFILE_NOT_FOUND|EVALUATION_INPUTS_NOT_IMPORTED|IDEMPOTENCY_KEY_CONFLICT)$/.test(code);const targetError=["TRACKER_TARGET_NOT_FOUND","TRACKER_TARGET_REPORT_MISMATCH","TRACKER_TARGET_ROW_MISMATCH"].includes(code);const unavailable=["EVALUATION_WORKER_NOT_CONFIGURED","HOSTED_AI_UNAVAILABLE","TRACKER_TARGETS_INVALID","TRACKER_TARGETS_TOO_LARGE","TRACKER_TARGET_REPORT_SCAN_TOO_LARGE"].includes(code);const conflict=code==="REPORT_NOT_READY"||code==="EVALUATION_WRITE_CONFLICT";return json({code:bad||targetError||unavailable||conflict?code:"EVALUATION_API_FAILED"},unavailable?503:bad?400:targetError||conflict?409:500);}
 }
 export async function handleEvaluationWorker(request){
  if(!workerAuthorized(request.headers.get("authorization")))return json({code:"WORKER_UNAUTHORIZED"},401);

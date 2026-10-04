@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { detectColumnMap, parseApplications } from "./tracker-table.mjs";
 import { resolveTrackerAliases } from "./cloud-tracker-aliases.mjs";
+import { readTrackerTargets, resolveTrackerTarget } from "./cloud-tracker-targets.mjs";
+import { normalizeJobUrl } from "./job-import.mjs";
 
 const PDF_PATH_RE = /^output\/[A-Za-z0-9._-]+\.pdf$/;
 const REPORT_PATH_RE = /^reports\/[A-Za-z0-9._-]+\.md$/;
@@ -119,15 +121,19 @@ export function reportUrlFromContent(content) {
   return match?.[1] || null;
 }
 
-export function matchArtifactToApplication(run, app, reportContent) {
+export function matchArtifactToApplication(run, app, reportContent, targetUrl = null) {
   if (!run || run.state !== "completed" || !app || typeof app.n !== "string") return false;
   const request = typeof run.request === "string" ? safeJson(run.request) : run.request;
   if (!request || typeof request !== "object") return false;
   const reportUrl = reportUrlFromContent(reportContent);
   if (request.applicationNumber !== undefined) {
     const reportPath = reportPathFromCell(app.report);
-    return String(request.applicationNumber) === app.n && typeof request.reportUrl === "string" && request.reportUrl === reportUrl &&
+    if (String(request.applicationNumber) !== app.n) return false;
+    if (reportPath) return typeof request.reportUrl === "string" && request.reportUrl === reportUrl &&
       typeof request.reportPath === "string" && request.reportPath === reportPath;
+    if (reportContent || typeof request.url !== "string" || !targetUrl ||
+        typeof run.company === "string" && run.company !== app.company || typeof run.role === "string" && run.role !== app.role) return false;
+    try { return normalizeJobUrl(request.url) === normalizeJobUrl(targetUrl) && request.url === targetUrl; } catch { return false; }
   }
   return typeof request.url === "string" && Boolean(reportUrl) && request.url === reportUrl;
 }
@@ -178,21 +184,21 @@ function updatePdfIndex(content, reportPath, pdfPath, htmlPath, format, date) {
   return retained.join(newline).replace(/(?:\r?\n)*$/, newline);
 }
 
-export function prepareArtifactAssociation({ run, app, reportContent, pdfDocument, trackerContent, trackerSha, pdfIndexContent, pdfIndexSha, aliases, idempotencyKey, completedAt }) {
+export function prepareArtifactAssociation({ run, app, reportContent, targetUrl = null, pdfDocument, trackerContent, trackerSha, pdfIndexContent, pdfIndexSha, aliases, idempotencyKey, completedAt }) {
   if (!run || run.state !== "completed" || !run.id || !/^\d{1,6}$/.test(String(app?.n || "")) ||
       typeof idempotencyKey !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(idempotencyKey)) {
     throw new Error("CV_ARTIFACT_ASSOCIATION_INVALID");
   }
   if (!PDF_PATH_RE.test(String(run.artifact_path || "")) || pdfDocument?.path !== run.artifact_path) throw new Error("CV_ARTIFACT_INVALID");
   const bytes = validatePdfDocument(pdfDocument);
-  if (!matchArtifactToApplication(run, app, reportContent)) throw new Error("CV_ARTIFACT_IDENTITY_MISMATCH");
+  if (!matchArtifactToApplication(run, app, reportContent, targetUrl)) throw new Error("CV_ARTIFACT_IDENTITY_MISMATCH");
   const reportPath = reportPathFromCell(app.report);
   const reportNumber = reportPath?.match(/^reports\/(\d+)-/)?.[1];
-  if (!reportPath || !reportNumber) throw new Error("CV_ARTIFACT_REPORT_LINK_INVALID");
+  if (Boolean(reportPath) !== Boolean(reportNumber) || reportPath && !reportContent) throw new Error("CV_ARTIFACT_REPORT_LINK_INVALID");
   const trackerNext = updateTrackerPdf(trackerContent, app.n, aliases);
   const htmlPath = run.artifact_path.replace(/\.pdf$/i, ".html");
   const date = new Date(completedAt).toISOString().slice(0, 10);
-  const pdfIndexNext = updatePdfIndex(pdfIndexContent, reportPath, run.artifact_path, htmlPath, run.format, date);
+  const pdfIndexNext = reportPath ? updatePdfIndex(pdfIndexContent, reportPath, run.artifact_path, htmlPath, run.format, date) : String(pdfIndexContent || "");
   return {
     runId: run.id,
     applicationNumber: app.n,
@@ -245,7 +251,15 @@ export function artifactMetadata(run, pdfDocument = null, pdfMetadata = null) {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const safeAssociationCode = (error) => /^CV_ARTIFACT_[A-Z_]{1,80}$/.test(String(error?.message || "")) ? error.message : "CV_ARTIFACT_ASSOCIATION_FAILED";
+const TRACKER_TARGET_ERROR_CODES = new Set([
+  "TRACKER_TARGETS_INVALID", "TRACKER_TARGETS_TOO_LARGE", "TRACKER_TARGET_REPORT_SCAN_TOO_LARGE",
+  "TRACKER_TARGET_URL_CONFLICT", "TRACKER_TARGET_IMMUTABLE", "TRACKER_TARGET_INVALID", "TRACKER_TARGET_APPLICATION_INVALID",
+  "TRACKER_TARGET_REPORT_MISMATCH", "TRACKER_TARGET_ROW_MISMATCH", "TRACKER_TARGET_NOT_FOUND",
+]);
+const safeAssociationCode = (error) => {
+  const code = String(error?.message || "");
+  return /^CV_ARTIFACT_[A-Z_]{1,80}$/.test(code) || TRACKER_TARGET_ERROR_CODES.has(code) ? code : "CV_ARTIFACT_ASSOCIATION_FAILED";
+};
 
 export function createCloudPdfArtifactStore(options = {}) {
   const sql = options.sql;
@@ -257,7 +271,7 @@ export function createCloudPdfArtifactStore(options = {}) {
   ))[0] || null;
 
   async function applicationBundle(applicationNumber) {
-    const [tracker, aliasesDoc] = await Promise.all([readDocument("data/applications.md"), readDocument("data/tracker-aliases.json")]);
+    const [tracker, aliasesDoc, targetState] = await Promise.all([readDocument("data/applications.md"), readDocument("data/tracker-aliases.json"), readTrackerTargets(sql)]);
     if (!tracker || tracker.content_encoding !== "utf8") throw new Error("CV_ARTIFACT_TRACKER_UNAVAILABLE");
     if (aliasesDoc && aliasesDoc.content_encoding !== "utf8") throw new Error("CV_ARTIFACT_TRACKER_ALIASES_INVALID");
     const aliases = resolveTrackerAliases(aliasesDoc?.content ?? null, "CV_ARTIFACT_TRACKER_ALIASES_INVALID");
@@ -266,10 +280,10 @@ export function createCloudPdfArtifactStore(options = {}) {
     if (!matched.length) throw new Error("CV_ARTIFACT_APPLICATION_NOT_FOUND");
     if (matched.length !== 1) throw new Error("CV_ARTIFACT_APPLICATION_AMBIGUOUS");
     const reportPath = reportPathFromCell(matched[0].report);
-    if (!reportPath) throw new Error("CV_ARTIFACT_REPORT_LINK_INVALID");
-    const reportDoc = await readDocument(reportPath);
-    if (!reportDoc || reportDoc.content_encoding !== "utf8") throw new Error("CV_ARTIFACT_REPORT_NOT_FOUND");
-    return { app: matched[0], reportContent: reportDoc.content, trackerDoc: tracker, aliases };
+    const reportDoc = reportPath ? await readDocument(reportPath) : null;
+    if (reportPath && (!reportDoc || reportDoc.content_encoding !== "utf8")) throw new Error("CV_ARTIFACT_REPORT_NOT_FOUND");
+    const target = resolveTrackerTarget({ applicationNumber, application: matched[0], reportUrl: reportUrlFromContent(reportDoc?.content), targets: targetState.targets });
+    return { app: matched[0], reportContent: reportDoc?.content ?? null, targetUrl: target.url, targetDoc: targetState.document, trackerDoc: tracker, aliases };
   }
 
   async function loadPdf(run) {
@@ -300,11 +314,11 @@ export function createCloudPdfArtifactStore(options = {}) {
       throw new Error("CV_ARTIFACT_IDEMPOTENCY_CONFLICT");
     }
     const pdfDoc = await loadPdf(run);
-    const { app, reportContent, trackerDoc, aliases } = await applicationBundle(applicationNumber);
+    const { app, reportContent, targetUrl, targetDoc, trackerDoc, aliases } = await applicationBundle(applicationNumber);
     const indexDoc = await readDocument("data/pdf-index.tsv");
     if (indexDoc && indexDoc.content_encoding !== "utf8") throw new Error("CV_ARTIFACT_INDEX_INVALID");
     const prepared = prepareArtifactAssociation({
-      run, app, reportContent, pdfDocument: pdfDoc,
+      run, app, reportContent, targetUrl, pdfDocument: pdfDoc,
       trackerContent: trackerDoc.content, trackerSha: trackerDoc.sha256,
       pdfIndexContent: indexDoc?.content ?? "", pdfIndexSha: indexDoc?.sha256 ?? null,
       aliases, idempotencyKey, completedAt: run.completed_at,
@@ -319,29 +333,33 @@ export function createCloudPdfArtifactStore(options = {}) {
           AND (association_idempotency_key IS NULL OR association_idempotency_key=$3)
           AND (association_request_hash IS NULL OR association_request_hash=$4)
         FOR UPDATE
+      ), target_guard AS (
+        SELECT 1 AS ok WHERE $14::text IS NULL OR EXISTS(SELECT 1 FROM career_ops_documents WHERE path='data/tracker-targets.json' AND sha256=$14)
       ), tracker AS (
         UPDATE career_ops_documents SET content=$5,sha256=$6,byte_size=$7,updated_at=now()
-        WHERE path='data/applications.md' AND sha256=$8 AND EXISTS(SELECT 1 FROM locked) RETURNING path
+        WHERE path='data/applications.md' AND sha256=$8 AND EXISTS(SELECT 1 FROM locked) AND EXISTS(SELECT 1 FROM target_guard) RETURNING path
       ), index_write AS (
         INSERT INTO career_ops_documents(path,content,sha256,content_encoding,byte_size,updated_at)
-        SELECT 'data/pdf-index.tsv',$9,$10,'utf8',$11,now() FROM tracker
+        SELECT 'data/pdf-index.tsv',$9,$10,'utf8',$11,now() FROM tracker WHERE $13::text IS NOT NULL
         ON CONFLICT(path) DO UPDATE SET content=EXCLUDED.content,sha256=EXCLUDED.sha256,content_encoding='utf8',byte_size=EXCLUDED.byte_size,updated_at=now()
-        WHERE career_ops_documents.sha256 IS NOT DISTINCT FROM $12
+        WHERE career_ops_documents.sha256 IS NOT DISTINCT FROM $12 AND $13::text IS NOT NULL
         RETURNING path
+      ), index_skip AS (
+        SELECT 'no-report-index'::text AS path FROM tracker WHERE $13::text IS NULL
       ), linked AS (
         UPDATE career_ops_cv_runs SET application_number=$2,report_path=$13,association_status='linked',association_error_code=NULL,
           association_idempotency_key=$3,association_request_hash=$4
-        WHERE id=$1 AND state='completed' AND EXISTS(SELECT 1 FROM tracker) AND EXISTS(SELECT 1 FROM index_write)
+        WHERE id=$1 AND state='completed' AND EXISTS(SELECT 1 FROM tracker) AND (EXISTS(SELECT 1 FROM index_write) OR EXISTS(SELECT 1 FROM index_skip))
         RETURNING *
       ), counts AS (
-        SELECT (SELECT COUNT(*) FROM tracker)+(SELECT COUNT(*) FROM index_write)+(SELECT COUNT(*) FROM linked) AS total
+        SELECT (SELECT COUNT(*) FROM tracker)+(SELECT COUNT(*) FROM index_write)+(SELECT COUNT(*) FROM index_skip)+(SELECT COUNT(*) FROM linked) AS total
       ), asserted AS MATERIALIZED (
         SELECT CASE WHEN total=3 THEN 1 ELSE 1/(total-total) END AS ok FROM counts
       )
       SELECT linked.* FROM asserted LEFT JOIN linked ON TRUE WHERE asserted.ok=1 AND linked.id IS NOT NULL`,
     [runId, applicationNumber, idempotencyKey, keyHash,
       prepared.trackerContent, trackerShaNext, Buffer.byteLength(prepared.trackerContent), prepared.trackerSha,
-      prepared.pdfIndexContent, indexShaNext, Buffer.byteLength(prepared.pdfIndexContent), prepared.pdfIndexSha, prepared.reportPath]);
+      prepared.pdfIndexContent, indexShaNext, Buffer.byteLength(prepared.pdfIndexContent), prepared.pdfIndexSha, prepared.reportPath, targetDoc?.sha256 ?? null]);
     } catch (error) {
       if (error?.code === "22012" || /division by zero/i.test(String(error?.message || ""))) throw new Error("CV_ARTIFACT_WRITE_CONFLICT");
       throw error;
@@ -486,11 +504,12 @@ export async function handleCvArtifactRequest(request, runId = null, action = "m
     return result ? json(result) : json({ code: "CV_ARTIFACT_NOT_FOUND" }, 404);
   } catch (error) {
     const code = String(error?.message || "CV_ARTIFACTS_UNAVAILABLE");
-    const known = /^CV_ARTIFACT_[A-Z_]{1,80}$/.test(code);
+    const known = /^CV_ARTIFACT_[A-Z_]{1,80}$/.test(code) || TRACKER_TARGET_ERROR_CODES.has(code);
     const status = /REQUEST_TOO_LARGE/.test(code) ? 413
       : /INVALID_|APPLICATION_NUMBER|IDEMPOTENCY_KEY|ASSOCIATION_INVALID|REPORT_LINK_INVALID|TRACKER_PDF_STATE/.test(code) ? 400
       : /NOT_FOUND|APPLICATION_NOT_FOUND/.test(code) ? 404
         : /ALREADY_ASSOCIATED|IDEMPOTENCY_CONFLICT|WRITE_CONFLICT|RUN_NOT_COMPLETED|IDENTITY_MISMATCH|AMBIGUOUS/.test(code) ? 409
+          : TRACKER_TARGET_ERROR_CODES.has(code) && !/^TRACKER_TARGETS_(?:INVALID|TOO_LARGE)$/.test(code) && code !== "TRACKER_TARGET_REPORT_SCAN_TOO_LARGE" ? 409
           : code === "CV_ARTIFACT_CORRUPT_PDF" ? 500 : 503;
     return json({ code: known ? code : "CV_ARTIFACTS_UNAVAILABLE" }, status);
   }

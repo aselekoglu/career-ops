@@ -5,6 +5,7 @@ import { load as parseYaml } from "js-yaml";
 import { reserveCareerOpsReportNumber } from "./cloud-report-numbering.mjs";
 import { importedPostingPath, normalizeJobUrl, validateJobUrl } from "./job-import.mjs";
 import { resolveTrackerAliases } from "./cloud-tracker-aliases.mjs";
+import { assertTargetUrlAvailable, bindTrackerTarget, readLegacyReportUrls as parseLegacyReportUrlRows, readTrackerTargets, serializeTrackerTargets, unbindTrackerTarget, TRACKER_TARGETS_PATH, MAX_LEGACY_REPORT_ROWS } from "./cloud-tracker-targets.mjs";
 
 const APP = "data/applications.md", INBOX = "data/pipeline.md", STATUS_LOG = "data/status-log.tsv", FOLLOWUPS = "data/follow-ups.md", ALIASES = "data/tracker-aliases.json", PROFILE = "config/profile.yml";
 // Keep this checked-in table aligned with templates/states.yml. That system file
@@ -26,6 +27,17 @@ const sha = x => createHash("sha256").update(x).digest("hex");
 const clean = x => String(x ?? "").replace(/[|\r\n]/g, " ").trim();
 const cell = x => String(x ?? "").trim();
 const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+async function queryLegacyReportUrls(sql, applications) {
+  const rows = await sql.query(`SELECT path,
+      (regexp_match(content,'^\\*\\*URL:\\*\\*\\s*(https?://[^[:space:]]{1,2048})','im'))[1] AS url
+    FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8' ORDER BY path LIMIT $1`, [MAX_LEGACY_REPORT_ROWS + 1]);
+  if (rows.length > MAX_LEGACY_REPORT_ROWS) throw new Error("TRACKER_TARGET_REPORT_SCAN_TOO_LARGE");
+  const linked = new Set(applications.map((application) => String(application.n)));
+  return parseLegacyReportUrlRows(rows.map((row) => ({
+    url: row.url,
+    applicationNumber: String(row.path ?? "").match(/^reports\/(\d+)-/)?.[1]?.replace(/^0+(?=\d)/, ""),
+  })).filter((row) => linked.has(row.applicationNumber)));
+}
 
 export function validatePublicUrl(value) {
   try { validateJobUrl(value); } catch { throw new Error("INVALID_URL"); }
@@ -297,21 +309,25 @@ export function createCloudTrackerManagement({ sql, now = () => new Date() }) {
       const op=input.operation;
       if(op==="add") {
         if(typeof input.company!=="string"||!input.company.trim()||input.company.length>500||typeof input.role!=="string"||!input.role.trim()||input.role.length>500||typeof input.url!=="string")throw new Error("REQUIRED_FIELDS");
-        const url=validatePublicUrl(input.url); if(typeof input.source!=="string"||!input.source.trim())throw new Error("REQUIRED_FIELDS");
+        const url=validatePublicUrl(input.url), normalizedTargetUrl=normalizeJobUrl(url), company=clean(input.company), role=clean(input.role); if(!company||!role)throw new Error("REQUIRED_FIELDS"); if(typeof input.source!=="string"||!input.source.trim())throw new Error("REQUIRED_FIELDS");
         if(!validStatuses.includes(input.status))throw new Error("INVALID_STATUS");
         if(input.date!=null&&!validDate(input.date))throw new Error("INVALID_DATE");
-        const num=await reserveCareerOpsReportNumber(sql), cells=Array(t.headers.length).fill("");
-        const put=(k,v)=>{if(t.cols[k]>=0)cells[t.cols[k]]=clean(v);};
-        put("n",num);put("date",input.date||today);put("company",input.company);put("role",input.role);put("status",input.status);put("via",input.source);put("score",input.score||"");put("report","");put("pdf","");put("notes",`Added manually from ${url}`);
         if(input.score&& !/^(?:[1-4](?:\.\d)?|5(?:\.0)?)\s*\/\s*5$/.test(input.score))throw new Error("INVALID_SCORE");
+        const targetState=await readTrackerTargets(sql), legacyReportUrls=await queryLegacyReportUrls(sql,rows);
+        assertTargetUrlAvailable(targetState.targets,normalizedTargetUrl,null,legacyReportUrls);
+        const num=await reserveCareerOpsReportNumber(sql), cells=Array(t.headers.length).fill("");
+        const nextTargets=bindTrackerTarget(targetState.targets,{applicationNumber:num,url:normalizedTargetUrl,company,role});
+        const put=(k,v)=>{if(t.cols[k]>=0)cells[t.cols[k]]=clean(v);};
+        put("n",num);put("date",input.date||today);put("company",company);put("role",role);put("status",input.status);put("via",input.source);put("score",input.score||"");put("report","");put("pdf","❌");put("notes",`Added manually from ${url}`);
         t.lines.push(formatRow(cells)); docs.push({path:APP,old:tracker.sha256,content:t.lines.join("\n").replace(/\n*$/,"\n")});
+        docs.push({path:TRACKER_TARGETS_PATH,old:targetState.document?.sha256??null,content:serializeTrackerTargets(nextTargets)});
         const log=await optional(STATUS_LOG);if(!SOURCES.has("manual"))throw new Error("STATUS_SOURCE_INVALID");docs.push({path:STATUS_LOG,old:log.sha256,content:`${log.content}${num}\t${input.date||today}\t-\t${input.status}\tmanual\tManual tracker entry\n`});
         if(input.status==="Applied")await addAppliedFollowup(docs,num,input.date??null,"",today);
-        result.application={n:num,company:input.company.trim(),role:input.role.trim(),status:input.status,score:input.score||null,report:null};
+        result.application={n:num,company,role,status:input.status,score:input.score||null,report:null,url:normalizedTargetUrl};
       } else {
         const matches=rows.filter(x=>x.n===String(input.applicationId)); if(!matches.length)throw new Error("APPLICATION_NOT_FOUND"); if(matches.length>1)throw new Error("APPLICATION_ID_AMBIGUOUS"); const app=matches[0];
         const row=t.rows.find(x=>x.number===app.n); if(!row)throw new Error("APPLICATION_NOT_FOUND");
-        if(["archive","delete"].includes(op)) {hasConfirm(input.confirm); if(op==="archive"){const from=row.cells[t.cols.status]||"-";row.cells[t.cols.status]="Discarded";if(from!=="Discarded")statusLine=`${app.n}\t${today}\t${from}\tDiscarded\tset-status\tArchived by user\n`;} else {t.lines.splice(row.index,1);} }
+        if(["archive","delete"].includes(op)) {hasConfirm(input.confirm); if(op==="archive"){const from=row.cells[t.cols.status]||"-";row.cells[t.cols.status]="Discarded";if(from!=="Discarded")statusLine=`${app.n}\t${today}\t${from}\tDiscarded\tset-status\tArchived by user\n`;} else {const targetState=await readTrackerTargets(sql);if(Object.hasOwn(targetState.targets.targets,app.n)){const nextTargets=unbindTrackerTarget(targetState.targets,app.n);docs.push({path:TRACKER_TARGETS_PATH,old:targetState.document.sha256,content:serializeTrackerTargets(nextTargets)});}t.lines.splice(row.index,1);} }
         else if(op==="set-status") {const to=input.status;if(!validStatuses.includes(to))throw new Error("INVALID_STATUS");if(input.date!=null&&!validDate(input.date))throw new Error("INVALID_DATE");const from=row.cells[t.cols.status]||"-";row.cells[t.cols.status]=to; if(from!==to)statusLine=`${app.n}\t${input.date||today}\t${from}\t${to}\tset-status\t\n`; if(to==="Applied"&&from!==to)await addAppliedFollowup(docs,app.n,input.date??null,row.cells[t.cols.notes]||"",today); }
         else if(op==="update-notes"){if(typeof input.notes!=="string"||input.notes.length>4000||t.cols.notes<0)throw new Error("INVALID_NOTES");row.cells[t.cols.notes]=clean(input.notes);}
         else throw new Error("INVALID_OPERATION");
@@ -345,6 +361,8 @@ const ERRORS = new Map([
   ["INVALID_OPERATION",400],["INVALID_REQUEST",400],["REQUIRED_FIELDS",400],["INVALID_URL",400],["INBOX_FORMAT_INVALID",409],
   ["TRACKER_FORMAT_INVALID",409],["INVALID_STATUS",400],["INVALID_DATE",400],["INVALID_SCORE",400],["INVALID_NOTES",400],
   ["INVALID_FIELD",400],["CONFIRMATION_REQUIRED",400],["INBOX_DUPLICATE_URL",409],["INBOX_TARGET_AMBIGUOUS",409],
+  ["TRACKER_TARGETS_INVALID",503],["TRACKER_TARGETS_TOO_LARGE",503],["TRACKER_TARGET_REPORT_SCAN_TOO_LARGE",503],
+  ["TRACKER_TARGET_URL_CONFLICT",409],["TRACKER_TARGET_IMMUTABLE",409],["TRACKER_TARGET_INVALID",400],
   ["IDEMPOTENCY_KEY_CONFLICT",409],["WRITE_CONFLICT",409],["DOCUMENT_UNAVAILABLE",503],["STATE_CONFIG_INVALID",503],
   ["TRACKER_ALIASES_INVALID",503],["CLOUD_DATA_UNAVAILABLE",503],["FIELD_TOO_LONG",400],
 ]);

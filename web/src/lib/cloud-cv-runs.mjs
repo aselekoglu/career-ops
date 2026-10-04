@@ -12,6 +12,7 @@ import {
 import { getCloudDocument } from "./cloud-store";
 import { loadJobDescription } from "./cloud-job-import.mjs";
 import { fetchPublicPosting, normalizeJobUrl, validateJobUrl } from "./job-import.mjs";
+import { readTrackerTargets, resolveTrackerTarget } from "./cloud-tracker-targets.mjs";
 import { workerAuthorized } from "./cloud-scans.mjs";
 import { createCloudPdfArtifactStore, ensureCvArtifactSchema, persistRenderedCvArtifact, reportUrlFromContent } from "./cloud-pdf-artifacts.mjs";
 
@@ -209,19 +210,26 @@ async function resolveTarget(input, options = {}) {
 
   if (applicationNumber) {
     if (!/^\d{1,6}$/.test(applicationNumber)) throw new Error("INVALID_APPLICATION_NUMBER");
-    const app = (await cloudReadApplications()).find((item) => String(item.n) === applicationNumber);
+    const app = (await (options.readApplications || cloudReadApplications)()).find((item) => String(item.n) === applicationNumber);
     if (!app) throw new Error("APPLICATION_NOT_FOUND");
-    const report = await cloudReadReport(applicationNumber);
-    if (!report || !report.content) throw new Error("APPLICATION_REPORT_NOT_FOUND");
-    const reportUrl = reportUrlFromContent(report.content);
-    if (!reportUrl || !/^reports\/[A-Za-z0-9._-]+\.md$/.test(`reports/${report.file}`)) throw new Error("APPLICATION_REPORT_NOT_FOUND");
+    const report = await (options.readReport || cloudReadReport)(applicationNumber);
+    const reportPath = report?.file ? `reports/${report.file}` : null;
+    if (reportPath && !/^reports\/[A-Za-z0-9._-]+\.md$/.test(reportPath)) throw new Error("APPLICATION_REPORT_NOT_FOUND");
+    const rawReportUrl = reportUrlFromContent(report?.content);
+    const targetState = options.readTargets ? await options.readTargets() : await readTrackerTargets(options.sql);
+    const target = resolveTrackerTarget({ applicationNumber, application: app, reportUrl: rawReportUrl, targets: targetState.targets });
+    if (report?.content && !rawReportUrl) throw new Error("APPLICATION_REPORT_NOT_FOUND");
+    const url = target.url;
+    const evidence = report?.content && reportPath
+      ? report.content
+      : await loadJobDescription(url, { readDocument: options.readDocument || getCloudDocument, fetchFallback: options.fetchFallback || (targetUrl => fetchPostingText(targetUrl, options.fetchFn || fetch)), maxChars: MAX_POSTING_CHARS });
     return {
-      selector: { applicationNumber, reportPath: `reports/${report.file}`, reportUrl },
-      company: app.company,
-      role: app.role,
+      selector: { applicationNumber, ...(reportPath ? { reportPath, reportUrl: rawReportUrl } : { url }) },
+      company: target.company,
+      role: target.role,
       location: "",
-      url: "",
-      evidence: report.content,
+      url,
+      evidence,
     };
   }
 
@@ -305,7 +313,7 @@ export function createCloudCvStore(options = {}) {
     async start(input) {
       if (!cvWorkerConfigured(env)) throw new Error("CV_WORKER_NOT_CONFIGURED");
       const format = input?.pageFormat === "a4" ? "a4" : "letter";
-      const target = await resolveTarget(input, { readDocument: options.readDocument || getCloudDocument });
+      const target = await resolveTarget(input, { sql, readDocument: options.readDocument || getCloudDocument, fetchFallback: options.fetchFallback, fetchFn: options.fetchFn });
       const cv = await cloudReadCv();
       if (!cv) throw new Error("CV_NOT_FOUND");
       const profileRow = await getCloudDocument("config/profile.yml");
@@ -468,8 +476,9 @@ export async function handleCvRunRequest(request, id = null) {
   } catch (error) {
     const code = String(error?.message || "CV_API_FAILED");
     const bad = /^(ONE_TARGET_REQUIRED|INVALID_|APPLICATION_NOT_FOUND|APPLICATION_REPORT_NOT_FOUND|JOB_NOT_IN_INBOX|CV_NOT_FOUND|POSTING_)/.test(code);
-    const unavailable = code === "CV_WORKER_NOT_CONFIGURED" || code === "HOSTED_AI_UNAVAILABLE";
-    return json({ code: bad || unavailable ? code : "CV_API_FAILED" }, unavailable ? 503 : bad ? 400 : 500);
+    const targetFailure = ["TRACKER_TARGET_NOT_FOUND", "TRACKER_TARGET_REPORT_MISMATCH", "TRACKER_TARGET_ROW_MISMATCH"].includes(code);
+    const unavailable = ["CV_WORKER_NOT_CONFIGURED", "HOSTED_AI_UNAVAILABLE", "TRACKER_TARGETS_INVALID", "TRACKER_TARGETS_TOO_LARGE", "TRACKER_TARGET_REPORT_SCAN_TOO_LARGE"].includes(code);
+    return json({ code: bad || targetFailure || unavailable ? code : "CV_API_FAILED" }, unavailable ? 503 : bad ? 400 : targetFailure ? 409 : 500);
   }
 }
 
