@@ -18,9 +18,10 @@ function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = 
   ]);
   for (const [path, content] of reportDocs) docs.set(path, content);
   if (includeAliases) docs.set("data/tracker-aliases.json", aliases);
-  const mutations = new Map(); let before = beforeCommit, nextNumber = 1;
+  const mutations = new Map(), statements = []; let before = beforeCommit, nextNumber = 1;
   const row = (path, content) => ({ path, content, sha256: createHash("sha256").update(content).digest("hex"), content_encoding: "utf8" });
   const sql = { async query(statement, params = []) {
+    statements.push(statement);
     if (statement.startsWith("CREATE TABLE")) return [];
     if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) {
       if (!statement.includes("RETURNING last_number AS num")) return [];
@@ -36,7 +37,10 @@ function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = 
       const content = docs.get(params[0]); return content === undefined ? [] : [{ ...row(params[0], content), too_large: false }];
     }
     if (statement.startsWith("SELECT path,") && statement.includes("regexp_match(content")) {
-      return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => ({ path, url: content.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1] ?? null }));
+      return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => {
+        const rawUrl = content.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1] ?? null;
+        return { path, url: rawUrl && rawUrl.length <= 2048 ? rawUrl : null };
+      });
     }
     if (statement.startsWith("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%'")) {
       return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => ({ path, content, content_encoding: "utf8" }));
@@ -56,7 +60,7 @@ function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = 
     }
     throw new Error(`Unexpected SQL: ${statement}`);
   } };
-  return { docs, sql, store: createCloudTrackerManagement({ sql, now: () => new Date("2026-10-02T12:00:00.000Z") }) };
+  return { docs, sql, statements, store: createCloudTrackerManagement({ sql, now: () => new Date("2026-10-02T12:00:00.000Z") }) };
 }
 
 const operationId = "55555555-5555-4555-8555-555555555555";
@@ -98,6 +102,18 @@ test("manual target URL ownership conflicts with another binding and delete remo
 test("manual target URL cannot duplicate a report-backed tracker application", async () => {
   const { store } = fixture({ reportDocs: [["reports/001-existing.md", "**URL:** https://jobs.example.test/roles/alpha\n"]] });
   await assert.rejects(store.mutate("tracker", { operationId, operation: "add", company: "Existing Co", role: "Engineer", url: "https://jobs.example.test/roles/alpha", source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_URL_CONFLICT" });
+});
+
+test("legacy report URL extraction obeys PostgreSQL quantifier bounds and rejects rather than truncates overlong URLs", async () => {
+  const prefix = `https://jobs.example.test/${"a".repeat(2048 - "https://jobs.example.test/".length)}`;
+  const overlongUrl = `${prefix}b`;
+  const { store, statements } = fixture({ reportDocs: [["reports/001-existing.md", `**URL:** ${overlongUrl}\n`]] });
+  const result = await store.mutate("tracker", { operationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", operation: "add", company: "New Co", role: "Engineer", url: prefix, source: "user supplied", status: "Interview" });
+  const reportQuery = statements.find((statement) => statement.includes("regexp_match(content"));
+  assert.match(reportQuery, /CASE WHEN char_length\(url\)<=2048 THEN url ELSE NULL END/);
+  assert.match(reportQuery, /LIMIT \$1/);
+  assert.doesNotMatch(reportQuery, /\{1,2048\}/);
+  assert.equal(result.application.url, prefix);
 });
 
 test("raw legacy report scan limit fails closed before filtering unlinked report rows", async () => {

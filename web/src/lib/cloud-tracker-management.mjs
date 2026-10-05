@@ -29,8 +29,11 @@ const cell = x => String(x ?? "").trim();
 const esc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 async function queryLegacyReportUrls(sql, applications) {
   const rows = await sql.query(`SELECT path,
-      (regexp_match(content,'^\\*\\*URL:\\*\\*\\s*(https?://[^[:space:]]{1,2048})','im'))[1] AS url
-    FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8' ORDER BY path LIMIT $1`, [MAX_LEGACY_REPORT_ROWS + 1]);
+      CASE WHEN char_length(url)<=2048 THEN url ELSE NULL END AS url
+    FROM (
+      SELECT path,(regexp_match(content,'^\\*\\*URL:\\*\\*\\s*(https?://[^[:space:]]+)','im'))[1] AS url
+      FROM career_ops_documents WHERE path LIKE 'reports/%' AND content_encoding='utf8' ORDER BY path LIMIT $1
+    ) AS bounded_reports`, [MAX_LEGACY_REPORT_ROWS + 1]);
   if (rows.length > MAX_LEGACY_REPORT_ROWS) throw new Error("TRACKER_TARGET_REPORT_SCAN_TOO_LARGE");
   const linked = new Set(applications.map((application) => String(application.n)));
   return parseLegacyReportUrlRows(rows.map((row) => ({
