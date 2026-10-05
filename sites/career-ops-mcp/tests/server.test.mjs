@@ -18,12 +18,13 @@ const sourceAnnotation = { kind: 'user_statement', reference: 'The user stated t
 test('discovery is public, read-only and includes the native panel extension', async () => {
   const response = await worker.fetch(rpc('tools/list', {}, false), { ...env, CAREER_OPS_LIVE_SCANS_ENABLED: '1' });
   const body = await response.json();
-  assert.equal(body.result.tools.length, 37);
+  assert.equal(body.result.tools.length, 42);
   const mutating = new Set([
     'career_ops_scan_start', 'career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import', 'career_ops_cv_artifact_associate',
     'career_ops_cv_edit_preview', 'career_ops_profile_edit_preview', 'career_ops_source_apply',
     'career_ops_tracker_add', 'career_ops_tracker_set_status', 'career_ops_tracker_update_notes', 'career_ops_tracker_archive', 'career_ops_tracker_delete',
     'career_ops_inbox_add', 'career_ops_inbox_edit', 'career_ops_inbox_archive', 'career_ops_inbox_delete',
+    'career_ops_blacklist_add', 'career_ops_blacklist_update', 'career_ops_blacklist_delete',
   ]);
   assert.deepEqual(body.result.tools.filter(t => mutating.has(t.name) ? t.annotations.readOnlyHint !== false : t.annotations.readOnlyHint !== true).map(t => [t.name, t.annotations.readOnlyHint]), []);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_job_import').annotations.idempotentHint, true);
@@ -985,4 +986,132 @@ test('evaluation report requires backend completed status and reads only the fix
   assert.equal(completed.result.structuredContent.reportPath, 'reports/038-example.md');
   assert.equal(completed.result.structuredContent.report, '# Evaluation\nScore: 81');
   assert.ok(!JSON.stringify(completed).includes('hidden'));
+});
+
+test('blacklist tools expose closed schemas and require the private Sites identity', async t => {
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const tools = listed.result.tools.filter(tool => tool.name.startsWith('career_ops_blacklist_'));
+  assert.deepEqual(tools.map(tool => tool.name), [
+    'career_ops_blacklist_list', 'career_ops_blacklist_get', 'career_ops_blacklist_add', 'career_ops_blacklist_update', 'career_ops_blacklist_delete',
+  ]);
+  for (const tool of tools) assert.equal(tool.inputSchema.additionalProperties, false);
+  assert.equal(tools.find(tool => tool.name.endsWith('_list')).inputSchema.properties.limit.maximum, 100);
+  assert.ok(tools.find(tool => tool.name.endsWith('_add')).inputSchema.properties.expectedSha256.anyOf.some(rule => rule.type === 'null'));
+  assert.ok(tools.find(tool => tool.name.endsWith('_add')).inputSchema.properties.expectedSha256.anyOf.some(rule => rule.pattern === '^[a-f0-9]{64}$'));
+  assert.deepEqual(tools.find(tool => tool.name.endsWith('_add')).inputSchema.properties.entry.properties.scope.enum, ['company']);
+  assert.equal(tools.find(tool => tool.name.endsWith('_delete')).annotations.destructiveHint, true);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const unauth = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_blacklist_list', arguments: {} }, false), env)).json();
+  assert.equal(unauth.error.code, -32001);
+  assert.equal(calls, 0);
+});
+
+test('blacklist list and exact detail use fixed Basic-authenticated read routes and return allowlisted metadata', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    assert.equal(options.method, 'GET');
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/blacklist?limit=2&offset=4');
+      return Response.json({ present: true, sha256: 'a'.repeat(64), entries: [{ company: 'Acme Inc', since: '', scope: 'company', reason: 'user request', private: 'hidden' }], pagination: { limit: 2, offset: 4, nextOffset: 6 }, privatePath: 'hidden' });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/blacklist/entry?company=Acme+Inc&scope=company');
+    return Response.json({ present: true, sha256: 'a'.repeat(64), entry: { company: 'Acme Inc', since: '2026-09-01', scope: 'company', reason: 'user request', secret: 'hidden' } });
+  });
+  const list = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_blacklist_list', arguments: { limit: 2, offset: 4 } }), env)).json();
+  assert.equal(list.result.structuredContent.pagination.nextOffset, 6);
+  assert.equal(list.result.structuredContent.entries[0].company, 'Acme Inc');
+  assert.ok(!JSON.stringify(list).includes('hidden'));
+  const detail = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_blacklist_get', arguments: { company: 'Acme Inc', scope: 'company' } }), env)).json();
+  assert.equal(detail.result.structuredContent.entry.since, '2026-09-01');
+  assert.ok(!JSON.stringify(detail).includes('hidden'));
+});
+
+test('blacklist exact detail rejects a backend entry that does not match the requested identity', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    present: true, sha256: 'a'.repeat(64),
+    entry: { company: 'Different Company', since: '', scope: 'company', reason: '' },
+  }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_blacklist_get', arguments: { company: 'Acme Inc', scope: 'company' },
+  }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(body.result.content[0].text.startsWith('INVALID_BLACKLIST_RESPONSE:'));
+  assert.ok(!JSON.stringify(body).includes('Different Company'));
+});
+
+test('blacklist exact detail accepts a company identity returned with normalized presentation', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    present: true, sha256: 'a'.repeat(64),
+    entry: { company: 'acme inc', since: '', scope: 'company', reason: '' },
+  }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_blacklist_get', arguments: { company: 'Acme Inc.', scope: 'company' },
+  }), env)).json();
+  assert.equal(body.result.isError, undefined);
+  assert.equal(body.result.structuredContent.entry.company, 'acme inc');
+});
+
+test('blacklist mutation schemas reject unknown fields, missing confirmation, bad hashes and domain writes before network access', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const entry = { company: 'Acme Inc', scope: 'company', reason: 'user request' };
+  const cases = [
+    ['career_ops_blacklist_add', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: null, confirm: true, entry, extra: true }],
+    ['career_ops_blacklist_add', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: null, confirm: false, entry }],
+    ['career_ops_blacklist_add', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: 'bad', confirm: true, entry }],
+    ['career_ops_blacklist_add', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: null, confirm: true, entry: { ...entry, scope: 'domain' } }],
+    ['career_ops_blacklist_add', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: null, confirm: true, entry: { ...entry, since: '2026-02-30' } }],
+    ['career_ops_blacklist_update', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: 'bad', confirm: true, selector: { company: 'Acme Inc', scope: 'company' }, entry }],
+    ['career_ops_blacklist_delete', { operationId: '11111111-1111-4111-8111-111111111111', expectedSha256: 'a'.repeat(64), confirm: true, selector: { company: 'Acme Inc', scope: 'domain' } }],
+    ['career_ops_blacklist_list', { limit: 101 }],
+  ];
+  for (const [name, args] of cases) {
+    const body = await (await worker.fetch(rpc('tools/call', { name, arguments: args }), env)).json();
+    assert.equal(body.error.code, -32602, name);
+  }
+  assert.equal(calls, 0);
+});
+
+test('blacklist add update and delete call only the fixed command endpoint with safe responses and errors', async t => {
+  const uuid = n => `22222222-2222-4222-8222-${String(n).padStart(12, '0')}`;
+  const entry = { company: 'Acme Inc', scope: 'company', reason: 'user request' };
+  const sha = 'b'.repeat(64);
+  let calls = 0;
+  let fail = false;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (fail) return Response.json({ error: { code: 'WRITE_CONFLICT', message: 'private text test-password must not escape' } }, { status: 409 });
+    calls++;
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/blacklist/commands');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    const request = JSON.parse(options.body);
+    assert.equal(request.confirm, true);
+    assert.equal(request.operationId, uuid(calls));
+    const operation = ['add', 'update', 'delete'][calls - 1];
+    assert.equal(request.operation, operation);
+    assert.equal(request.expectedSha256, sha);
+    if (operation === 'update' || operation === 'delete') assert.deepEqual(request.selector, { company: 'Acme Inc', scope: 'company' });
+    if (operation !== 'delete') assert.deepEqual(request.entry, entry);
+    if (operation === 'delete') return Response.json({ ok: true, operation, replayed: true, sha256: 'c'.repeat(64), entry: null, private: 'hidden' });
+    return Response.json({ ok: true, operation, replayed: false, sha256: 'c'.repeat(64), entry: { ...entry, since: '' }, private: 'hidden' });
+  });
+  const requests = [
+    ['career_ops_blacklist_add', { operationId: uuid(1), expectedSha256: sha, confirm: true, entry }],
+    ['career_ops_blacklist_update', { operationId: uuid(2), expectedSha256: sha, confirm: true, selector: { company: 'Acme Inc', scope: 'company' }, entry }],
+    ['career_ops_blacklist_delete', { operationId: uuid(3), expectedSha256: sha, confirm: true, selector: { company: 'Acme Inc', scope: 'company' } }],
+  ];
+  for (const [name, args] of requests) {
+    const body = await (await worker.fetch(rpc('tools/call', { name, arguments: args }), env)).json();
+    assert.equal(body.result.structuredContent.ok, true);
+    assert.ok(!JSON.stringify(body).includes('hidden'));
+  }
+  fail = true;
+  const failed = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_blacklist_delete', arguments: requests[2][1] }), env)).json();
+  assert.equal(failed.result.isError, true);
+  assert.ok(JSON.stringify(failed).includes('WRITE_CONFLICT'));
+  assert.ok(!JSON.stringify(failed).includes('private text'));
+  assert.ok(!JSON.stringify(failed).includes('test-password'));
 });

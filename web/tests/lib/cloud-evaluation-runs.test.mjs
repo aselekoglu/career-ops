@@ -81,6 +81,12 @@ test("input validation preserves exact URL identity and requires an unpadded tra
   assert.throws(() => __test.normalizeInput({ applicationNumber: "052" }), { message: "INVALID_APPLICATION_NUMBER" });
 });
 
+test("Unicode company names still trigger the pre-generation blacklist gate", () => {
+  const blacklist = "| Company | Since | Scope | Reason |\n|---|---|---|---|\n| Société Générale | | company | blocked |";
+  assert.equal(__test.isBlacklisted(blacklist, "Socie\u0301te\u0301 Ge\u0301ne\u0301rale"), true);
+  assert.equal(__test.isBlacklisted(blacklist, "Other Company"), false);
+});
+
 test("legacy Inbox fetch validates private hosts and redirects before invoking the trusted fetch adapter", async () => {
   let calls = 0;
   const fetchFn = async () => { calls++; return new Response("unexpected"); };

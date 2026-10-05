@@ -82,6 +82,9 @@ export function proxy(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
   if ((pathname === '/api/job-import' && request.method === 'POST') ||
+      (pathname === '/api/blacklist' && request.method === 'GET') ||
+      (pathname === '/api/blacklist/entry' && request.method === 'GET') ||
+      (pathname === '/api/blacklist/commands' && request.method === 'POST') ||
       (/^\/api\/sources\/(?:cv|profile)$/.test(pathname) && request.method === 'GET') ||
       (/^\/api\/sources\/(?:cv|profile)\/proposals$/.test(pathname) && request.method === 'POST') ||
       (/^\/api\/sources\/(?:cv|profile)\/proposals\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pathname) && request.method === 'GET') ||

@@ -8,6 +8,7 @@ import { ensureCareerOpsReportNumbering, reserveCareerOpsReportNumber, MAX_STORE
 import { loadJobDescription } from "./cloud-job-import.mjs";
 import { fetchPublicPosting } from "./job-import.mjs";
 import { readTrackerTargets, resolveTrackerTarget } from "./cloud-tracker-targets.mjs";
+import { normalizeTextKey } from "./core/normalize-text-key.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
@@ -66,7 +67,7 @@ function parseInbox(content) {
  }
  return rows;
 }
-function normalizeCompany(value) { return String(value ?? "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,""); }
+function normalizeCompany(value) { return normalizeTextKey(value); }
 function isBlacklisted(content, company) {
  const target=normalizeCompany(company); if(!target) return false;
  return String(content ?? "").split(/\r?\n/).some(line=>{
@@ -313,4 +314,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,isBlacklisted,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};
