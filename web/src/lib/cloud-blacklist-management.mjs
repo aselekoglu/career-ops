@@ -127,9 +127,9 @@ function tableState(content) {
     if (lines[start] && /^\s*\|\s*:?-{2,}/.test(lines[start])) { tableEnd = ++start; }
     for (let i = start; i < lines.length; i++) {
       if (!lines[i].trim().startsWith("|")) break;
-      tableEnd = i + 1;
       const row = cells(lines[i]);
       if (row?.length >= 2 && row[0].toLowerCase() === "company" && row[1].toLowerCase() === "since") break;
+      tableEnd = i + 1;
       if (row && row.length !== 4) throw new Error("BLACKLIST_FORMAT_INVALID");
       if (!row || row.length < 4 || /^[-: ]+$/.test(row[0])) continue;
       if (!row[0] || /^company$/i.test(row[0])) continue;

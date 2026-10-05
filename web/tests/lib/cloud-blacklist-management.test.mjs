@@ -68,6 +68,15 @@ test("rejects a canonical-looking header with extra columns without writing", as
   assert.equal(malformed.mutations.size, 0);
 });
 
+test("add inserts before an adjacent later canonical table and preserves its bytes", async () => {
+  const later = "| Company | Since | Scope | Reason |\n|---|---|---|---|\n| Later | | company | later table |\n";
+  const content = `| Company | Since | Scope | Reason |\n|---|---|---|---|\n| Existing | | company | first table |\n${later}`;
+  const adjacent = fixture(content);
+  await adjacent.store.mutate(command("add", adjacent.doc.sha256, { entry: { company: "Added", scope: "company" } }));
+  assert.ok(adjacent.doc.content.indexOf("| Added |") < adjacent.doc.content.indexOf(later));
+  assert.ok(adjacent.doc.content.endsWith(later));
+});
+
 test("company-only add/update/delete preserve surrounding prose and reject bad commands", async () => {
   const opening = "# Do not apply\nKeep this note.\n\nKeep this tail.\n";
   const f = fixture(opening);
