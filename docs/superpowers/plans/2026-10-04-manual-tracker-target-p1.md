@@ -1,5 +1,7 @@
 # Manual Tracker URL Targets P1 Plan
 
+**Status: COMPLETE — native Fullscript manual-target lifecycle accepted after the PostgreSQL query fix.**
+
 **Goal:** Let manually tracked applications use their validated job URL for evaluation and CV generation without inventing an evaluation report or rebinding identity.
 
 **Scope:** `cloud-tracker-management.mjs`, `cloud-evaluation-runs.mjs`, `cloud-cv-runs.mjs`, `cloud-pdf-artifacts.mjs` only if needed, a pure `cloud-tracker-targets.mjs` helper, and focused tests.
@@ -29,3 +31,11 @@
 **Review follow-up:** New manual rows now start with PDF `❌`, which represents no file yet and allows the normal validated association transition. Added one cross-module regression that creates the row through the real tracker mutation store, then associates a rendered PDF using its saved binding while keeping `reportPath:null` and leaving `data/pdf-index.tsv` untouched. Legacy report-backed matching remains scoped to application number + exact report URL/path regardless of presentation label changes; company/role equality remains required only for no-report binding association. The legacy report scan rejects 10,001 raw rows before filtering to linked tracker reports.
 
 **Review-fix verification:** `node --check web/src/lib/cloud-tracker-management.mjs; node --check web/src/lib/cloud-pdf-artifacts.mjs` passed. `node --test web/tests/lib/cloud-tracker-management.test.mjs web/tests/lib/cloud-cv-artifact-lifecycle.test.mjs` — 35/35 passed. `git diff --check` passed.
+
+## Native acceptance
+
+The final live acceptance is recorded in [the detailed evidence note](2026-10-04-manual-tracker-target-acceptance.md). Backend source `265bc3dcaa7d44cec30fdefbd08423298740fa6a` reached READY at deployment `dpl_J1Pf3jBswm6rTT2vq2bkbrXTdvKm`. Private Site v10 source `bd66eb0bc56f68b47faa25f17acd6f5d01ea52db` deployed as `appgdep_6ac2e517c9a0819180ce131749020266`, environment revision 5.
+
+Application **#46 Fullscript** was created with user-selected `SKIP` status and no score or report. A notes edit preserved the bound URL identity, and an attempted fresh add of the same canonical URL was rejected as a duplicate. CV generation before evaluation completed with `applicationNumber: 46`, `associationStatus: linked`, and `reportPath: null`; its stored PDF was 66,980 bytes and verified as a PDF by the private artifact export. Evaluation then persisted a real report with score **3.4/5** to the same row. Final readback confirmed the original status, date, PDF-ready marker, and exact user-authored note were preserved. The existing Fullscript Inbox row remained `done:false`; resolving by application number did not claim that separate Inbox item had been processed. The PDF verification establishes file retrieval/format only; no CV-content, layout, or factual-claims audit was performed.
+
+The initial native tracker add failed with HTTP 500 because PostgreSQL rejects the `{1,2048}` repetition bound in its regular-expression dialect. The SQL now uses PostgreSQL-supported `+` and a `CASE`-capped output for URLs up to 2,048 characters; longer values become `NULL`, never truncated identity keys. The report scan retains its raw 10,001-row sentinel check before filtering. After the correction, `node --test web/tests/lib/cloud-tracker-management.test.mjs` passed 25/25; `node --check web/src/lib/cloud-tracker-management.mjs` and `git diff --check` passed. Root performed the native retry and deployment; no application/profile/CV source facts were changed by this implementation task.
