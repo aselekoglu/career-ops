@@ -155,6 +155,79 @@ const BLACKLIST_ERROR_CODES = new Set([
   'BLACKLIST_INVALID_DATE', 'BLACKLIST_INVALID_SCOPE', 'BLACKLIST_DUPLICATE_ENTRY', 'BLACKLIST_ENTRY_NOT_FOUND',
   'BLACKLIST_IDENTITY_IMMUTABLE', 'IDEMPOTENCY_KEY_CONFLICT', 'WRITE_CONFLICT', 'DOCUMENT_UNAVAILABLE', 'BLACKLIST_DOCUMENT_TOO_LARGE',
 ]);
+const PORTAL_COLLECTIONS = ['tracked_companies', 'job_boards'];
+const PORTAL_COLLECTION = { type: 'string', enum: PORTAL_COLLECTIONS };
+const PORTAL_SHA = { type: 'string', minLength: 64, maxLength: 64, pattern: '^[a-f0-9]{64}$' };
+const PORTAL_ERROR_CODES = new Set([
+  'INVALID_REQUEST', 'INVALID_QUERY', 'INVALID_LIMIT', 'INVALID_OFFSET', 'INVALID_OPERATION_ID', 'INVALID_OPERATION',
+  'INVALID_COLLECTION', 'PORTAL_CONFIRMATION_REQUIRED', 'PORTAL_INVALID_ENTRY', 'PORTAL_INVALID_NAME', 'PORTAL_INVALID_URL',
+  'PORTAL_INVALID_PROVIDER', 'PORTAL_INVALID_FIELD', 'PORTAL_IDENTITY_IMMUTABLE', 'PORTAL_UNSUPPORTED_ENABLED_PROVIDER',
+  'PORTAL_ENTRY_NOT_FOUND', 'PORTAL_ENTRY_AMBIGUOUS', 'PORTAL_DUPLICATE_ENTRY', 'PORTALS_FORMAT_INVALID',
+  'PORTAL_SHARED_ALIAS_MUTATION', 'IDEMPOTENCY_KEY_CONFLICT', 'WRITE_CONFLICT', 'PORTALS_DOCUMENT_TOO_LARGE', 'JSON_REQUIRED', 'DOCUMENT_UNAVAILABLE',
+  'CLOUD_DATA_UNAVAILABLE', 'PORTAL_REQUEST_FAILED',
+]);
+const PORTAL_COMMON_SCHEMA_FIELDS = {
+  enabled: { type: 'boolean' },
+  careers_url: { type: 'string', minLength: 1, maxLength: 2048, description: 'Public HTTPS careers page URL; credential-bearing and sensitive-query URLs are rejected.' },
+  api: { type: 'string', minLength: 1, maxLength: 2048, description: 'Public HTTPS API URL; credential-bearing and sensitive-query URLs are rejected.' },
+  provider: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-z0-9][a-z0-9-]{0,63}$' },
+  notes: { type: 'string', maxLength: 4000 },
+};
+const PORTAL_TRACKED_SCHEMA_FIELDS = {
+  scan_method: { type: 'string', enum: ['websearch'] },
+  scan_query: { type: 'string', maxLength: 2000 },
+};
+const PORTAL_BOARD_SCHEMA_FIELDS = {
+  consider_board: { type: 'string', maxLength: 500 },
+  countryCode: { type: 'string', enum: ['ID', 'SG', 'MY', 'VN', 'id', 'sg', 'my', 'vn'] },
+  searchKeywords: { type: 'string', maxLength: 2000 },
+  searchLocation: { type: 'string', maxLength: 500 },
+  siteKey: { type: 'string', maxLength: 500, pattern: '^[A-Z]{2}-Main$' },
+  pageSize: { type: 'integer', minimum: 1, maximum: 100 },
+  maxPages: { type: 'integer', minimum: 1, maximum: 20 },
+  consider_size: { type: 'integer', minimum: 1, maximum: 2000 },
+  getro_max_pages: { type: 'integer', minimum: 1, maximum: 200 },
+  getro_max_age_days: { type: 'integer', minimum: 0, maximum: 3650 },
+  getro_collection: { type: 'integer', minimum: 1, maximum: 999999999 },
+  cat_id: { type: 'integer', minimum: 1, maximum: 100000 },
+};
+const portalNullableProperties = fields => Object.fromEntries(Object.entries(fields).map(([key, schema]) => [key, { anyOf: [schema, { type: 'null' }] }]));
+const PORTAL_ADD_ENTRY_SCHEMA = { type: 'object', properties: {
+  name: { type: 'string', minLength: 1, maxLength: 180 },
+  ...PORTAL_COMMON_SCHEMA_FIELDS, ...PORTAL_TRACKED_SCHEMA_FIELDS, ...PORTAL_BOARD_SCHEMA_FIELDS,
+}, required: ['name'], additionalProperties: false };
+const PORTAL_UPDATE_ENTRY_SCHEMA = { type: 'object', properties: {
+  name: { type: 'string', minLength: 1, maxLength: 180 },
+  ...portalNullableProperties({ ...PORTAL_COMMON_SCHEMA_FIELDS, ...PORTAL_TRACKED_SCHEMA_FIELDS, ...PORTAL_BOARD_SCHEMA_FIELDS }),
+}, additionalProperties: false };
+const PORTAL_SELECTOR_SCHEMA = { type: 'object', properties: {
+  name: { type: 'string', minLength: 1, maxLength: 180 },
+}, required: ['name'], additionalProperties: false };
+const PORTAL_LIST_SCHEMA = { type: 'object', properties: {
+  collection: PORTAL_COLLECTION,
+  limit: { type: 'integer', minimum: 1, maximum: 100, default: 25 },
+  offset: { type: 'integer', minimum: 0, maximum: 10000, default: 0 },
+}, required: ['collection'], additionalProperties: false };
+const PORTAL_GET_SCHEMA = { type: 'object', properties: {
+  collection: PORTAL_COLLECTION,
+  name: { type: 'string', minLength: 1, maxLength: 180 },
+}, required: ['collection', 'name'], additionalProperties: false };
+const PORTAL_MUTATION_COMMON = {
+  operationId: OPERATION_ID,
+  confirm: CONFIRM,
+  collection: PORTAL_COLLECTION,
+};
+const PORTAL_ADD_SCHEMA = { type: 'object', properties: {
+  ...PORTAL_MUTATION_COMMON,
+  expectedSha256: { anyOf: [PORTAL_SHA, { type: 'null' }] },
+  entry: PORTAL_ADD_ENTRY_SCHEMA,
+}, required: ['operationId', 'expectedSha256', 'confirm', 'collection', 'entry'], additionalProperties: false };
+const PORTAL_UPDATE_SCHEMA = { type: 'object', properties: {
+  ...PORTAL_MUTATION_COMMON, expectedSha256: PORTAL_SHA, selector: PORTAL_SELECTOR_SCHEMA, entry: PORTAL_UPDATE_ENTRY_SCHEMA,
+}, required: ['operationId', 'expectedSha256', 'confirm', 'collection', 'selector', 'entry'], additionalProperties: false };
+const PORTAL_DELETE_SCHEMA = { type: 'object', properties: {
+  ...PORTAL_MUTATION_COMMON, expectedSha256: PORTAL_SHA, selector: PORTAL_SELECTOR_SCHEMA,
+}, required: ['operationId', 'expectedSha256', 'confirm', 'collection', 'selector'], additionalProperties: false };
 const EVALUATION_START_SCHEMA = { type: 'object', properties: {
   applicationNumber: { type: 'string', minLength: 1, maxLength: 12, pattern: '^[1-9][0-9]*$' },
   url: { type: 'string', minLength: 1, maxLength: 2048 },
@@ -176,6 +249,11 @@ export const TOOLS = [
   tool('career_ops_cv', 'Read source CV', 'Read the source CV stored by the Vercel app. Use it as factual evidence when drafting. Never infer authorship, metrics or skills that it does not state. This tool does not edit the CV.'),
   tool('career_ops_schedules', 'Read scan schedules', 'Read imported scan schedules and recent runs. These are snapshots, not proof a cloud worker is running. This tool cannot start, stop, pause or change scans.'),
   tool('career_ops_portals', 'Read portal coverage', 'Read configured portal coverage and the imported verification snapshot. Does not scan or probe any ATS.'),
+  tool('career_ops_portal_list', 'List configured portals', 'Read a bounded page from one configured portals.yml collection. scanSupported reflects a built-in provider mapping, not provider health or a recent scan; websearch entries require human handoff.', PORTAL_LIST_SCHEMA),
+  tool('career_ops_portal_get', 'Read one configured portal', 'Read one portal by its exact collection and normalized name from portals.yml. The response contains curated settings only; redacted fields are omitted.', PORTAL_GET_SCHEMA),
+  { ...tool('career_ops_portal_add', 'Add a configured portal', 'Add one explicitly confirmed portal entry using the current portals.yml SHA-256 and a stable operation UUID. Enabled entries require a supported built-in provider configuration. This changes configuration only and never starts a scan.', PORTAL_ADD_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
+  { ...tool('career_ops_portal_update', 'Update a configured portal', 'Apply a partial update to one exact portal entry after confirmation. Omitted fields preserve existing settings; the normalized name identity is immutable. This changes configuration only and never starts a scan.', PORTAL_UPDATE_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } },
+  { ...tool('career_ops_portal_delete', 'Delete a configured portal', 'Delete one exact portal entry only after explicit confirmation, using the current portals.yml SHA-256 and a stable operation UUID.', PORTAL_DELETE_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } },
   tool('career_ops_ai_status', 'Read hosted AI availability', 'Check whether the Vercel app has its hosted Gemini service configured. Does not invoke a model or incur generation cost.'),
   tool('open_career_ops', 'Open Career Ops', 'Open a Career Ops application panel using live API results. Supports company, role text and status filters. No application submissions or record changes.', FILTERS, {
     ui: { resourceUri: PANEL_URI, visibility: ['model', 'app'] },
@@ -360,6 +438,12 @@ async function upstream(env, pathname, body, { requireBasic = false, responseTyp
       const code = await safeBackendErrorCode(response, BLACKLIST_ERROR_CODES, fallback);
       throw new BridgeError(code, 'Career Ops could not complete the requested blacklist operation.');
     }
+    if (!response.ok && isPortalManagementApiRoute(body === undefined ? 'GET' : 'POST', pathname)) {
+      const fallback = response.status === 404 && pathname.startsWith('/api/portals/entry?') ? 'PORTAL_ENTRY_NOT_FOUND' :
+        response.status === 413 ? 'PORTALS_DOCUMENT_TOO_LARGE' : response.status === 503 ? 'DOCUMENT_UNAVAILABLE' : 'PORTAL_REQUEST_FAILED';
+      const code = await safeBackendErrorCode(response, PORTAL_ERROR_CODES, fallback);
+      throw new BridgeError(code, 'Career Ops could not complete the portal configuration request.');
+    }
     if (!response.ok && isCvArtifactRoute(pathname)) {
       const fallback = response.status === 404 ? 'CV_ARTIFACT_NOT_FOUND' : 'CV_ARTIFACT_REQUEST_FAILED';
       const code = await safeBackendErrorCode(response, CV_ARTIFACT_ERROR_CODES, fallback);
@@ -418,6 +502,24 @@ function isBlacklistApiRoute(method, pathname) {
     (!query.has('offset') || (/^\d+$/.test(query.get('offset')) && Number(query.get('offset')) <= 10000));
 }
 
+function isPortalManagementApiRoute(method, pathname) {
+  if (typeof pathname !== 'string') return false;
+  if (method === 'POST') return pathname === '/api/portals/commands';
+  if (method !== 'GET') return false;
+  const detail = pathname.startsWith('/api/portals/entry?');
+  const listing = pathname.startsWith('/api/portals/entries?');
+  if (!detail && !listing) return false;
+  const marker = detail ? '/api/portals/entry?' : '/api/portals/entries?';
+  const query = new URLSearchParams(pathname.slice(marker.length));
+  const keys = [...query.keys()];
+  if (new Set(keys).size !== keys.length) return false;
+  if (detail) return keys.length === 2 && keys.includes('collection') && keys.includes('name') &&
+    PORTAL_COLLECTIONS.includes(query.get('collection')) && validPortalName(query.get('name'));
+  return keys.includes('collection') && PORTAL_COLLECTIONS.includes(query.get('collection')) && keys.every(key => ['collection', 'limit', 'offset'].includes(key)) &&
+    (!query.has('limit') || (/^\d+$/.test(query.get('limit')) && Number(query.get('limit')) >= 1 && Number(query.get('limit')) <= 100)) &&
+    (!query.has('offset') || (/^\d+$/.test(query.get('offset')) && Number(query.get('offset')) <= 10000));
+}
+
 function isCvArtifactRoute(pathname) {
   if (/^\/api\/cv-artifacts\/[0-9a-f-]{36}(?:\/associate|\/download)?$/i.test(pathname)) return true;
   if (pathname === '/api/cv-artifacts') return true;
@@ -454,6 +556,7 @@ function isSourceApiRoute(method, pathname) {
 function validateArgs(definition, args) {
   if (SOURCE_TOOL_NAMES.has(definition.name)) return validateSourceArgs(definition.name, args);
   if (BLACKLIST_TOOL_NAMES.has(definition.name)) return validateBlacklistArgs(definition.name, args);
+  if (PORTAL_TOOL_NAMES.has(definition.name)) return validatePortalArgs(definition.name, args);
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
   if (definition.inputSchema.required?.some(k => args[k] === undefined)) return false;
   const fieldsValid = Object.entries(args).every(([key, value]) => {
@@ -560,6 +663,9 @@ const BLACKLIST_TOOL_NAMES = new Set([
   'career_ops_blacklist_list', 'career_ops_blacklist_get', 'career_ops_blacklist_add',
   'career_ops_blacklist_update', 'career_ops_blacklist_delete',
 ]);
+const PORTAL_TOOL_NAMES = new Set([
+  'career_ops_portal_list', 'career_ops_portal_get', 'career_ops_portal_add', 'career_ops_portal_update', 'career_ops_portal_delete',
+]);
 const SOURCE_RESPONSE_MAX_BYTES = 2_000_000;
 const SOURCE_MCP_REQUEST_MAX_BYTES = 288_000;
 const SOURCE_API_BODY_MAX_BYTES = 256_000;
@@ -618,6 +724,114 @@ function validateSourceArgs(name, args) {
     (args.offset === undefined || (Number.isInteger(args.offset) && args.offset >= 0 && args.offset <= 10000));
   if (name === 'career_ops_source_revision') return hasExactKeys(args, ['source', 'sha256'], ['source', 'sha256']) && validSourceName(args.source) && validSha(args.sha256);
   return false;
+}
+
+const PORTAL_TRACKED_ALLOWED_FIELDS = new Set(['name', ...Object.keys(PORTAL_COMMON_SCHEMA_FIELDS), ...Object.keys(PORTAL_TRACKED_SCHEMA_FIELDS)]);
+const PORTAL_BOARD_ALLOWED_FIELDS = new Set(['name', ...Object.keys(PORTAL_COMMON_SCHEMA_FIELDS), ...Object.keys(PORTAL_BOARD_SCHEMA_FIELDS)]);
+const PORTAL_URL_FIELDS = new Set(['careers_url', 'api']);
+const PORTAL_SENSITIVE_QUERY_KEYS = new Set([
+  'token', 'accesstoken', 'secret', 'password', 'passwd', 'apikey', 'accesskey', 'authorization', 'auth', 'credential',
+  'signature', 'sig', 'clientsecret', 'clientid',
+]);
+const PORTAL_SECRET_TEXT = /(?:token|secret|password|api[_-]?key|access[_-]?key)\s*[:=]/i;
+const PORTAL_NUMERIC_BOUNDS = {
+  pageSize: [1, 100], maxPages: [1, 20], consider_size: [1, 2000], getro_max_pages: [1, 200],
+  getro_max_age_days: [0, 3650], getro_collection: [1, 999999999], cat_id: [1, 100000],
+};
+function portalNameKey(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function validPortalName(value) {
+  return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 180 && !/[\r\n\x00-\x1f\x7f-\x9f]/u.test(value.trim());
+}
+function isPortalPrivateHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!host.includes('.') || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.test')) return true;
+  if (/^[0-9.]+$/.test(host)) {
+    const octets = host.split('.').map(Number);
+    if (octets.length !== 4 || octets.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+    const [first, second] = octets;
+    return first === 0 || first === 10 || first === 127 || (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168) || first >= 224;
+  }
+  return false;
+}
+function portalUrlHasSensitiveQuery(parsed) {
+  return [...parsed.searchParams.keys()].some(key => PORTAL_SENSITIVE_QUERY_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/g, '')));
+}
+function validPortalUrl(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048 || value.trim() !== value || /[\x00-\x1f\x7f]/.test(value)) return false;
+  let parsed;
+  try { parsed = new URL(value); } catch { return false; }
+  return parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.hash && !parsed.port &&
+    !isPortalPrivateHost(parsed.hostname) && !portalUrlHasSensitiveQuery(parsed);
+}
+function validPortalString(field, value) {
+  if (typeof value !== 'string' || /[\x00\r]/u.test(value)) return false;
+  if (field === 'name') return validPortalName(value);
+  if (field === 'provider') return /^[a-z0-9][a-z0-9-]{0,63}$/.test(value) && value !== 'local-parser';
+  if (PORTAL_URL_FIELDS.has(field)) return validPortalUrl(value);
+  if (field === 'scan_method') return value === 'websearch';
+  if (field === 'countryCode') return /^(ID|SG|MY|VN)$/i.test(value);
+  if (field === 'siteKey') return /^[A-Z]{2}-Main$/.test(value);
+  const max = ['scan_query', 'searchKeywords'].includes(field) ? 2000 : field === 'notes' ? 4000 : 500;
+  if (value.length > max) return false;
+  if (['scan_query', 'searchKeywords', 'notes'].includes(field) && PORTAL_SECRET_TEXT.test(value)) return false;
+  return true;
+}
+function portalAllowedFields(collection) {
+  return collection === 'tracked_companies' ? PORTAL_TRACKED_ALLOWED_FIELDS : PORTAL_BOARD_ALLOWED_FIELDS;
+}
+function validatePortalEntryInput(collection, value, { adding = false, selectorName } = {}) {
+  if (!isRecord(value)) return false;
+  const allowed = portalAllowedFields(collection);
+  const keys = Object.keys(value);
+  if (keys.some(key => !allowed.has(key)) || (adding && !keys.includes('name')) || (!adding && keys.length === 0)) return false;
+  for (const [field, item] of Object.entries(value)) {
+    if (field === 'name') {
+      if (!validPortalName(item) || (!adding && portalNameKey(item) !== portalNameKey(selectorName))) return false;
+      continue;
+    }
+    if (item === null) {
+      if (adding) return false;
+      continue;
+    }
+    if (field === 'enabled') {
+      if (typeof item !== 'boolean') return false;
+    } else if (Object.hasOwn(PORTAL_NUMERIC_BOUNDS, field)) {
+      const [min, max] = PORTAL_NUMERIC_BOUNDS[field];
+      if (!Number.isSafeInteger(item) || item < min || item > max) return false;
+    } else if (!validPortalString(field, item)) return false;
+  }
+  if (adding && ['parser', 'local-parser'].includes(value.provider)) return false;
+  if (!adding && value.provider === 'parser' && value.enabled === true) return false;
+  if (value.provider === 'local-parser') return false;
+  if (adding && value.scan_method === 'websearch' && !String(value.scan_query ?? '').trim() && value.enabled !== false) return false;
+  return true;
+}
+function portalMutationBody(name, args) {
+  const operation = name === 'career_ops_portal_add' ? 'add' : name === 'career_ops_portal_update' ? 'update' : 'delete';
+  return {
+    operationId: args.operationId, operation, collection: args.collection, expectedSha256: args.expectedSha256, confirm: args.confirm,
+    ...(args.selector ? { selector: args.selector } : {}), ...(args.entry ? { entry: args.entry } : {}),
+  };
+}
+function validatePortalArgs(name, args) {
+  if (!isRecord(args)) return false;
+  if (name === 'career_ops_portal_list') return hasExactKeys(args, ['collection', 'limit', 'offset'], ['collection']) && PORTAL_COLLECTIONS.includes(args.collection) &&
+    (args.limit === undefined || (Number.isInteger(args.limit) && args.limit >= 1 && args.limit <= 100)) &&
+    (args.offset === undefined || (Number.isInteger(args.offset) && args.offset >= 0 && args.offset <= 10000));
+  if (name === 'career_ops_portal_get') return hasExactKeys(args, ['collection', 'name'], ['collection', 'name']) && PORTAL_COLLECTIONS.includes(args.collection) && validPortalName(args.name);
+  const operation = name === 'career_ops_portal_add' ? 'add' : name === 'career_ops_portal_update' ? 'update' : 'delete';
+  if (!PORTAL_COLLECTIONS.includes(args.collection) || !validUuid(args.operationId) || args.confirm !== true ||
+      !hasExactKeys(args, ['operationId', 'expectedSha256', 'confirm', 'collection', ...(operation === 'add' ? ['entry'] : ['selector']), ...(operation === 'update' ? ['entry'] : [])],
+        ['operationId', 'expectedSha256', 'confirm', 'collection', ...(operation === 'add' ? ['entry'] : ['selector']), ...(operation === 'update' ? ['entry'] : [])])) return false;
+  const validExpected = operation === 'add' ? args.expectedSha256 === null || (typeof args.expectedSha256 === 'string' && /^[a-f0-9]{64}$/i.test(args.expectedSha256)) : validSha(args.expectedSha256);
+  if (!validExpected) return false;
+  if (operation !== 'add' && (!isRecord(args.selector) || !hasExactKeys(args.selector, ['name'], ['name']) || !validPortalName(args.selector.name))) return false;
+  if (operation !== 'delete' && !validatePortalEntryInput(args.collection, args.entry, { adding: operation === 'add', selectorName: args.selector?.name })) return false;
+  if (new TextEncoder().encode(JSON.stringify(portalMutationBody(name, args))).byteLength > 16384) return false;
+  return true;
 }
 
 function validBlacklistCompany(value) {
@@ -699,6 +913,82 @@ function safeBlacklistMutation(raw, operation) {
   const entry = raw.entry === null ? null : safeBlacklistEntry(raw.entry);
   if ((operation === 'delete') !== (entry === null)) throw new BridgeError('INVALID_BLACKLIST_RESPONSE', 'Career Ops returned invalid blacklist data.');
   return { ok: true, operation, replayed: raw.replayed, sha256: raw.sha256, entry };
+}
+
+function invalidPortalResponse() {
+  throw new BridgeError('INVALID_PORTAL_RESPONSE', 'Career Ops returned invalid portal configuration data.');
+}
+function safePortalEntry(raw, collection, expectedName) {
+  if (!isRecord(raw) || !validPortalName(raw.name) ||
+      (expectedName !== undefined && portalNameKey(raw.name) !== portalNameKey(expectedName)) ||
+      typeof raw.enabled !== 'boolean' || typeof raw.scanSupported !== 'boolean' || typeof raw.handoffRequired !== 'boolean' || typeof raw.hasOpaqueSettings !== 'boolean') {
+    return invalidPortalResponse();
+  }
+  const allowed = portalAllowedFields(collection);
+  const computedFields = new Set(['scanSupported', 'handoffRequired', 'hasOpaqueSettings', 'identityAmbiguous', 'redactedFields']);
+  const hasUnknownSettings = Object.keys(raw).some(field => !allowed.has(field) && !computedFields.has(field));
+  const redactedFields = new Set();
+  if (raw.redactedFields !== undefined) {
+    if (!Array.isArray(raw.redactedFields)) return invalidPortalResponse();
+    for (const field of raw.redactedFields) if (typeof field === 'string' && allowed.has(field)) redactedFields.add(field);
+  }
+  const entry = { name: raw.name.trim() };
+  for (const field of allowed) {
+    if (field === 'name' || redactedFields.has(field) || raw[field] === undefined || raw[field] === null) continue;
+    const value = raw[field];
+    if (Object.hasOwn(PORTAL_NUMERIC_BOUNDS, field)) {
+      const [min, max] = PORTAL_NUMERIC_BOUNDS[field];
+      if (Number.isSafeInteger(value) && value >= min && value <= max) entry[field] = value;
+      else redactedFields.add(field);
+      continue;
+    }
+    if (field === 'enabled') {
+      if (typeof value === 'boolean') entry.enabled = value;
+      else redactedFields.add(field);
+      continue;
+    }
+    const valid = field === 'provider'
+      ? (typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(value))
+      : validPortalString(field, value);
+    if (!valid) { redactedFields.add(field); continue; }
+    entry[field] = field === 'countryCode' ? value.toUpperCase() : value.trim();
+  }
+  if (raw.identityAmbiguous !== undefined && typeof raw.identityAmbiguous !== 'boolean') return invalidPortalResponse();
+  if (raw.identityAmbiguous === true) entry.identityAmbiguous = true;
+  const handoffRequired = raw.handoffRequired;
+  if (handoffRequired && (raw.scan_method !== 'websearch' ||
+      !(typeof raw.scan_query === 'string' && raw.scan_query.trim()) && !redactedFields.has('scan_query'))) return invalidPortalResponse();
+  const redacted = [...redactedFields];
+  const scanSupported = raw.scanSupported && !handoffRequired && redacted.length === 0;
+  if (redacted.length) entry.redactedFields = redacted;
+  entry.enabled = raw.enabled;
+  entry.scanSupported = scanSupported;
+  entry.handoffRequired = handoffRequired;
+  entry.hasOpaqueSettings = raw.hasOpaqueSettings || hasUnknownSettings || redacted.length > 0;
+  return entry;
+}
+function safePortalList(raw, args) {
+  const limit = args.limit ?? 25, offset = args.offset ?? 0;
+  if (!isRecord(raw) || typeof raw.present !== 'boolean' || !Array.isArray(raw.entries) || raw.entries.length > limit ||
+      !isRecord(raw.pagination) || raw.pagination.limit !== limit || raw.pagination.offset !== offset ||
+      !(raw.pagination.nextOffset === null || (Number.isInteger(raw.pagination.nextOffset) && raw.pagination.nextOffset > offset && raw.pagination.nextOffset <= 10000)) ||
+      (raw.present ? !validSha(raw.sha256) : raw.sha256 !== null || raw.entries.length !== 0)) return invalidPortalResponse();
+  const entries = raw.entries.map(item => safePortalEntry(item, args.collection));
+  return { present: raw.present, sha256: raw.sha256, entries, pagination: { limit, offset, nextOffset: raw.pagination.nextOffset } };
+}
+function safePortalGet(raw, args) {
+  if (!isRecord(raw) || raw.present !== true || !validSha(raw.sha256)) return invalidPortalResponse();
+  const entry = safePortalEntry(raw.entry, args.collection, args.name);
+  if (entry.identityAmbiguous) throw new BridgeError('PORTAL_ENTRY_AMBIGUOUS', 'More than one portal has this normalized name.');
+  return { present: true, sha256: raw.sha256, entry };
+}
+function safePortalMutation(raw, operation, args) {
+  if (!isRecord(raw) || raw.ok !== true || raw.operation !== operation || raw.collection !== args.collection ||
+      typeof raw.replayed !== 'boolean' || !validSha(raw.sha256)) return invalidPortalResponse();
+  const expectedName = operation === 'add' ? args.entry.name : args.selector.name;
+  const entry = raw.entry === null ? null : safePortalEntry(raw.entry, args.collection, expectedName);
+  if ((operation === 'delete') !== (entry === null)) return invalidPortalResponse();
+  return { ok: true, operation, collection: args.collection, replayed: raw.replayed, entry, sha256: raw.sha256 };
 }
 
 function safeJobImportResult(raw, args) {
@@ -1020,6 +1310,21 @@ async function callTool(name, args, env) {
     }
     case 'career_ops_schedules': data = { source: API_ORIGIN, snapshot: await upstream(env, '/api/scheduled-jobs'), readOnly: true }; break;
     case 'career_ops_portals': data = { source: API_ORIGIN, snapshot: await upstream(env, '/api/portals/verify'), readOnly: true }; break;
+    case 'career_ops_portal_list': {
+      const query = new URLSearchParams({ collection: args.collection, limit: String(args.limit ?? 25), offset: String(args.offset ?? 0) });
+      data = safePortalList(await upstream(env, '/api/portals/entries?' + query, undefined, { requireBasic: true }), args); break;
+    }
+    case 'career_ops_portal_get': {
+      const query = new URLSearchParams({ collection: args.collection, name: args.name });
+      data = safePortalGet(await upstream(env, '/api/portals/entry?' + query, undefined, { requireBasic: true }), args); break;
+    }
+    case 'career_ops_portal_add':
+    case 'career_ops_portal_update':
+    case 'career_ops_portal_delete': {
+      const operation = name === 'career_ops_portal_add' ? 'add' : name === 'career_ops_portal_update' ? 'update' : 'delete';
+      const result = await upstream(env, '/api/portals/commands', portalMutationBody(name, args), { requireBasic: true });
+      data = safePortalMutation(result, operation, args); break;
+    }
     case 'career_ops_ai_status': data = { source: API_ORIGIN, status: await upstream(env, '/api/ai/status') }; break;
     case 'career_ops_scan_start': data = await upstream(env, '/api/scans', args); break;
     case 'career_ops_scan_status':

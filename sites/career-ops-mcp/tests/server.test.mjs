@@ -18,13 +18,14 @@ const sourceAnnotation = { kind: 'user_statement', reference: 'The user stated t
 test('discovery is public, read-only and includes the native panel extension', async () => {
   const response = await worker.fetch(rpc('tools/list', {}, false), { ...env, CAREER_OPS_LIVE_SCANS_ENABLED: '1' });
   const body = await response.json();
-  assert.equal(body.result.tools.length, 42);
+  assert.equal(body.result.tools.length, 47);
   const mutating = new Set([
     'career_ops_scan_start', 'career_ops_cv_generate_start', 'career_ops_evaluation_start', 'career_ops_job_import', 'career_ops_cv_artifact_associate',
     'career_ops_cv_edit_preview', 'career_ops_profile_edit_preview', 'career_ops_source_apply',
     'career_ops_tracker_add', 'career_ops_tracker_set_status', 'career_ops_tracker_update_notes', 'career_ops_tracker_archive', 'career_ops_tracker_delete',
     'career_ops_inbox_add', 'career_ops_inbox_edit', 'career_ops_inbox_archive', 'career_ops_inbox_delete',
     'career_ops_blacklist_add', 'career_ops_blacklist_update', 'career_ops_blacklist_delete',
+    'career_ops_portal_add', 'career_ops_portal_update', 'career_ops_portal_delete',
   ]);
   assert.deepEqual(body.result.tools.filter(t => mutating.has(t.name) ? t.annotations.readOnlyHint !== false : t.annotations.readOnlyHint !== true).map(t => [t.name, t.annotations.readOnlyHint]), []);
   assert.equal(body.result.tools.find(t => t.name === 'career_ops_job_import').annotations.idempotentHint, true);
@@ -1114,4 +1115,183 @@ test('blacklist add update and delete call only the fixed command endpoint with 
   assert.ok(JSON.stringify(failed).includes('WRITE_CONFLICT'));
   assert.ok(!JSON.stringify(failed).includes('private text'));
   assert.ok(!JSON.stringify(failed).includes('test-password'));
+});
+
+test('portal management tools expose five closed schemas and require the private Sites identity', async t => {
+  const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
+  const tools = listed.result.tools.filter(tool => tool.name.startsWith('career_ops_portal_'));
+  assert.deepEqual(tools.map(tool => tool.name), [
+    'career_ops_portal_list', 'career_ops_portal_get', 'career_ops_portal_add', 'career_ops_portal_update', 'career_ops_portal_delete',
+  ]);
+  for (const tool of tools) assert.equal(tool.inputSchema.additionalProperties, false);
+  assert.deepEqual(tools.find(tool => tool.name.endsWith('_list')).inputSchema.properties.collection.enum, ['tracked_companies', 'job_boards']);
+  assert.equal(tools.find(tool => tool.name.endsWith('_list')).inputSchema.properties.limit.maximum, 100);
+  assert.equal(tools.find(tool => tool.name.endsWith('_list')).inputSchema.properties.offset.maximum, 10000);
+  assert.equal(tools.find(tool => tool.name.endsWith('_add')).inputSchema.properties.entry.additionalProperties, false);
+  assert.equal(tools.find(tool => tool.name.endsWith('_update')).inputSchema.properties.entry.additionalProperties, false);
+  for (const name of ['career_ops_portal_add', 'career_ops_portal_update', 'career_ops_portal_delete']) {
+    assert.equal(tools.find(tool => tool.name === name).annotations.readOnlyHint, false);
+    assert.equal(tools.find(tool => tool.name === name).annotations.idempotentHint, true);
+  }
+  assert.equal(tools.find(tool => tool.name === 'career_ops_portal_delete').annotations.destructiveHint, true);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const unauth = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_list', arguments: { collection: 'tracked_companies' } }, false), env)).json();
+  assert.equal(unauth.error.code, -32001);
+  assert.equal(calls, 0);
+});
+
+test('portal list and normalized detail use fixed authenticated routes and curated projections', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    assert.equal(options.method, 'GET');
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/portals/entries?collection=tracked_companies&limit=2&offset=4');
+      return Response.json({
+        present: true, sha256: 'a'.repeat(64),
+        entries: [
+          { name: 'Acme Portal', enabled: true, provider: 'greenhouse', careers_url: 'https://jobs.example/acme', scanSupported: true, handoffRequired: false, hasOpaqueSettings: false, extra: 'must-not-escape', parser: { secret: 'hidden' } },
+          { name: 'Other Portal', enabled: true, scan_method: 'websearch', scan_query: 'jobs', careers_url: 'https://jobs.example/search?access_token=private', scanSupported: true, handoffRequired: true, hasOpaqueSettings: true, redactedFields: ['careers_url'], identityAmbiguous: true },
+        ],
+        pagination: { limit: 2, offset: 4, nextOffset: 6 }, privatePath: 'private-path',
+      });
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/portals/entry?collection=tracked_companies&name=acme+portal');
+    return Response.json({ present: true, sha256: 'a'.repeat(64), entry: { name: 'ACME  PORTAL', enabled: true, provider: 'greenhouse', careers_url: 'https://jobs.example/acme', scanSupported: true, handoffRequired: false, hasOpaqueSettings: true, internal: { secret: 'hidden' } } });
+  });
+  const list = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_list', arguments: { collection: 'tracked_companies', limit: 2, offset: 4 } }), env)).json();
+  assert.equal(list.result.structuredContent.pagination.nextOffset, 6);
+  assert.equal(list.result.structuredContent.entries[0].name, 'Acme Portal');
+  assert.equal(list.result.structuredContent.entries[0].scanSupported, true);
+  assert.equal(list.result.structuredContent.entries[0].hasOpaqueSettings, true);
+  assert.deepEqual(list.result.structuredContent.entries[1].redactedFields, ['careers_url']);
+  assert.equal(list.result.structuredContent.entries[1].careers_url, undefined);
+  assert.equal(list.result.structuredContent.entries[1].scanSupported, false);
+  assert.equal(list.result.structuredContent.entries[1].identityAmbiguous, true);
+  assert.ok(!JSON.stringify(list).includes('access_token'));
+  assert.ok(!JSON.stringify(list).includes('must-not-escape'));
+  assert.ok(!JSON.stringify(list).includes('private-path'));
+  const detail = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_get', arguments: { collection: 'tracked_companies', name: 'acme portal' } }), env)).json();
+  assert.equal(detail.result.structuredContent.entry.name, 'ACME  PORTAL');
+  assert.equal(detail.result.structuredContent.entry.hasOpaqueSettings, true);
+  assert.ok(!JSON.stringify(detail).includes('hidden'));
+});
+
+test('portal name identity folds case and whitespace without removing punctuation', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ present: true, sha256: 'a'.repeat(64), entry: {
+    name: 'Acme Portal', enabled: true, scanSupported: false, handoffRequired: false, hasOpaqueSettings: false,
+  } }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_portal_get', arguments: { collection: 'tracked_companies', name: 'Acme-Portal' },
+  }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(body.result.content[0].text.startsWith('INVALID_PORTAL_RESPONSE:'));
+  assert.ok(!JSON.stringify(body).includes('Acme Portal'));
+});
+
+test('portal add update and delete use fixed command route with confirmed SHA-bound requests and safe replay results', async t => {
+  const uuids = [
+    '22222222-2222-4222-8222-000000000001',
+    '22222222-2222-4222-8222-000000000002',
+    '22222222-2222-4222-8222-000000000003',
+    '22222222-2222-4222-8222-000000000004',
+  ];
+  const trackedEntry = { name: 'Acme Portal', provider: 'greenhouse', careers_url: 'https://jobs.example/acme', enabled: true };
+  const sha = 'b'.repeat(64);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/portals/commands');
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    assert.equal(options.headers['Content-Type'], 'application/json');
+    const request = JSON.parse(options.body);
+    const operation = ['add', 'add', 'update', 'delete'][calls - 1];
+    assert.equal(request.operation, operation);
+    assert.equal(request.operationId, [uuids[0], uuids[0], uuids[2], uuids[3]][calls - 1]);
+    assert.equal(request.confirm, true);
+    assert.equal(request.collection, 'tracked_companies');
+    if (calls <= 2) {
+      assert.equal(request.expectedSha256, null);
+      assert.deepEqual(request.entry, trackedEntry);
+    } else {
+      assert.equal(request.expectedSha256, sha);
+      assert.deepEqual(request.selector, { name: 'Acme Portal' });
+      if (operation === 'update') assert.deepEqual(request.entry, { notes: 'edited' });
+    }
+    return Response.json({ ok: true, operation, collection: 'tracked_companies', replayed: calls === 2, entry: operation === 'delete' ? null : { ...trackedEntry, ...(operation === 'update' ? { notes: 'edited' } : {}), scanSupported: true, handoffRequired: false, hasOpaqueSettings: calls === 3 }, sha256: 'c'.repeat(64), private: 'must-not-escape' });
+  });
+  const addArgs = { operationId: uuids[0], expectedSha256: null, confirm: true, collection: 'tracked_companies', entry: trackedEntry };
+  const add = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_add', arguments: addArgs }), env)).json();
+  assert.equal(add.result.structuredContent.operation, 'add');
+  assert.equal(add.result.structuredContent.replayed, false);
+  assert.ok(!JSON.stringify(add).includes('must-not-escape'));
+  const replay = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_add', arguments: addArgs }), env)).json();
+  assert.equal(replay.result.structuredContent.replayed, true);
+  const update = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_update', arguments: { operationId: uuids[2], expectedSha256: sha, confirm: true, collection: 'tracked_companies', selector: { name: 'Acme Portal' }, entry: { notes: 'edited' } } }), env)).json();
+  assert.equal(update.result.structuredContent.entry.notes, 'edited');
+  const remove = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_delete', arguments: { operationId: uuids[3], expectedSha256: sha, confirm: true, collection: 'tracked_companies', selector: { name: 'Acme Portal' } } }), env)).json();
+  assert.equal(remove.result.structuredContent.entry, null);
+  assert.equal(calls, 4);
+});
+
+test('portal mutations preserve fixed error codes without exposing backend messages', async t => {
+  let code = 'WRITE_CONFLICT';
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/portals/commands');
+    assert.equal(options.method, 'POST');
+    return Response.json({ error: { code, message: 'private text test-password must not escape' }, stack: 'private stack' }, { status: 409 });
+  });
+  const args = { operationId: '33333333-3333-4333-8333-333333333333', expectedSha256: 'a'.repeat(64), confirm: true, collection: 'job_boards', selector: { name: 'Example Board' } };
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_delete', arguments: args }), env)).json();
+  assert.equal(body.result.isError, true);
+  assert.ok(body.result.content[0].text.startsWith('WRITE_CONFLICT:'));
+  assert.ok(!JSON.stringify(body).includes('private text'));
+  assert.ok(!JSON.stringify(body).includes('test-password'));
+  assert.ok(!JSON.stringify(body).includes('private stack'));
+  code = 'PORTAL_SHARED_ALIAS_MUTATION';
+  const alias = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portal_delete', arguments: args }), env)).json();
+  assert.equal(alias.result.isError, true);
+  assert.ok(alias.result.content[0].text.startsWith('PORTAL_SHARED_ALIAS_MUTATION:'));
+  assert.ok(!JSON.stringify(alias).includes('private text'));
+});
+
+test('portal inputs reject wrong collection fields, parsers, unsafe URLs and malformed mutations before network access', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  const operationId = '44444444-4444-4444-8444-444444444444';
+  const sha = 'a'.repeat(64);
+  const cases = [
+    ['career_ops_portal_list', { collection: 'portals' }],
+    ['career_ops_portal_list', { collection: 'tracked_companies', limit: 101 }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'tracked_companies', entry: { name: 'X', consider_board: 'wrong-collection' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'job_boards', entry: { name: 'X', scan_method: 'websearch' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'job_boards', entry: { name: 'X', provider: 'getro', getro_collection: '42' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'tracked_companies', entry: { name: 'X', provider: 'parser' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'tracked_companies', entry: { name: 'X', careers_url: 'http://jobs.example' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'tracked_companies', entry: { name: 'X', api: 'https://user:pass@jobs.example' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: true, collection: 'tracked_companies', entry: { name: 'X', careers_url: 'https://jobs.example/search?access_token=secret' } }],
+    ['career_ops_portal_add', { operationId, expectedSha256: null, confirm: false, collection: 'tracked_companies', entry: { name: 'X' } }],
+    ['career_ops_portal_update', { operationId, expectedSha256: sha, confirm: true, collection: 'tracked_companies', selector: { name: 'X' }, entry: { name: 'Other' } }],
+    ['career_ops_portal_update', { operationId, expectedSha256: sha, confirm: true, collection: 'tracked_companies', selector: { name: 'X' }, entry: {} }],
+    ['career_ops_portal_delete', { operationId, expectedSha256: null, confirm: true, collection: 'tracked_companies', selector: { name: 'X' } }],
+  ];
+  for (const [name, args] of cases) {
+    const body = await (await worker.fetch(rpc('tools/call', { name, arguments: args }), env)).json();
+    assert.equal(body.error.code, -32602, `${name}: ${JSON.stringify(args)}`);
+  }
+  assert.equal(calls, 0);
+});
+
+test('portal verification snapshot keeps its existing endpoint and response wrapper', async t => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/portals/verify');
+    assert.equal(options.method, 'GET');
+    return Response.json({ snapshotId: 'verification-snapshot', boards: [{ provider: 'greenhouse' }] });
+  });
+  const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_portals', arguments: {} }), env)).json();
+  assert.equal(body.result.structuredContent.readOnly, true);
+  assert.equal(body.result.structuredContent.snapshot.snapshotId, 'verification-snapshot');
 });
