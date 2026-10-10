@@ -285,7 +285,7 @@ test("successful apply writes source, immutable revisions, and receipt; replay p
 test("apply rejects malformed expiry and revalidates primary-source evidence", async () => {
   const evidence = "A verified statement with enough exact source text for annotation matching.";
   const db = fakeSql({ "cv.md": cv, "article-digest.md": evidence });
-  const service = createCloudSourceManagement({ sql: db });
+  const service = createCloudSourceManagement({ sql: db, now: () => new Date("2026-10-04T12:00:00.000Z") });
   const sourceAnnotation = { kind: "primary_source", reference: `article-digest.md#${sha(evidence)}#verified statement with enough exact source text` };
   const preview = await service.createProposal("cv", { source: "cv", expectedSha256: sha(cv), operationId: uuid(17), edits: [
     { oldText: "Built Foo, a reliable service.", newText: "Built Foo, a verified service.", sourceAnnotation },
