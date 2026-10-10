@@ -60,7 +60,7 @@ test("queries use existing career_ops_documents store and archive immutable vers
   const result=await store.upload({portfolioId:one.portfolioId},fakePdf);
   assert.equal(result.version,2);
   assert.equal(result.portfolioId,one.portfolioId);
-  assert.ok(calls.some(([query])=>query.includes("FOR UPDATE")));
+  assert.ok(calls.some(([query])=>query.includes("FOR UPDATE")));\n  assert.ok(calls.filter(([query])=>query.includes("INSERT INTO career_ops_documents")).every(([,args])=>args[5].startsWith("portfolios/")));
 });
 test("application association checks exact numeric tracker ID first",async()=>{
   const id=randomUUID();

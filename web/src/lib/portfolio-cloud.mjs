@@ -163,7 +163,7 @@ export function createPortfolioStore(sql) {
       if (exists.length !== projectIds.length) throw new PortfolioError("PORTFOLIO_PROJECT_NOT_FOUND");
     }
     // Immutable, unpredictable content path; never use client filenames for SQL keys.
-    const documentPath = "output/portfolio-" + id + "-" + randomUUID() + ".pdf";
+    const documentPath = "portfolios/" + id + "-" + randomUUID() + ".pdf";
     const args = [id,title,kind,JSON.stringify(tags),JSON.stringify(projectIds),
       documentPath,bytes.toString("base64"),meta.sha256,meta.byteSize];
     const query = updating

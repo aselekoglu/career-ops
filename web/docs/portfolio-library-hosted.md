@@ -52,8 +52,7 @@ New tables created lazily/idempotently on first authenticated request:
 - `career_ops_portfolio_applications` — 1 explicit portfolio version per
    canonical tracker number; reassignment requires user action.
 
-Document paths are random, e.g. `output/portfolio-{id}-{uuid}.pdf`. A PDF
-never enters the existing CV-specific `cv-` namespace, so it will not appear
+Document paths are random, e.g. `portfolios/{id}-{uuid}.pdf`. A PDF\nnever enters the existing CV-specific `cv-` namespace, so it will not appear
 as a tailored CV or be accidentally associated with a company-slug search.
 
 ## Security and limits
@@ -114,3 +113,7 @@ regenerate them.
 Production is currently deployed from `codex/vercel-hobby-fix`. Its hosted
 artifact store is distinct from the local-first `main` branch, which was
 rebased/diverged. This PR intentionally targets the actual deployed code.
+
+## CV endpoint isolation
+
+Portfolio documents deliberately use the `portfolios/` path prefix, **outside** `output/`. The existing, unauthenticated `/api/cv-pdf?company=` legacy scanner enumerates `output/` PDFs. Using `output/portfolio-` would leak private portfolio PDFs through that route, so that prefix is forbidden. The only portfolio PDF reader is the owner-authorized `/api/portfolio/pdf` endpoint.
