@@ -12,9 +12,9 @@ export class PortfolioError extends Error {
 export function authorizePortfolio(request, env = process.env) {
   const configured = env.CAREER_OPS_PORTFOLIO_TOKEN;
   if (!configured || configured.length < 32) throw new PortfolioError("PORTFOLIO_AUTH_NOT_CONFIGURED", 503);
-  const token = request.headers.get("authorization") || "";
-  if (!token.startsWith("Bearer ")) throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);
-  const supplied = Buffer.from(token.slice(7), "utf8");
+  const token = request.headers.get("x-career-ops-portfolio-token") || "";
+  if (!token) throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);
+  const supplied = Buffer.from(token, "utf8");
   const expected = Buffer.from(configured, "utf8");
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
     throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);

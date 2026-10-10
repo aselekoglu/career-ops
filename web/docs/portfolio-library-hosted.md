@@ -28,7 +28,7 @@ until those histories are reconciled.
    it only to intended environments; redeploy after configuring.
 3. Visit `/portfolio`, paste the token into the owner access field, click
    **Unlock library**. The token lives only in in-memory React state, not
-   localStorage or cookies. All portfolio endpoints require Bearer auth,
+   localStorage or cookies. All portfolio endpoints require a secondary owner-secret header (in addition to existing site Basic Auth),
    including PDFs. Missing configuration fails closed with 503.
 4. Import the PDF previously created for Brookfield as a `variant` and tag it
    `business analyst, automation, system integration`. Upload a separate
@@ -57,7 +57,7 @@ as a tailored CV or be accidentally associated with a company-slug search.
 
 ## Security and limits
 
-- Owner-only `Authorization: Bearer` on **every** route (constant-time compare).
+- Owner-only `X-Career-Ops-Portfolio-Token` on **every** route (constant-time compare).
 - Cross-origin write rejection; requests never use ambient cookie credentials.
 - Max **4,000,000 bytes per PDF** to fit Vercel Hobby request limits.
 - PDF magic, EOF marker, exact byte length, SHA-256 and base64 canonicalization.
@@ -86,7 +86,7 @@ keyword recommendation; no writes
 
 `GET /api/portfolio/pdf?portfolioId=<uuid>&version=N` — authenticated bytes
 
-All routes require `Authorization: Bearer <owner-secret>`.
+All routes require `X-Career-Ops-Portfolio-Token <owner-secret>`.
 
 ## Verification
 
@@ -117,3 +117,7 @@ rebased/diverged. This PR intentionally targets the actual deployed code.
 ## CV endpoint isolation
 
 Portfolio documents deliberately use the `portfolios/` path prefix, **outside** `output/`. The existing, unauthenticated `/api/cv-pdf?company=` legacy scanner enumerates `output/` PDFs. Using `output/portfolio-` would leak private portfolio PDFs through that route, so that prefix is forbidden. The only portfolio PDF reader is the owner-authorized `/api/portfolio/pdf` endpoint.
+
+### Existing hosted Basic Auth integration
+
+The Next.js `proxy.ts` validates the site's HTTP Basic authentication before route dispatch. The portfolio owner token is sent separately as `X-Career-Ops-Portfolio-Token`, because overwriting `Authorization` with `Bearer` would otherwise cause a 401 at the proxy. The proxy allowlists only the explicit portfolio route/method pairs; the route handlers enforce the secondary secret and deny all other requests by default.

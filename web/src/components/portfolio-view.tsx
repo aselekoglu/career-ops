@@ -35,7 +35,7 @@ export function PortfolioView(){
   const [versions,setVersions]=useState<Record<string,number>>({});
 
   async function api<T>(route:string,init?:RequestInit):Promise<T>{
-    const r=await fetch(route,{cache:"no-store",...init,headers:{Authorization:"Bearer "+secret,...(init?.headers||{})}});
+    const r=await fetch(route,{cache:"no-store",...init,headers:{"X-Career-Ops-Portfolio-Token":secret,...(init?.headers||{})}});
     const mime=r.headers.get("content-type")||"";
     const payload=mime.includes("application/json")?await r.json():null;
     if(!r.ok) throw new Error(label(payload?.code||"REQUEST_FAILED"));
@@ -83,7 +83,7 @@ export function PortfolioView(){
   };
   const download=(p:Portfolio,v:number)=>void run("download-"+p.id,async()=>{
     const res=await fetch("/api/portfolio/pdf?portfolioId="+encodeURIComponent(p.id)+"&version="+v,{
-      headers:{Authorization:"Bearer "+secret},cache:"no-store"
+      headers:{"X-Career-Ops-Portfolio-Token":secret},cache:"no-store"
     });
     if(!res.ok){
       let code="DOWNLOAD_FAILED";try{code=(await res.json()).code||code;}catch{/* ignore */}

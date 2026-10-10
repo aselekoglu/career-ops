@@ -8,16 +8,16 @@ import {
 
 const fakePdf=Buffer.from("%PDF-1.7\n".padEnd(550,"x")+"\n%%EOF\n");
 const env={CAREER_OPS_PORTFOLIO_TOKEN:"e0f761a9".repeat(8)};
-const authorized=(method="GET",auth="Bearer "+env.CAREER_OPS_PORTFOLIO_TOKEN,origin=null)=>{
-  const headers={authorization:auth};
+const authorized=(method="GET",auth=env.CAREER_OPS_PORTFOLIO_TOKEN,origin=null)=>{
+  const headers={"x-career-ops-portfolio-token":auth};
   if(origin) headers.origin=origin;
   return new Request("https://career-ops-aselekoglu.vercel.app/api/portfolio",{method,headers});
 };
 
 test("requires server-configured owner token and accepts only valid bearer",()=>{
   assert.throws(()=>authorizePortfolio(authorized(),{}),{message:"PORTFOLIO_AUTH_NOT_CONFIGURED"});
-  assert.throws(()=>authorizePortfolio(authorized("GET","Bearer wrong"),env),{message:"PORTFOLIO_UNAUTHORIZED"});
-  assert.throws(()=>authorizePortfolio(authorized("GET","none"),env),{message:"PORTFOLIO_UNAUTHORIZED"});
+  assert.throws(()=>authorizePortfolio(authorized("GET","wrong"),env),{message:"PORTFOLIO_UNAUTHORIZED"});
+  assert.throws(()=>authorizePortfolio(authorized("GET",""),env),{message:"PORTFOLIO_UNAUTHORIZED"});
   assert.doesNotThrow(()=>authorizePortfolio(authorized(),env));
 });
 test("rejects foreign Origin for writes and does not rely on cookies",()=>{

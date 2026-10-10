@@ -81,6 +81,15 @@ export function proxy(request: NextRequest) {
   }
 
   const pathname = request.nextUrl.pathname;
+  // Portfolio API uses the existing site Basic Auth gate above PLUS a separate,
+  // in-memory owner token checked by each route. Do not put Bearer in
+  // Authorization: that would collide with this site's Basic challenge.
+  if (((pathname === "/api/portfolio" || pathname === "/api/portfolio/recommend" ||
+        pathname === "/api/portfolio/pdf") && request.method === "GET") ||
+      ((pathname === "/api/portfolio" || pathname === "/api/portfolio/projects" ||
+        pathname === "/api/portfolio/associate") && request.method === "POST")) {
+    return NextResponse.next();
+  }
   if ((pathname === '/api/job-import' && request.method === 'POST') ||
       (pathname === '/api/blacklist' && request.method === 'GET') ||
       (pathname === '/api/blacklist/entry' && request.method === 'GET') ||
