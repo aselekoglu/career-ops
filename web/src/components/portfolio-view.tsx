@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ArrowDownToLine, FolderArchive, Link2, LockKeyhole, Plus, RefreshCw, UploadCloud } from "lucide-react";
 
@@ -14,7 +14,6 @@ const words=(value:string)=>[...new Set(value.split(",").map(v=>v.trim().toLower
 const label=(v:string)=>v.replace(/^PORTFOLIO_/,"").replace(/_/g," ").toLowerCase();
 
 export function PortfolioView(){
-  const [secret,setSecret]=useState("");
   const [connected,setConnected]=useState(false);
   const [catalog,setCatalog]=useState<Library>({portfolios:[],projects:[],associations:[]});
   const [busy,setBusy]=useState("");
@@ -35,7 +34,7 @@ export function PortfolioView(){
   const [versions,setVersions]=useState<Record<string,number>>({});
 
   async function api<T>(route:string,init?:RequestInit):Promise<T>{
-    const r=await fetch(route,{cache:"no-store",...init,headers:{"X-Career-Ops-Portfolio-Token":secret,...(init?.headers||{})}});
+    const r=await fetch(route,{cache:"no-store",...init,headers:{...(init?.headers||{})}});
     const mime=r.headers.get("content-type")||"";
     const payload=mime.includes("application/json")?await r.json():null;
     if(!r.ok) throw new Error(label(payload?.code||"REQUEST_FAILED"));
@@ -83,7 +82,7 @@ export function PortfolioView(){
   };
   const download=(p:Portfolio,v:number)=>void run("download-"+p.id,async()=>{
     const res=await fetch("/api/portfolio/pdf?portfolioId="+encodeURIComponent(p.id)+"&version="+v,{
-      headers:{"X-Career-Ops-Portfolio-Token":secret},cache:"no-store"
+      cache:"no-store"
     });
     if(!res.ok){
       let code="DOWNLOAD_FAILED";try{code=(await res.json()).code||code;}catch{/* ignore */}
@@ -111,6 +110,11 @@ export function PortfolioView(){
   const primary="inline-flex items-center justify-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-semibold text-brand-foreground hover:bg-brand-200 disabled:opacity-50";
   const muted="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-surface px-4 py-2 text-sm hover:bg-surface-hover disabled:opacity-50";
   const blocked=Boolean(busy);
+  useEffect(() => {
+    void refresh().catch(e => setError(e instanceof Error ? e.message : "Failed to load portfolio library"));
+    // The authenticated owner session belongs to the existing Career Ops site.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return <main className="mx-auto max-w-6xl space-y-8 px-5 py-8 md:px-8">
     <header className="border-b border-border pb-6">
       <span className="font-mono text-[11px] uppercase tracking-[.2em] text-brand-text">Supporting documents / private</span>
@@ -122,13 +126,12 @@ export function PortfolioView(){
     </header>
 
     <section className={box}>
-      <div className="flex items-center gap-2"><LockKeyhole size={18} className="text-brand-text"/><h2 className="font-medium">Owner access</h2></div>
-      <p className="mt-2 text-xs text-muted">Enter the separately configured portfolio access token. Held in this page's memory only; never added to URLs, cookies or local storage.</p>
-      <div className="mt-4 flex flex-wrap gap-2"><input aria-label="Portfolio access token" type="password" autoComplete="off"
-        className={input+" max-w-md flex-1"} value={secret} onChange={e=>{setSecret(e.target.value);setConnected(false);}} placeholder="Portfolio access token"/>
-        <button type="button" disabled={blocked||!secret} className={primary} onClick={()=>void run("connect",async()=>{await refresh();setSuccess("Connected to your private portfolio library.");})}>
-          {busy==="connect"?"Connecting…":"Unlock library"}</button>
-        {connected&&<button type="button" disabled={blocked} className={muted} onClick={()=>void run("refresh",async()=>{await refresh();})}><RefreshCw size={15}/>Refresh</button>}
+      <div className="flex items-center gap-2"><LockKeyhole size={18} className="text-brand-text"/><h2 className="font-medium">Private document library</h2></div>
+      <p className="mt-2 text-xs text-muted">Uses your existing Career Ops owner login. Files are not public and downloads require the same authentication as your tailored CVs.</p>
+      <div className="mt-3">
+        <button type="button" disabled={blocked} className={muted} onClick={()=>void run("refresh",async()=>{await refresh();})}>
+          <RefreshCw size={15}/>{busy==="refresh"?"Loading…":"Refresh library"}
+        </button>
       </div>
       {error&&<p role="alert" className="mt-3 rounded-lg bg-red-500/10 p-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
       {success&&<p role="status" className="mt-3 rounded-lg bg-brand-soft p-3 text-sm text-brand-text">{success}</p>}

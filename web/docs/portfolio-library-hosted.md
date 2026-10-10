@@ -22,14 +22,9 @@ until those histories are reconciled.
 
 ## One-time owner setup
 
-1. Ensure `DATABASE_URL` is already configured (used by current CV workflow).
-2. In Vercel project settings, add `CAREER_OPS_PORTFOLIO_TOKEN` as a **secret
-   random value of at least 32 characters**. Do not commit the token. Assign
-   it only to intended environments; redeploy after configuring.
-3. Visit `/portfolio`, paste the token into the owner access field, click
-   **Unlock library**. The token lives only in in-memory React state, not
-   localStorage or cookies. All portfolio endpoints require a secondary owner-secret header (in addition to existing site Basic Auth),
-   including PDFs. Missing configuration fails closed with 503.
+1. Ensure `DATABASE_URL` and the existing `CAREER_OPS_WEB_AUTH_USER` / `CAREER_OPS_WEB_AUTH_PASSWORD` are configured in the hosted Career Ops deployment. No new credential is required.
+2. Sign in to Career Ops using the existing site Basic Auth login.
+3. Open `/portfolio`. The library loads using the same owner login as the existing tailored CV APIs.
 4. Import the PDF previously created for Brookfield as a `variant` and tag it
    `business analyst, automation, system integration`. Upload a separate
    general master once you have reviewed and removed role-specific wording.
@@ -57,7 +52,7 @@ as a tailored CV or be accidentally associated with a company-slug search.
 
 ## Security and limits
 
-- Owner-only `X-Career-Ops-Portfolio-Token` on **every** route (constant-time compare).
+- Owner-only existing site HTTP Basic Auth on **every** route (constant-time compare).
 - Cross-origin write rejection; requests never use ambient cookie credentials.
 - Max **4,000,000 bytes per PDF** to fit Vercel Hobby request limits.
 - PDF magic, EOF marker, exact byte length, SHA-256 and base64 canonicalization.
@@ -67,8 +62,7 @@ as a tailored CV or be accidentally associated with a company-slug search.
 - DB write CTEs prevent orphan metadata when uploads fail.
 - Simple header/EOF checks are **not malware scanning or PDF sanitization**:
   treat imported PDFs as trusted user files, download (not inline render) them.
-- One long-lived owner token protects this MVP; rotation and true per-user
-  sessions are recommended before multi-user access. Don't put the token in a URL.
+- Existing site owner Basic Auth protects this single-user MVP. True per-user OAuth/sessions are recommended before multi-user access.
 
 ## API
 
@@ -120,4 +114,4 @@ Portfolio documents deliberately use the `portfolios/` path prefix, **outside** 
 
 ### Existing hosted Basic Auth integration
 
-The Next.js `proxy.ts` validates the site's HTTP Basic authentication before route dispatch. The portfolio owner token is sent separately as `X-Career-Ops-Portfolio-Token`, because overwriting `Authorization` with `Bearer` would otherwise cause a 401 at the proxy. The proxy allowlists only the explicit portfolio route/method pairs; the route handlers enforce the secondary secret and deny all other requests by default.
+The Next.js `proxy.ts` verifies the site's HTTP Basic authentication before invoking route handlers. Portfolio routes verify those same credentials as defense in depth and reject cross-origin writes. The UI uses the browser's existing login, and the MCP Site bridge can use the exact same Basic Auth connection as other Career Ops endpoints; extending the plugin tool registry remains a separate integration step.

@@ -10,20 +10,31 @@ export class PortfolioError extends Error {
 }
 
 export function authorizePortfolio(request, env = process.env) {
-  const configured = env.CAREER_OPS_PORTFOLIO_TOKEN;
-  if (!configured || configured.length < 32) throw new PortfolioError("PORTFOLIO_AUTH_NOT_CONFIGURED", 503);
-  const token = request.headers.get("x-career-ops-portfolio-token") || "";
-  if (!token) throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);
-  const supplied = Buffer.from(token, "utf8");
-  const expected = Buffer.from(configured, "utf8");
+  // Reuse the exact site-owner Basic authentication that guards all hosted
+  // Career Ops pages and existing CV artifacts. No second credential to leak
+  // into the browser or configure in the ChatGPT Site bridge.
+  const user = env.CAREER_OPS_WEB_AUTH_USER;
+  const pass = env.CAREER_OPS_WEB_AUTH_PASSWORD;
+  if (!user || !pass) throw new PortfolioError("PORTFOLIO_AUTH_NOT_CONFIGURED", 503);
+  const header = request.headers.get("authorization") || "";
+  if (!header.startsWith("Basic ")) throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);
+  const encoded = header.slice(6);
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);
+  }
+  const supplied = Buffer.from(encoded, "base64");
+  const expected = Buffer.from(user + ":" + pass, "utf8");
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
     throw new PortfolioError("PORTFOLIO_UNAUTHORIZED", 401);
   }
   if (!["GET", "HEAD"].includes(request.method)) {
-    // Bearer-only, no ambient browser cookies. Reject cross-site browser writes anyway.
+    // Basic Auth is ambient in browsers: block CSRF and cross-origin writes.
     const origin = request.headers.get("origin");
-    if (origin && new URL(origin).origin !== new URL(request.url).origin) {
-      throw new PortfolioError("PORTFOLIO_CROSS_ORIGIN", 403);
+    if (origin) {
+      let valid;
+      try { valid = new URL(origin).origin === new URL(request.url).origin; }
+      catch { valid = false; }
+      if (!valid) throw new PortfolioError("PORTFOLIO_CROSS_ORIGIN", 403);
     }
     const site = request.headers.get("sec-fetch-site");
     if (site && !["none", "same-origin"].includes(site)) throw new PortfolioError("PORTFOLIO_CROSS_ORIGIN", 403);

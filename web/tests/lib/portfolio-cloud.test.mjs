@@ -7,23 +7,26 @@ import {
 } from "../../src/lib/portfolio-cloud.mjs";
 
 const fakePdf=Buffer.from("%PDF-1.7\n".padEnd(550,"x")+"\n%%EOF\n");
-const env={CAREER_OPS_PORTFOLIO_TOKEN:"e0f761a9".repeat(8)};
-const authorized=(method="GET",auth=env.CAREER_OPS_PORTFOLIO_TOKEN,origin=null)=>{
-  const headers={"x-career-ops-portfolio-token":auth};
+const env={CAREER_OPS_WEB_AUTH_USER:"candidate",CAREER_OPS_WEB_AUTH_PASSWORD:"secret-"+("x".repeat(48))};
+const basic=(password=env.CAREER_OPS_WEB_AUTH_PASSWORD)=>
+  "Basic "+Buffer.from(env.CAREER_OPS_WEB_AUTH_USER+":"+password).toString("base64");
+const authorized=(method="GET",auth=basic(),origin=null)=>{
+  const headers={authorization:auth};
   if(origin) headers.origin=origin;
   return new Request("https://career-ops-aselekoglu.vercel.app/api/portfolio",{method,headers});
 };
 
-test("requires server-configured owner token and accepts only valid bearer",()=>{
+test("reuses existing Career Ops site Basic Auth and denies wrong or missing login",()=>{
   assert.throws(()=>authorizePortfolio(authorized(),{}),{message:"PORTFOLIO_AUTH_NOT_CONFIGURED"});
-  assert.throws(()=>authorizePortfolio(authorized("GET","wrong"),env),{message:"PORTFOLIO_UNAUTHORIZED"});
-  assert.throws(()=>authorizePortfolio(authorized("GET",""),env),{message:"PORTFOLIO_UNAUTHORIZED"});
+  assert.throws(()=>authorizePortfolio(authorized("GET",basic("wrong")),env),{message:"PORTFOLIO_UNAUTHORIZED"});
+  assert.throws(()=>authorizePortfolio(authorized("GET","none"),env),{message:"PORTFOLIO_UNAUTHORIZED"});
   assert.doesNotThrow(()=>authorizePortfolio(authorized(),env));
 });
-test("rejects foreign Origin for writes and does not rely on cookies",()=>{
-  assert.throws(()=>authorizePortfolio(authorized("POST",undefined,"https://attacker.example"),env),{message:"PORTFOLIO_CROSS_ORIGIN"});
-  assert.doesNotThrow(()=>authorizePortfolio(authorized("POST",undefined,"https://career-ops-aselekoglu.vercel.app"),env));
+test("rejects cross-origin writes even with ambient Basic credentials",()=>{
+  assert.throws(()=>authorizePortfolio(authorized("POST",basic(),"https://attacker.example"),env),{message:"PORTFOLIO_CROSS_ORIGIN"});
+  assert.doesNotThrow(()=>authorizePortfolio(authorized("POST",basic(),"https://career-ops-aselekoglu.vercel.app"),env));
 });
+
 test("checks PDF header EOF size and sha256",()=>{
   assert.equal(validatePortfolioPdf(fakePdf).byteSize,fakePdf.length);
   assert.match(validatePortfolioPdf(fakePdf).sha256,/^[a-f0-9]{64}$/);
@@ -60,7 +63,8 @@ test("queries use existing career_ops_documents store and archive immutable vers
   const result=await store.upload({portfolioId:one.portfolioId},fakePdf);
   assert.equal(result.version,2);
   assert.equal(result.portfolioId,one.portfolioId);
-  assert.ok(calls.some(([query])=>query.includes("FOR UPDATE")));\n  assert.ok(calls.filter(([query])=>query.includes("INSERT INTO career_ops_documents")).every(([,args])=>args[5].startsWith("portfolios/")));
+  assert.ok(calls.some(([query])=>query.includes("FOR UPDATE")));
+  assert.ok(calls.filter(([query])=>query.includes("INSERT INTO career_ops_documents")).every(([,args])=>args[5].startsWith("portfolios/")));
 });
 test("application association checks exact numeric tracker ID first",async()=>{
   const id=randomUUID();
