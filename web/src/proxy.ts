@@ -115,10 +115,17 @@ export function proxy(request: NextRequest) {
       (/^\/api\/cv-runs\/[0-9a-f-]{36}$/i.test(pathname) && ['GET','HEAD'].includes(request.method)) ||
       (pathname === '/api/evaluation-runs' && request.method === 'POST') ||
       (/^\/api\/evaluation-runs\/[0-9a-f-]{36}(?:\/report)?$/i.test(pathname) && ['GET','HEAD'].includes(request.method))) return NextResponse.next();
+  const geminiConfigured = Boolean(process.env.GEMINI_API_KEY?.trim());
+  const openaiConfigured = Boolean(process.env.OPENAI_API_KEY?.trim());
+  const provider = process.env.CAREER_OPS_AI_PROVIDER === "openai" || process.env.CAREER_OPS_AI_PROVIDER === "gemini"
+    ? process.env.CAREER_OPS_AI_PROVIDER
+    : (openaiConfigured ? "openai" : "gemini");
   const hostedStatus = {
     hosted: true,
-    ready: Boolean(process.env.GEMINI_API_KEY?.trim()),
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+    ready: provider === "openai" ? openaiConfigured : geminiConfigured,
+    geminiConfigured,
+    openaiConfigured,
+    provider,
   };
   if (pathname === "/api/ai/status" || pathname === "/api/explore/ai/known" || pathname === "/api/assistant" || pathname === "/api/explore/ai") {
     const decision = isAllowedCloudAiRequest({
@@ -132,13 +139,13 @@ export function proxy(request: NextRequest) {
     }, hostedStatus, HOSTED_AI_HANDLERS);
     if (decision.allowed) return NextResponse.next();
 
-    const unavailable = decision.reason === "gemini_unavailable";
+    const unavailable = decision.reason === "ai_unavailable";
     const crossOrigin = decision.reason === "same_origin_required";
     const handlerUnavailable = decision.reason === "hosted_handler_unavailable";
     return NextResponse.json(
       {
         error: unavailable
-          ? "Hosted Gemini is not configured."
+          ? "Hosted AI provider is not configured."
           : crossOrigin
             ? "This request must come from the same origin."
             : handlerUnavailable
