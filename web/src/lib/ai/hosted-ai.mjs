@@ -12,6 +12,7 @@ const MAX_CV_SYSTEM_CHARS = 16_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const EVALUATION_TIMEOUT_MS = 90_000;
 const MODEL = "gemini-3.8-flash";
+const OPENAI_MODEL = "gpt-5-mini";
 
 function hostedAiError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -40,23 +41,23 @@ function validateInput(input) {
   if (Buffer.byteLength(JSON.stringify(body), "utf8") > bodyLimit) throw invalid();
 }
 
-function normalizeProviderError(error, signal, timedOut) {
+function normalizeProviderError(error, signal, timedOut, providerName = "AI provider") {
   if (error?.code === "HOSTED_AI_OUTPUT_INCOMPLETE") {
-    return hostedAiError("HOSTED_AI_OUTPUT_INCOMPLETE", "Gemini stopped before completing the evaluation.");
+    return hostedAiError("HOSTED_AI_OUTPUT_INCOMPLETE", "AI provider stopped before completing the response.");
   }
-  if (timedOut()) return hostedAiError("HOSTED_AI_TIMEOUT", "Gemini did not respond in time.");
+  if (timedOut()) return hostedAiError("HOSTED_AI_TIMEOUT", "AI provider did not respond in time.");
   if (signal?.aborted) return hostedAiError("HOSTED_AI_ABORTED", "Hosted AI request was cancelled.");
   if (error?.code === "gateway_timeout") {
-    return hostedAiError("HOSTED_AI_TIMEOUT", "Gemini did not respond in time.");
+    return hostedAiError("HOSTED_AI_TIMEOUT", "AI provider did not respond in time.");
   }
   const status = Number(error?.status ?? error?.statusCode ?? error?.code);
   if (status === 401 || status === 403) {
-    return hostedAiError("HOSTED_AI_AUTH_ERROR", "Gemini access is unavailable. Check the configured API key and permissions.");
+    return hostedAiError("HOSTED_AI_AUTH_ERROR", "AI provider access is unavailable. Check the configured API key and permissions.");
   }
   if (status === 429) {
-    return hostedAiError("HOSTED_AI_QUOTA_EXCEEDED", "Gemini quota or rate limit was reached. Try again later.");
+    return hostedAiError("HOSTED_AI_QUOTA_EXCEEDED", "AI provider quota or rate limit was reached. Try again later.");
   }
-  return hostedAiError("HOSTED_AI_PROVIDER_ERROR", "Gemini is temporarily unavailable.");
+  return hostedAiError("HOSTED_AI_PROVIDER_ERROR", "AI provider is temporarily unavailable.");
 }
 
 /** Adapt the Google GenAI Interactions stream to the hosted text contract. */
@@ -107,18 +108,78 @@ export function createGeminiProvider(client) {
   };
 }
 
-/** Create the server-side Gemini service. No credential values leave this module. */
+/** OpenAI Responses adapter. Uses built-in fetch, so no SDK or bundled secret is needed. */
+export function createOpenAIProvider({ apiKey, model = OPENAI_MODEL, fetchFn = fetch }) {
+  return {
+    async *stream(input) {
+      const request = {
+        model,
+        instructions: input.system,
+        input: input.messages.map(({ role, content }) => ({ role, content })),
+        store: false,
+        stream: false,
+        max_output_tokens: input.task === "evaluation" ? 20000 : input.task === "cv" ? 16000 : input.task === "explore" ? 4096 : 2048,
+        ...(input.task === "explore" && input.webSearch ? { tools: [{ type: "web_search" }] } : {}),
+      };
+      // The AI service owns timeouts and cancellation; don't log API credentials or responses.
+      const response = await fetchFn("https://api.openai.com/v1/responses", {
+        method: "POST",
+        redirect: "error",
+        signal: input.signal,
+        headers: { Authorization: "Bearer " + apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) {
+        throw Object.assign(new Error("OpenAI request failed"), { status: response.status });
+      }
+      const result = await response.json();
+      if (result?.status !== "completed") {
+        throw Object.assign(new Error("OpenAI response incomplete"), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
+      }
+      const chunks = (result.output || [])
+        .filter(item => item?.type === "message" && item?.role === "assistant")
+        .flatMap(item => item.content || [])
+        .filter(item => item?.type === "output_text" && typeof item.text === "string")
+        .map(item => item.text);
+      const content = chunks.join("") || (typeof result.output_text === "string" ? result.output_text : "");
+      if (!content.trim()) {
+        throw Object.assign(new Error("OpenAI returned no text"), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
+      }
+      yield { type: "text", text: content };
+    },
+  };
+}
+
+/** Create the server-side hosted AI service. No credential values leave this module. */
 export function createHostedAiService(options = {}) {
   const env = options.env ?? process.env;
-  const apiKey = typeof env.GEMINI_API_KEY === "string" ? env.GEMINI_API_KEY.trim() : "";
-  const provider = options.gemini ?? (apiKey ? createGeminiProvider(new GoogleGenAI({ apiKey })) : null);
+  const geminiKey = typeof env.GEMINI_API_KEY === "string" ? env.GEMINI_API_KEY.trim() : "";
+  const openaiKey = typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY.trim() : "";
+  // An explicit selection is respected. Otherwise, OpenAI takes priority when configured,
+  // while legacy Gemini installations continue to work without migration.
+  const choice = env.CAREER_OPS_AI_PROVIDER === "openai" || env.CAREER_OPS_AI_PROVIDER === "gemini"
+    ? env.CAREER_OPS_AI_PROVIDER
+    : (openaiKey ? "openai" : "gemini");
+  const configured = choice === "openai" ? Boolean(openaiKey) : Boolean(geminiKey);
+  const provider = choice === "openai"
+    ? options.openai ?? (openaiKey ? createOpenAIProvider({
+      apiKey: openaiKey,
+      model: env.OPENAI_MODEL || OPENAI_MODEL,
+      fetchFn: options.fetchFn || fetch,
+    }) : null)
+    : options.gemini ?? (geminiKey ? createGeminiProvider(new GoogleGenAI({ apiKey: geminiKey })) : null);
 
   return {
     status() {
-      return { geminiConfigured: Boolean(apiKey), ready: Boolean(apiKey) };
+      return {
+        geminiConfigured: Boolean(geminiKey),
+        openaiConfigured: Boolean(openaiKey),
+        provider: choice,
+        ready: configured,
+      };
     },
     async *stream(input) {
-      if (!apiKey) throw hostedAiError("HOSTED_AI_UNAVAILABLE", "Gemini is not configured.");
+      if (!configured || !provider) throw hostedAiError("HOSTED_AI_UNAVAILABLE", "Hosted AI provider is not configured.");
       validateInput(input);
       const timeoutMs = options.timeoutMs ?? (input.task === "evaluation" ? EVALUATION_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
       const controller = new AbortController();
@@ -141,7 +202,7 @@ export function createHostedAiService(options = {}) {
           throw hostedAiError("HOSTED_AI_ABORTED", "Hosted AI request was cancelled.");
         }
       } catch (error) {
-        throw normalizeProviderError(error, input.signal, () => didTimeOut);
+        throw normalizeProviderError(error, input.signal, () => didTimeOut, choice);
       } finally {
         clearTimeout(timer);
         input.signal?.removeEventListener("abort", onAbort);
