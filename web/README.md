@@ -54,6 +54,31 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
 - **Additive:** the web is isolated from the core's packaging, CI and release
   automation. The CLI works exactly the same without it.
 
+### Hosted AI provider (OpenAI or Gemini)
+
+The Vercel server supports either provider for Career Ops evaluations and
+tailored CV generation. Set these as **encrypted server-only Vercel environment
+variables** (never commit API keys, paste them into an issue/PR, or expose them
+with `NEXT_PUBLIC_`):
+
+- `OPENAI_API_KEY`: enables OpenAI Responses API.
+- `CAREER_OPS_AI_PROVIDER=openai`: optional explicit selection (recommended
+  when migrating). If unset, a configured OpenAI key is preferred over Gemini.
+- `OPENAI_MODEL`: optional model override (default `gpt-5-mini`).
+- `GEMINI_API_KEY`: retains the previous Google Gemini implementation.
+- `CAREER_OPS_AI_PROVIDER=gemini`: explicit Gemini selection if both keys exist.
+
+Both providers use the same Career Ops canonical CV and evaluation prompts and
+the same durable PDF and reporting pipeline. The OpenAI adapter sets
+`store: false`, never gives search access to CV/evaluation prompts, and sends
+the key only in the server-side Authorization header. Hosted AI status exposes
+the selected provider and readiness without revealing credentials.
+
+**Deployment:** add the credential to the correct Vercel project, Production
+(and Preview only if needed), then trigger a fresh deployment so the environment
+variable is available. A verified PDF must appear as a completed Career Ops CV
+artifact; a locally generated substitute does not count.
+
 ### Protected Vercel deployment
 
 The Vercel deployment is a protected, read-only cloud shell. Configure
