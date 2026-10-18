@@ -5,10 +5,14 @@
 export function toPublicHostedAiStatus(status, hosted) {
   const isHosted = hosted === true;
   const geminiConfigured = isHosted && status?.geminiConfigured === true;
+  const openaiConfigured = isHosted && status?.openaiConfigured === true;
+  const provider = isHosted && ["openai", "gemini"].includes(status?.provider) ? status.provider : null;
   return {
     hosted: isHosted,
-    ready: isHosted && status?.ready === true && geminiConfigured,
+    ready: isHosted && status?.ready === true && (geminiConfigured || openaiConfigured),
     geminiConfigured,
+    openaiConfigured,
+    provider,
   };
 }
 
@@ -57,8 +61,9 @@ export function isAllowedCloudAiRequest(request, status, handlerReadiness = {}) 
       ? handlerReadiness.assistant === true
       : handlerReadiness.explore === true;
     if (!handlerReady) return { allowed: false, reason: "hosted_handler_unavailable" };
-    if (status?.hosted !== true || status?.ready !== true || status?.geminiConfigured !== true) {
-      return { allowed: false, reason: "gemini_unavailable" };
+    if (status?.hosted !== true || status?.ready !== true ||
+        (status?.geminiConfigured !== true && status?.openaiConfigured !== true)) {
+      return { allowed: false, reason: "ai_unavailable" };
     }
     if (!isSameOrigin(request)) return { allowed: false, reason: "same_origin_required" };
     return { allowed: true };
