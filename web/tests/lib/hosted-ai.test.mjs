@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const hostedAi = await import(new URL("../../src/lib/ai/hosted-ai.mjs", import.meta.url));
-const { createHostedAiService, createGeminiProvider } = hostedAi;
+const { createHostedAiService, createGeminiProvider, createOpenAIProvider } = hostedAi;
 
 const request = {
   task: "assistant",
@@ -24,7 +24,7 @@ test("missing Gemini key reports unavailable without a provider call", async () 
     env: {},
     gemini: { async *stream() { calls++; yield { type: "text", text: "wrong" }; } },
   });
-  assert.deepEqual(service.status(), { geminiConfigured: false, ready: false });
+  assert.deepEqual(service.status(), { geminiConfigured: false, openaiConfigured: false, provider: "gemini", ready: false });
   await assert.rejects(collect(service.stream(request)), { code: "HOSTED_AI_UNAVAILABLE" });
   assert.equal(calls, 0);
 });
@@ -41,7 +41,7 @@ test("configured Gemini key reports ready and streams text events", async () => 
       },
     },
   });
-  assert.deepEqual(service.status(), { geminiConfigured: true, ready: true });
+  assert.deepEqual(service.status(), { geminiConfigured: true, openaiConfigured: false, provider: "gemini", ready: true });
   assert.deepEqual(await collect(service.stream(request)), [
     { type: "text", text: "One" },
     { type: "text", text: " two" },
@@ -260,6 +260,80 @@ test("provider timeout aborts the stream and returns a safe error", async () => 
   await assert.rejects(collect(service.stream(request)), (error) => {
     assert.equal(error.code, "HOSTED_AI_TIMEOUT");
     assert.doesNotMatch(error.message, /raw provider timeout detail/);
+    return true;
+  });
+});
+
+test("OpenAI is preferred when both providers are configured, and can be overridden", async () => {
+  const chosen = [];
+  const providers = {
+    gemini: { async *stream() { chosen.push("gemini"); yield { type: "text", text: "G" }; } },
+    openai: { async *stream() { chosen.push("openai"); yield { type: "text", text: "O" }; } },
+  };
+  const env = { OPENAI_API_KEY: "openai-test-key", GEMINI_API_KEY: "gemini-test-key" };
+  const service = createHostedAiService({ env, ...providers });
+  assert.deepEqual(service.status(), {
+    geminiConfigured: true, openaiConfigured: true, provider: "openai", ready: true,
+  });
+  assert.deepEqual(await collect(service.stream(request)), [{ type: "text", text: "O" }]);
+  const override = createHostedAiService({ env: { ...env, CAREER_OPS_AI_PROVIDER: "gemini" }, ...providers });
+  assert.deepEqual(await collect(override.stream(request)), [{ type: "text", text: "G" }]);
+  assert.deepEqual(chosen, ["openai", "gemini"]);
+});
+
+test("OpenAI Responses API uses server key, disables storage, and returns completed text", async () => {
+  const seen = [];
+  const provider = createOpenAIProvider({
+    apiKey: "private-test-key",
+    fetchFn: async (url, init) => {
+      seen.push({ url, init });
+      return Response.json({
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Tailored" }] }],
+      });
+    },
+  });
+  assert.deepEqual(await collect(provider.stream({ ...request, task: "cv" })), [{ type: "text", text: "Tailored" }]);
+  assert.equal(seen[0].url, "https://api.openai.com/v1/responses");
+  assert.equal(seen[0].init.headers.Authorization, "Bearer private-test-key");
+  const body = JSON.parse(seen[0].init.body);
+  assert.equal(body.store, false);
+  assert.equal(body.stream, false);
+  assert.equal(body.model, "gpt-5-mini");
+  assert.equal(body.max_output_tokens, 16000);
+  assert.equal(body.instructions, request.system);
+  assert.equal(body.tools, undefined);
+  assert.equal(seen[0].init.redirect, "error");
+});
+
+test("OpenAI Explore may search; CV and evaluation never get a search tool", async () => {
+  const bodies = [];
+  const provider = createOpenAIProvider({
+    apiKey: "private-test-key",
+    fetchFn: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return Response.json({ status: "completed", output_text: "ok" });
+    },
+  });
+  await collect(provider.stream({ ...request, task: "explore", webSearch: true }));
+  await collect(provider.stream({ ...request, task: "evaluation", webSearch: true }));
+  assert.deepEqual(bodies[0].tools, [{ type: "web_search" }]);
+  assert.equal(bodies[1].tools, undefined);
+});
+
+test("OpenAI incomplete response and quota errors fail safely", async () => {
+  const service = createHostedAiService({
+    env: { OPENAI_API_KEY: "private-test-key" },
+    fetchFn: async () => Response.json({ status: "incomplete", output_text: "partial" }),
+  });
+  await assert.rejects(collect(service.stream(request)), { code: "HOSTED_AI_OUTPUT_INCOMPLETE" });
+  const quota = createHostedAiService({
+    env: { OPENAI_API_KEY: "private-test-key" },
+    fetchFn: async () => new Response("private raw provider details", { status: 429 }),
+  });
+  await assert.rejects(collect(quota.stream(request)), error => {
+    assert.equal(error.code, "HOSTED_AI_QUOTA_EXCEEDED");
+    assert.doesNotMatch(error.message, /private-test-key|private raw provider details/);
     return true;
   });
 });

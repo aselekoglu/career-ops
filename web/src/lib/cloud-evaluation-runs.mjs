@@ -53,7 +53,7 @@ export function workerAuthorized(value, env = process.env) {
  return timingSafeEqual(createHash("sha256").update(value.slice(7)).digest(), createHash("sha256").update(expected).digest());
 }
 export function workerConfigured(env = process.env) {
- return Boolean(env.DATABASE_URL && env.CAREER_OPS_SCAN_DISPATCH_TOKEN && env.CAREER_OPS_SCAN_WORKER_SECRET && env.CAREER_OPS_SCAN_REF && env.GEMINI_API_KEY);
+ return Boolean(env.DATABASE_URL && env.CAREER_OPS_SCAN_DISPATCH_TOKEN && env.CAREER_OPS_SCAN_WORKER_SECRET && env.CAREER_OPS_SCAN_REF && (env.GEMINI_API_KEY || env.OPENAI_API_KEY));
 }
 function safePublicHost(url) {
  try { const host = new URL(url).hostname.toLowerCase(); return Boolean(host && host !== "localhost" && !host.endsWith(".local") && !/^\d+(?:\.\d+){3}$/.test(host) && !host.includes(":")); } catch { return false; }
