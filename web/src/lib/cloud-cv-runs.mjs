@@ -253,7 +253,7 @@ async function resolveTarget(input, options = {}) {
 export function cvWorkerConfigured(env = process.env) {
   return Boolean(
     env.DATABASE_URL &&
-    env.GEMINI_API_KEY &&
+    (env.GEMINI_API_KEY || env.OPENAI_API_KEY) &&
     env.CAREER_OPS_SCAN_DISPATCH_TOKEN &&
     env.CAREER_OPS_SCAN_WORKER_SECRET &&
     (env.CAREER_OPS_CV_REF || env.CAREER_OPS_SCAN_REF || env.VERCEL_GIT_COMMIT_REF),
