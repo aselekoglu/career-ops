@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isAllowedCloudAiRequest, toPublicHostedAiStatus } from "../../src/lib/ai/cloud-ai-gate.mjs";
 
-const ready = { hosted: true, ready: true, geminiConfigured: true };
+const ready = { hosted: true, ready: true, geminiConfigured: true, openaiConfigured: false, provider: "gemini" };
 const request = (pathname, method = "POST", extra = {}) => ({
   pathname,
   method,
@@ -18,12 +18,14 @@ const readyHandlers = { assistant: true, explore: true, exploreKnown: true };
 test("public hosted AI status exposes booleans only and never provider credentials", () => {
   const secret = "gemini-secret-that-must-not-escape";
   const output = toPublicHostedAiStatus({ ready: true, geminiConfigured: true, apiKey: secret, secret }, true);
-  assert.deepEqual(output, { hosted: true, ready: true, geminiConfigured: true });
+  assert.deepEqual(output, { hosted: true, ready: true, geminiConfigured: true, openaiConfigured: false, provider: null });
   assert.equal(JSON.stringify(output).includes(secret), false);
   assert.deepEqual(toPublicHostedAiStatus({ ready: true, geminiConfigured: true }, false), {
     hosted: false,
     ready: false,
     geminiConfigured: false,
+    openaiConfigured: false,
+    provider: null,
   });
 });
 
@@ -43,6 +45,13 @@ test("Gemini POSTs require both an adapted hosted handler and configured same-or
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai"), ready, { explore: false }).allowed, false);
   assert.equal(isAllowedCloudAiRequest(request("/api/explore/ai/known", "GET"), ready, readyHandlers).allowed, true);
   assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), { ...ready, geminiConfigured: false, ready: false }, readyHandlers).allowed, false);
+});
+
+test("OpenAI configured hosted provider is permitted by the same-origin gate", () => {
+  const aiStatus = { hosted: true, ready: true, geminiConfigured: false, openaiConfigured: true, provider: "openai" };
+  assert.deepEqual(toPublicHostedAiStatus(aiStatus, true), aiStatus);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant"), aiStatus, readyHandlers).allowed, true);
+  assert.equal(isAllowedCloudAiRequest(request("/api/assistant", "POST", { secFetchSite: "cross-site" }), aiStatus, readyHandlers).allowed, false);
 });
 
 test("cross-origin or unverifiable provider POSTs are denied", () => {
