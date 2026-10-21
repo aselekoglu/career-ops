@@ -23,7 +23,7 @@ import { pathToFileURL } from 'url';
 console.log('\nstates.yml alias coverage — the engine and the source of truth agree');
 
 try {
-  const { loadCanonicalStates, resolveCanonicalState } = await import(
+  const { loadCanonicalStates, resolveCanonicalState, resolveCanonicalStateId } = await import(
     pathToFileURL(join(ROOT, 'tracker-utils.mjs')).href
   );
   const states = loadCanonicalStates(join(ROOT, 'templates', 'states.yml'));
@@ -45,34 +45,32 @@ try {
     }
   }
 
-  // Rules of the second shape normalize-statuses.mjs also uses:
-  //   if (['evaluada'].includes(lower)) return { status: 'Evaluated' };
-  // A plain list-membership check against the already-lowercased `lower`,
-  // rather than an anchored regex. RULE_RE above never matches these, so
-  // without this pass a missing alias here (e.g. dropping 'evaluada' from
-  // states.yml) would sail through the test undetected.
-  const LIST_RULE_RE = /\[((?:'[^']*'|"[^"]*")(?:\s*,\s*(?:'[^']*'|"[^"]*"))*)\]\.includes\(lower\)\)\s*return\s*\{\s*status:\s*'([^']+)'/g;
-  const fromListRules = [];
-  for (const m of src.matchAll(LIST_RULE_RE)) {
-    for (const lit of m[1].matchAll(/'([^']*)'|"([^"]*)"/g)) {
-      const a = (lit[1] ?? lit[2] ?? '').trim();
-      if (a) fromListRules.push({ alias: a, expected: m[2] });
-    }
-  }
-  extracted.push(...fromListRules);
+  // normalize-statuses.mjs used to carry a SECOND rule shape — plain
+  // `['evaluada'].includes(lower)` alias lists — and this file extracted those
+  // too. Those lists are gone (#2704): the function now resolves the remaining
+  // aliases through states.yml itself, so there is no second vocabulary left to
+  // scrape. The assertion below inverted with it — instead of proving the lists
+  // are extractable, it proves they have not come back.
 
   // Each extractor is asserted separately on purpose. A combined
   // `extracted.length > 0` passes on the regex arm alone, so if
   // normalize-statuses.mjs reshapes its list rules and LIST_RULE_RE stops
   // matching, that arm silently checks nothing while the test stays green —
   // exactly the kind of quiet drift this file exists to catch.
-  extracted.length > fromListRules.length
-    ? pass(`extracted ${extracted.length - fromListRules.length} anchored alias rule(s) from normalize-statuses.mjs`)
+  extracted.length > 0
+    ? pass(`extracted ${extracted.length} anchored alias rule(s) from normalize-statuses.mjs`)
     : fail("extracted no anchored alias rules — RULE_RE no longer matches normalize-statuses.mjs and is checking nothing");
 
-  fromListRules.length > 0
-    ? pass(`extracted ${fromListRules.length} list-membership alias rule(s) from normalize-statuses.mjs`)
-    : fail("extracted no list-membership alias rules — LIST_RULE_RE no longer matches normalize-statuses.mjs and is checking nothing");
+  // Derivation guard, replacing the extractor that has nothing left to extract.
+  // Two halves, because either alone can go quietly wrong: the derivation must
+  // still be wired, and a hardcoded alias list must not reappear beside it.
+  const derives = /resolveCanonicalState\(/.test(src);
+  const hasListRule = /\]\.includes\(lower\)\)\s*return\s*\{\s*status:/.test(src);
+  derives && !hasListRule
+    ? pass('normalize-statuses derives its remaining aliases from states.yml rather than listing them (#2704)')
+    : fail(derives
+      ? 'a hardcoded alias list reappeared in normalize-statuses.mjs — resolve through states.yml instead (#2704)'
+      : 'normalize-statuses no longer calls resolveCanonicalState — the states.yml derivation was removed (#2704)');
 
   const orphans = extracted.filter(({ alias, expected }) => {
     const resolved = resolveCanonicalState(alias, states);
@@ -149,6 +147,53 @@ try {
       ? pass(`normalizeStatus("${raw}") -> ${expected}`)
       : fail(`normalizeStatus("${raw}") -> ${got ?? 'unknown'}, expected ${expected}`);
   }
+
+  // dedup-tracker has its own rank ORDER because its duplicate-resolution
+  // policy intentionally differs from the canonical lifecycle ordering for
+  // terminal states. It has no spellings of its own: the table is keyed by
+  // states.yml id and every alias reaches its rank through the shared resolver.
+  // An alias copied into the table could carry a different rank from its
+  // canonical state, and then a duplicate keeps the less advanced row.
+  const dedupSrc = readFileSync(join(ROOT, 'dedup-tracker.mjs'), 'utf-8');
+  const rankBody = dedupSrc.match(/const STATUS_RANK = \{([\s\S]*?)\n\};/)?.[1] ?? '';
+  const ranks = new Map([...rankBody.matchAll(/'([^']+)'\s*:\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
+  const stateIds = states.map((s) => s.id.toLowerCase());
+  const notIds = [...ranks.keys()].filter((key) => !stateIds.includes(key));
+  const unranked = stateIds.filter((id) => !ranks.has(id));
+  // Three conditions, because each alone can go quietly wrong: the table must be
+  // found at all, it must hold nothing but ids, and no state may be missing
+  // from it (a state with no rank is ranked 0, the same as SKIP).
+  ranks.size > 0 && notIds.length === 0 && unranked.length === 0
+    ? pass(`dedup ranks exactly the ${stateIds.length} states.yml ids, with no spelling of its own`)
+    : fail(ranks.size === 0
+      ? 'STATUS_RANK was not found in dedup-tracker.mjs — this check is reading nothing'
+      : `dedup STATUS_RANK is out of step with states.yml: ${[
+        notIds.length ? `not a state id: ${notIds.join(', ')} (resolve aliases through states.yml instead)` : '',
+        unranked.length ? `state with no rank: ${unranked.join(', ')}` : '',
+      ].filter(Boolean).join('; ')}`);
+  /resolveCanonicalStateId\(/.test(dedupSrc)
+    ? pass('dedup resolves each status cell through states.yml')
+    : fail('dedup-tracker no longer calls resolveCanonicalStateId — with an id-only table, every alias would rank 0');
+  const rankOf = (spelling) => ranks.get(resolveCanonicalStateId(spelling, states));
+  const expectedRanks = [
+    ['screening', 5],
+    ['online assessment', 5],
+    ['online_assessment', 5],
+    ['online screening', 5],
+    ['entrevista', 6],
+    ['oferta', 7],
+    ['contratado', 8],
+    ['contratada', 8],
+    ['accepted', 8],
+    ['accept', 8],
+  ];
+  const rankMismatches = expectedRanks.filter(([alias, rank]) => rankOf(alias) !== rank);
+  rankMismatches.length === 0
+    ? pass('dedup lifecycle aliases carry their canonical Assessment/Interview/Offer/Hired ranks')
+    : fail(`dedup lifecycle alias rank mismatch: ${rankMismatches.map(([alias, rank]) => `${alias}=${rankOf(alias) ?? 'missing'} (want ${rank})`).join(', ')}`);
+  rankOf('evaluación') === undefined
+    ? pass('dedup does not invent the unconfigured Evaluación alias')
+    : fail('dedup ranks Evaluación even though templates/states.yml does not configure it');
 } catch (err) {
   fail(`states alias coverage test threw: ${err?.message ?? err}`);
 }

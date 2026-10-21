@@ -11,12 +11,16 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { isIP } from 'net';
 import { dirname, join } from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 
 import { decodeEntities } from './providers/_html-entities.mjs';
+import { safeEncodeURIComponent } from './providers/_safe-url.mjs';
 import { BROWSER_LIKE_USER_AGENT } from './user-agent.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const DATA_ROOT = getCareerOpsRoot();
 const DEFAULT_LIMIT = 20;
 const DEFAULT_MONTHS = 3;
 const DEFAULT_SORT = 'date';
@@ -769,9 +773,9 @@ function hnQueries() {
   ];
 }
 
-async function fetchHnDiscovery({ months = DEFAULT_MONTHS, diagnostics = [] } = {}) {
+async function fetchHnDiscovery({ months = DEFAULT_MONTHS, now = new Date(), diagnostics = [] } = {}) {
   const diag = diagnostics.find((d) => d.source === 'hn') || diagnostic('hn');
-  const cutoff = Math.floor(Date.now() / 1000) - months * 31 * 24 * 60 * 60;
+  const cutoff = Math.floor(now.getTime() / 1000) - months * 31 * 24 * 60 * 60;
   const out = [];
   for (const query of hnQueries()) {
     const url =
@@ -787,7 +791,11 @@ async function fetchHnDiscovery({ months = DEFAULT_MONTHS, diagnostics = [] } = 
     for (const hit of hits) {
       const title = compact(hit.title || hit.story_title || '');
       if (!title) continue;
-      const fallbackUrl = `https://news.ycombinator.com/item?id=${encodeURIComponent(String(hit.objectID || ''))}`;
+      // A lone surrogate in objectID would throw URIError out of
+      // encodeURIComponent and abort the loop over the remaining hits; fall back
+      // to no synthetic URL (hit.url is tried first anyway).
+      const encodedId = safeEncodeURIComponent(hit.objectID || '');
+      const fallbackUrl = encodedId === null ? '' : `https://news.ycombinator.com/item?id=${encodedId}`;
       const itemUrl = trustedEvidenceUrl(hit.url || '', '') || trustedEvidenceUrl(fallbackUrl, 'hacker_news');
       const item = {
         source: 'hacker_news',
@@ -815,7 +823,7 @@ async function collectDiscoveryItems(opts, diagnostics) {
     if (requested.has(source)) hits.push(...await fetchRssDiscovery(source, diagnostics));
   }
   if (requested.has('hn')) {
-    hits.push(...await fetchHnDiscovery({ months: opts.months, diagnostics }));
+    hits.push(...await fetchHnDiscovery({ months: opts.months, now: opts.now, diagnostics }));
   }
   return hits;
 }
@@ -883,8 +891,8 @@ export function renderReport(result) {
 }
 
 function writeArtifacts(result) {
-  const outDir = join(ROOT, 'output');
-  const reportDir = join(ROOT, 'reports');
+  const outDir = join(DATA_ROOT, 'output');
+  const reportDir = join(DATA_ROOT, 'reports');
   mkdirSync(outDir, { recursive: true });
   mkdirSync(reportDir, { recursive: true });
   const jsonPath = join(outDir, `funded-companies-${result.generated_at}.json`);
@@ -926,20 +934,24 @@ function printHuman(result) {
 
 export async function discoverFundedCompanies(opts = {}) {
   const months = opts.months || DEFAULT_MONTHS;
+  // The moment the window is measured back from; one value for the whole run,
+  // copied so a caller changing its own Date cannot move it mid-run.
+  const now = opts.now instanceof Date ? new Date(opts.now.getTime()) : new Date();
   const sources = (opts.sources || DEFAULT_SOURCES).map(normalizeSourceName);
   const diagnostics = [...new Set(sources)].map(diagnostic);
   const hits = Array.isArray(opts.discoveryItems)
     ? opts.discoveryItems
-    : await collectDiscoveryItems({ ...opts, months, sources }, diagnostics);
+    : await collectDiscoveryItems({ ...opts, months, sources, now }, diagnostics);
   const companies = buildCandidates(hits, {
     months,
     sort: opts.sort || DEFAULT_SORT,
     limit: opts.limit || DEFAULT_LIMIT,
+    now,
     diagnostics,
   });
 
   return {
-    generated_at: isoDate(),
+    generated_at: isoDate(now),
     window_months: months,
     sort: opts.sort || DEFAULT_SORT,
     dry_run: Boolean(opts.dryRun),
@@ -1015,7 +1027,7 @@ async function main() {
   else printHuman(result);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(`company-funded: ${err.message}`);
     process.exit(1);
