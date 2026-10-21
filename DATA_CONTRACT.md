@@ -67,7 +67,7 @@ These files contain your personal data, customizations, and work product. Update
 
 ### Fork-local paths
 
-The two lists above describe *this project*. A fork usually carries files the project has never heard of — a nightly runner, an `.mcp.json`, a private fixtures directory. Those files are in the user layer by every definition that matters, but they cannot be added to `USER_PATHS`: that array lives in `update-system.mjs`, which `apply` overwrites and which git re-merges on every sync. The declaration would be erased by the process it exists to constrain.
+The two lists above describe *this project*. A fork usually carries files the project has never heard of — a nightly runner, an `.mcp.json`, a private fixtures directory. Those files are user-owned by every definition that matters. `USER_PATHS` can protect a fork-owned path in a maintained fork, but an upstream release can replace that array; `config/local-paths.txt` is the durable declaration outside the updater's overwrite path.
 
 `config/local-paths.txt` moves the declaration outside that blast radius. It is gitignored by default, read at runtime, and merged into the user layer for both the updater's safety check and `validate-system-paths-coverage.mjs`:
 
@@ -78,7 +78,9 @@ run-nightly.ps1
 qa-fixtures/          # trailing slash = everything under this directory
 ```
 
-Absent file means no extra paths — identical to the behaviour of every install that never creates one.
+Absent file means no extra paths — identical to the behaviour of every install that never creates one. This fork mirrors its deployment-code protections from `USER_PATHS` here so they survive an upstream self-bootstrap; the duplicate declarations are accepted because the built-in paths already protect them.
+
+This fork also carries deployment-only extensions under `sites/career-ops-mcp/` and the scheduled-scan worker scripts. Their exact paths are listed in `USER_PATHS` so this checkout protects them during system updates, and in its ignored `config/local-paths.txt` so the protection remains when an upstream updater replaces the fork's manifest. These are executable deployment code, not candidate facts or source material for generated application content.
 
 Three declarations are refused, loudly, naming the entry:
 

@@ -17,12 +17,10 @@
 // in sync, and it encodes the doctrine ARCHITECTURE.md now states rather than a
 // list of the files that happen to satisfy it.
 //
-// `*.test.mjs` specifically, NOT "anything test-shaped". test-salary-filter.mjs
-// and test-trust-validator.mjs sit at the root and are correctly registered in
-// test-all.mjs; a looser pattern would redden on two files that are fine.
-// #3411 moves them into tests/, after which this check reads the same either
-// way — which is the point of matching the discovery pattern rather than a
-// naming convention.
+// `*.test.mjs` specifically, NOT "anything test-shaped". The legacy root
+// runners test-salary-filter.mjs and test-trust-validator.mjs were removed
+// after their maintained suites moved to tests/salary-filter.test.mjs and
+// tests/trust-validator.test.mjs, where recursive discovery runs them.
 import { readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { pass, fail, ROOT } from './helpers.mjs';

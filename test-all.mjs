@@ -64,7 +64,7 @@ import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFil
 // EPERM) with linear backoff when given maxRetries, so default it everywhere
 // rather than at ~95 individual call sites. An explicit option still wins.
 const rmSync = (target, opts = {}) => _rmSync(target, { maxRetries: 10, retryDelay: 100, ...opts });
-import { join, dirname, basename, relative, delimiter } from 'path';
+import { join, dirname, basename, relative, delimiter, sep } from 'path';
 import { tmpdir, availableParallelism } from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 import * as yaml from 'js-yaml';
@@ -17255,68 +17255,55 @@ try {
       } catch (err) {
         fail(`web pdf write-scope modules could not be imported (${err.message}) — the #2185 freeze cannot verify`);
       }
-      // Gate the web unit suites from the REQUIRED check too. web-ci.yml is
+      // Gate the web library suites from the REQUIRED check too. web-ci.yml is
       // informative-only, so without this a contributor strengthening those files
-      // adds nothing to CI. This deliberately overlaps the value assertions below:
-      // those give a named, greppable #2185 signal and still hold if the web suite
-      // is ever trimmed, which is the failure this section exists to catch.
-      // Discovered, not hand-listed: a list silently stops gating whatever is added
-      // next, and this section previously covered 4 of the 6 files present.
+      // adds nothing to CI. The portal-verification suite is a deliberate root-level
+      // exception because it covers the portal-management UI path.
       let webUnits = [];
       try {
         const webLibRoot = join(ROOT, 'web', 'tests', 'lib');
-        // listTree rather than a recursive readdir: a checkout under
-        // web/tests/lib holds another tree's suites, and the parity walk below
-        // skips those the same way (#3762), so the gate must not run them. A
-        // missing root still throws, into the catch below.
         webUnits = listTree(webLibRoot, { match: /\.test\.mjs$/ })
-          .map((abs) => relative(webLibRoot, abs))
-          .sort()
-          .map((f) => join('web', 'tests', 'lib', f));
+          .map((abs) => relative(ROOT, abs).split(sep).join('/'))
+          .sort();
       } catch (err) {
         // Fail rather than throw to the outer catch, which would skip every value
         // assertion below while reporting only "freeze section crashed".
-        fail(`web/tests/lib is unreadable (${err.message}) — the #2185 unit suites cannot be gated`);
+        fail(`web/tests/lib is unreadable (${err.message}) — the web unit suites cannot be gated`);
       }
       // Three distinct states, so the message never misdescribes the failure: the
       // unreadable case already called fail() above, an empty directory is its own
       // fault, and only a non-empty list is actually run.
       if (webUnits.length === 0) {
         if (existsSync(join(ROOT, 'web', 'tests', 'lib'))) {
-          fail('web/tests/lib contains no *.test.mjs — the #2185 unit suites are not being gated');
+          fail('web/tests/lib contains no *.test.mjs — the web unit suites are not being gated');
         }
-      } else if (run(NODE, ['--experimental-strip-types', '--test', ...webUnits], { timeout: 180000 }) !== null) {
-        pass('web pdf write-scope unit suites pass (#2185)');
       } else {
-        // The signal distinguishes a timeout/kill from an assertion failure —
-        // run()'s default 30s is short for six suites in one child process.
-        const killed = lastRunFailure()?.signal;
-        // Surface the child's own output, for the same reason the per-file
-        // node:test path does (see runDiscovered): a bare "failed" is not
-        // actionable. It matters MORE here, because this is one child running
-        // every suite under web/tests/lib — so the rerun command this prints is
-        // a ~100-file line, and without the excerpt there is nothing to say
-        // which of the hundred broke. A flake that only reproduces on a slow
-        // runner is then undiagnosable by construction, which is the half of
-        // #4017 that outlived its own test.
-        fail(`web pdf write-scope unit suites failed${killed ? ` (killed: ${killed})` : ''} (run: node --experimental-strip-types --test ${webUnits.join(' ')})${formatRunFailure()}`);
+        const portalVerificationTest = join(ROOT, 'web', 'tests', 'portal-verification.test.mjs');
+        const portalVerificationSource = join(ROOT, 'web', 'src', 'lib', 'portal-verification.mjs');
+        const portalVerificationUnits = existsSync(portalVerificationTest)
+          ? [relative(ROOT, portalVerificationTest).split(sep).join('/')]
+          : [];
+        if (existsSync(portalVerificationSource) && portalVerificationUnits.length === 0) {
+          fail('web/src/lib/portal-verification.mjs exists but its portal-verification.test.mjs is missing from the required gate');
+        }
+        const requiredWebUnits = [...webUnits, ...portalVerificationUnits];
+        if (run(NODE, ['--experimental-strip-types', '--test', ...requiredWebUnits], { timeout: 180000 }) !== null) {
+          pass(`web required suites pass (${webUnits.length} lib${portalVerificationUnits.length ? ' + portal verification' : ''})`);
+        } else {
+          const killed = lastRunFailure()?.signal;
+          fail(`web required suites failed${killed ? ` (killed: ${killed})` : ''} (run: node --experimental-strip-types --test ${requiredWebUnits.join(' ')})${formatRunFailure()}`);
+        }
       }
 
-      // Parity: everything web/package.json would run must be something we DO run.
-      // The block above only reads web/tests/lib, while web's own script is
-      // `node --test "tests/**/*.test.mjs"` — recursive. Today those agree (39 of
-      // 39 live in lib/), and nothing anywhere asserts that they keep agreeing.
-      // The day a suite lands in web/tests/routes/, web-ci.yml still runs it (its
-      // glob is recursive), so the failure this prevents is not "nobody runs it".
-      // It is narrower and worse: the instrument we MERGE by stops looking. A
-      // co-preview lot comes back green having skipped a suite that exists, while
-      // the PR's own informative CI is the only thing still watching it. Two
-      // measurements of the same fact, diverging in silence. Discovered on both
-      // sides, so this cannot rot into a stale list of its own.
+      // Parity: every web suite must be gated here. Library tests are discovered
+      // recursively; portal verification is the explicit root-level exception.
       try {
         const webTestsRoot = join(ROOT, 'web', 'tests');
         if (existsSync(webTestsRoot)) {
-          const gated = new Set(webUnits.map((f) => join(ROOT, f)));
+          const gated = new Set([
+            ...webUnits.map((f) => join(ROOT, f)),
+            join(ROOT, 'web', 'tests', 'portal-verification.test.mjs'),
+          ]);
           const ungated = listTree(webTestsRoot, { match: /\.test\.mjs$/ })
             .filter((f) => !gated.has(f)).sort();
           if (ungated.length === 0) {
@@ -17325,12 +17312,40 @@ try {
             fail(
               `${ungated.length} web suite(s) run in web's own CI but NOT in this required check: ` +
               `${ungated.map((f) => f.slice(ROOT.length + 1)).join(', ')} — ` +
-              `this section only reads web/tests/lib, so anything outside it gates nothing`,
+              `the required gate is missing a web suite from its recursive test tree`,
             );
           }
         }
       } catch (err) {
         fail(`web suite parity check could not run (${err.message}) — that is not the same as "they all match"`);
+      }
+
+      // Sites is a separate private project with its own package test command,
+      // outside tests/ and web/tests/. Discover and run its suites separately
+      // when that project exists; a missing project is an explicit core-only
+      // checkout case, while a present project with missing coverage is red.
+      const sitesRoot = join(ROOT, 'sites', 'career-ops-mcp');
+      const sitesPackagePath = join(sitesRoot, 'package.json');
+      if (existsSync(sitesPackagePath)) {
+        try {
+          const sitesPackage = JSON.parse(readFileSync(sitesPackagePath, 'utf8'));
+          const sitesTestsRoot = join(sitesRoot, 'tests');
+          const sitesTests = listTree(sitesTestsRoot, { match: /\.test\.mjs$/ })
+            .map((file) => relative(sitesRoot, file));
+          if (sitesPackage.scripts?.test !== 'node --test tests/*.test.mjs') {
+            fail(`Sites project test command changed without updating the root gate: ${sitesPackage.scripts?.test ?? '(missing)'}`);
+          } else if (sitesTests.length === 0) {
+            fail('Sites private MCP project has a test command but no tests/*.test.mjs suites');
+          } else if (run(NODE, ['--test', ...sitesTests], { cwd: sitesRoot, timeout: 180000 }) !== null) {
+            pass(`Sites private MCP project test command passed (${sitesTests.length} discovered suite${sitesTests.length === 1 ? '' : 's'})`);
+          } else {
+            fail(`Sites private MCP project test command failed${formatRunFailure()}`);
+          }
+        } catch (err) {
+          fail(`Sites private MCP project tests could not be discovered (${err.message})`);
+        }
+      } else {
+        console.log('  ⏭️  Sites private MCP project is absent — no separate project tests available');
       }
 
       if (invocation && prompts) {

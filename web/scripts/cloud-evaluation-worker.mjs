@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../../lib/is-main-module.mjs';
 
 const API = 'https://career-ops-aselekoglu.vercel.app/api/evaluation-worker';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -38,9 +38,13 @@ export async function triggerEvaluationWorker({
   return result;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  triggerEvaluationWorker().catch((error) => {
-    console.error(`Cloud evaluation worker failed: ${error.message}`);
-    process.exitCode = 1;
-  });
+if (isMainModule(import.meta.url)) {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log("Usage: node web/scripts/cloud-evaluation-worker.mjs");
+  } else {
+    triggerEvaluationWorker().catch((error) => {
+      console.error(`Cloud evaluation worker failed: ${error.message}`);
+      process.exitCode = 1;
+    });
+  }
 }

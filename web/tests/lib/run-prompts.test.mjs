@@ -71,9 +71,9 @@ test("buildPrompt: the pdf prompt still pins tailoring to the real mode", () => 
   assert.match(prompt, /reports\/018-\*\.md/);
 });
 
-test("buildPrompt: every kind ends with exactly one VERDICT instruction", () => {
+test("buildPrompt: report-producing evaluation uses its inline envelope, other kinds use VERDICT", () => {
   // Given each kind — job-store.tsx parses that final line client-side
-  for (const kind of ["pdf", "research", "evaluate", "fix-portal"]) {
+  for (const kind of ["pdf", "research", "fix-portal"]) {
     const prompt = buildPrompt({ kind, ...ARGS });
 
     // Then the contract is present exactly once, so the parse cannot pick a
@@ -81,6 +81,10 @@ test("buildPrompt: every kind ends with exactly one VERDICT instruction", () => 
     const mentions = prompt.match(/VERDICT:/g) ?? [];
     assert.equal(mentions.length, 1, `${kind} must state VERDICT once, got ${mentions.length}`);
   }
+  const evaluate = buildPrompt({ kind: "evaluate", ...ARGS });
+  assert.match(evaluate, /<<report-md>>/);
+  assert.equal((evaluate.match(/VERDICT:/g) ?? []).length, 0, "evaluate must not claim completion outside its report envelope");
+  assert.doesNotMatch(evaluate, /run `node (?:reserve-report-num|merge-tracker)\.mjs/i);
 });
 
 test("buildPrompt: an unknown kind falls through to the evaluate prompt", () => {
@@ -88,7 +92,7 @@ test("buildPrompt: an unknown kind falls through to the evaluate prompt", () => 
   // When building its prompt
   // Then it is the evaluation prompt (the documented default), not an empty string
   const prompt = buildPrompt({ kind: "some-future-kind", ...ARGS });
-  assert.match(prompt, /OFFICIAL career-ops job evaluation/);
+  assert.match(prompt, /official Career Ops evaluation/);
 });
 
 test("buildPrompt: memory is injected only when non-empty", () => {
@@ -112,7 +116,7 @@ test("buildPrompt: every kind carries a DIRECT no-submission clause", () => {
   // "submit the application" line.
   const clauses = {
     pdf: /Do not submit anything anywhere/i,
-    evaluate: /NEVER submit an application/i,
+    evaluate: /Do not submit applications/i,
     research: /never submit, send, or click Apply/i,
     "fix-portal": /do not submit, send, or click Apply/i,
   };

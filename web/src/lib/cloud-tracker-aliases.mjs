@@ -1,6 +1,6 @@
 import { BUNDLED_TRACKER_ALIASES } from "./tracker-aliases.generated.mjs";
 
-const FIELDS = new Set(["num", "date", "company", "via", "role", "location", "score", "status", "pdf", "report", "notes"]);
+const FIELDS = new Set(["num", "date", "company", "via", "role", "location", "score", "status", "pdf", "report", "notes", "applylink", "followup", "url"]);
 
 function validate(value, errorCode) {
   if (!value || typeof value !== "object" || Array.isArray(value) || !Object.keys(value).length ||

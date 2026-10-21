@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { isMainModule } from "../../lib/is-main-module.mjs";
 
 const CODE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const API = "https://career-ops-aselekoglu.vercel.app/api/cv-worker";
@@ -126,9 +127,13 @@ export async function runCloudCvWorker({
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
-  runCloudCvWorker({ failOnly: process.argv.includes("--fail") }).catch(() => {
-    console.error("Career Ops CV worker failed. Check the durable CV run status.");
-    process.exitCode = 1;
-  });
+if (isMainModule(import.meta.url)) {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log("Usage: node web/scripts/cloud-cv-worker.mjs [--fail]");
+  } else {
+    runCloudCvWorker({ failOnly: process.argv.includes("--fail") }).catch(() => {
+      console.error("Career Ops CV worker failed. Check the durable CV run status.");
+      process.exitCode = 1;
+    });
+  }
 }

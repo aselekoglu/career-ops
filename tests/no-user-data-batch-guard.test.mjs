@@ -185,6 +185,10 @@ test('the guard exempts every tracked source under batch/', () => {
 // Each one needs a reason; an entry here that leaves USER_PATHS fails below.
 const NOT_GUARDED = new Map([
   ['voice-dna.md', 'ships as a populated system default, so edits to it are legit'],
+  ['sites/career-ops-mcp/', 'fork-owned hosted deployment code, not candidate or job-search content; preserve custom MCP capabilities'],
+  ['scripts/install-scan-schedule.ps1', 'fork-owned installer code, not candidate or job-search content'],
+  ['scripts/scheduled-jobs-runner.mjs', 'fork-owned scheduled worker code, not candidate or job-search content'],
+  ['scripts/uninstall-scan-schedule.ps1', 'fork-owned uninstaller code, not candidate or job-search content'],
   ['.claude/settings.json', 'project harness config, not gitignored, may legitimately be committed'],
   ['.claude/hooks/', 'project harness config, not gitignored, may legitimately be committed'],
 ]);

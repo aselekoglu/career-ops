@@ -4,6 +4,7 @@ import { careerOpsRoot, readApplications } from "@/lib/career-ops";
 import { getNormalizeTextKey } from "@/lib/core/text-key";
 import { cloudDataEnabled, getCloudDocument } from "@/lib/cloud-store";
 import { cloudReadApplications } from "@/lib/cloud-career-ops";
+import { collectWhatsNew } from "@/lib/whats-new.mjs";
 import type { DiscoveredOffer } from "@/lib/explore";
 
 export const runtime = "nodejs";
@@ -51,30 +52,5 @@ export async function GET(req: Request) {
     };
   };
 
-  const seen = new Set<string>();
-  const offers: DiscoveredOffer[] = [];
-  let anyDated = false;
-  // Pass 1: recent-by-date (the supply loop).
-  for (let i = rows.length - 1; i >= 1 && offers.length < 24; i--) {
-    const c = rows[i].split("\t");
-    const t = Date.parse(c[1] || "");
-    if (Number.isFinite(t)) anyDated = true;
-    if (!Number.isFinite(t) || t < cutoff) continue;
-    const o = toOffer(c);
-    if (!o || seen.has(o.url)) continue;
-    seen.add(o.url);
-    offers.push(o);
-  }
-  // Fallback for LEGACY scan.mjs histories with no parseable first_seen (every row
-  // would be dropped → a false "all caught up"). Show the most-recent-by-append-order
-  // un-evaluated rows instead, so the supply loop still surfaces something.
-  if (offers.length === 0 && !anyDated) {
-    for (let i = rows.length - 1; i >= 1 && offers.length < 12; i--) {
-      const o = toOffer(rows[i].split("\t"));
-      if (!o || seen.has(o.url)) continue;
-      seen.add(o.url);
-      offers.push(o);
-    }
-  }
-  return Response.json({ offers, count: offers.length });
+  return Response.json(collectWhatsNew(rows, { cutoff, toOffer }));
 }

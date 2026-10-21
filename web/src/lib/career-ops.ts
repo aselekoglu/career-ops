@@ -127,10 +127,14 @@ export type Application = {
   /** Intermediary channel (#1596): agency/recruiter firm, "—" for direct, "" when the tracker has no Via column. */
   via: string;
   role: string;
+  location: string;
   score: string;
   status: string;
   pdf: string;
   report: string;
+  url: string;
+  applyLink: string;
+  followUp: string;
   notes: string;
 };
 

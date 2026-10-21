@@ -28,6 +28,9 @@ export function normalizeTextKey(value, separator = "") {
   return String(value ?? "")
     .normalize("NFKC")
     .toLowerCase()
+    // Drop only the combining dot created when Turkish capital İ lowercases
+    // to `i` + U+0307. Keep precomposed dots such as ż, ė and ġ intact.
+    .replace(/̇/gu, "")
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, separator)
     .trim();
 }

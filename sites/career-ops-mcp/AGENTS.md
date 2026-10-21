@@ -2,6 +2,10 @@
 
 This is a standalone private Sites MCP project, separate from the parent local-first app.
 Its canonical upstream is https://career-ops-aselekoglu.vercel.app.
+## Source authority
+
+Before editing or publishing this bridge, read `.openai/hosting.json`, call Sites `get_site` for that exact existing `project_id`, then use the bundled `site-workflow.mjs` source-opening helper to fetch the authoritative current Site source into the checkout. This repository snapshot is not publication authority. Apply narrow changes to the fetched source and preserve every live tool, the exact project ID, and the existing owner-private access policy. Do not publish from a stale snapshot or replace live source with a copy that removes tools or changes access.
+
 Never include career data or secrets in source, hosting.json, tests, or build output.
 Hosting authentication is owned by Sites. Require its trusted authenticated-user ID before data-bearing tool calls.
 Keep the Site owner-private. Sharing requires a new authorization design because the upstream is a single-user data store.

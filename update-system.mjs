@@ -479,6 +479,7 @@ const SYSTEM_PATHS = [
   'openrouter-runner.mjs',
   'jd-similarity.mjs',
   'test-all.mjs',
+  'test/cv-visual/',
   // Retired 2026-10-04: the suite moved to tests/tracker-writer-lock.test.mjs
   // (#4759). The entry stays so staleSystemFiles() prunes the orphan on an
   // upgraded install; drop it once a release has shipped past that move.
@@ -516,6 +517,7 @@ const SYSTEM_PATHS = [
   '.env.example',
   '.editorconfig',
   '.agents/',
+  '.cursor/skills/career-ops/',
   '.claude/skills/',
   '.opencode/skills/',
   '.opencode/commands/',
@@ -653,6 +655,13 @@ const BOOTSTRAP_PATHS = [
  * that has no business having an opinion about it (#2480).
  */
 export const USER_PATHS = [
+  // Fork-owned deployment extensions are protected code, not candidate facts.
+  // Keep their exact declarations in config/local-paths.txt too, so the
+  // protection survives the next upstream updater self-bootstrap.
+  'sites/career-ops-mcp/',
+  'scripts/install-scan-schedule.ps1',
+  'scripts/scheduled-jobs-runner.mjs',
+  'scripts/uninstall-scan-schedule.ps1',
   '.career-ops-web/',
   'cv.md',
   'config/profile.yml',

@@ -4,8 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import * as yaml from "js-yaml";
+import { isMainModule } from "../lib/is-main-module.mjs";
 import {
   readScheduledStore,
   withResourceLock,
@@ -277,13 +278,17 @@ async function main() {
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
-  main()
-    .then((result) => {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
-    })
-    .catch((error) => {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      process.exitCode = 1;
-    });
+if (isMainModule(import.meta.url)) {
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    process.stdout.write("Usage: node scripts/scheduled-jobs-runner.mjs\n");
+  } else {
+    main()
+      .then((result) => {
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+      })
+      .catch((error) => {
+        process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+        process.exitCode = 1;
+      });
+  }
 }

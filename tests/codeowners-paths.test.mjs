@@ -13,6 +13,7 @@ import { pass, fail, ROOT } from './helpers.mjs';
 import assert from 'node:assert';
 import { existsSync, readFileSync, readdirSync, lstatSync, readlinkSync } from 'node:fs';
 import { join, dirname, basename, resolve, relative, sep } from 'node:path';
+import { CANONICAL_SKILL_PATH, SKILL_ENTRYPOINTS } from '../scaffolder/bin/skill-entrypoints.mjs';
 
 const ok = (name, fn) => { try { fn(); pass(name); } catch (e) { fail(`${name} — ${e.message}`); } };
 const read = (p) => readFileSync(join(ROOT, p), 'utf-8');
@@ -51,27 +52,19 @@ ok('the plugin registry directory is owned, not the deleted single file', () => 
   assert.ok(!patterns.includes('/plugins-registry.json'));
 });
 
-// The router is whatever the CLI skill entrypoints actually link to, read from
-// the links themselves so a moved router fails here rather than going unowned.
-// A checkout without symlink support (Windows, core.symlinks=false) holds each
-// link as a one-line file naming its target, so read that form too.
-function linkTarget(p) {
-  const abs = join(ROOT, p);
-  if (!existsSync(abs)) return null;
-  if (lstatSync(abs).isSymbolicLink()) return readlinkSync(abs);
-  const text = readFileSync(abs, 'utf-8');
-  return text.length < 200 && /^[^\n]+SKILL\.md\s*$/.test(text) ? text.trim() : null;
-}
-const skillLinks = readdirSync(ROOT)
-  .map(d => join(d, 'skills', 'career-ops', 'SKILL.md'))
-  .filter(p => linkTarget(p) !== null);
-const routers = new Set(skillLinks.map(p =>
-  relative(ROOT, resolve(join(ROOT, dirname(p)), linkTarget(p))).split(sep).join('/')));
+// Entry paths come from the updater's registry, not a filesystem guess about
+// whether Windows has materialized a pointer or a Unix checkout kept symlinks.
+const skillEntrypoints = SKILL_ENTRYPOINTS.map(({ path }) => path);
+const routers = new Set([CANONICAL_SKILL_PATH]);
 
-ok('the skill router every CLI entrypoint links to has a code owner', () => {
-  assert.ok(skillLinks.length >= 2, 'CLI skill symlinks found');
-  assert.deepEqual([...routers], ['.agents/skills/career-ops/SKILL.md'], 'one router');
-  for (const router of routers) assert.ok(patterns.includes(`/${router}`), `/${router} is not in CODEOWNERS`);
+ok('the canonical skill router and every managed CLI entrypoint have an owner', () => {
+  assert.ok(skillEntrypoints.length >= 2, 'managed CLI skill entrypoints found');
+  assert.ok(existsSync(join(ROOT, CANONICAL_SKILL_PATH)), 'canonical router exists');
+  assert.ok(patterns.includes(`/${CANONICAL_SKILL_PATH}`), `/${CANONICAL_SKILL_PATH} is not in CODEOWNERS`);
+  for (const entrypoint of skillEntrypoints) {
+    assert.ok(existsSync(join(ROOT, entrypoint)), `${entrypoint} is missing`);
+    assert.ok(patterns.includes(`/${entrypoint}`), `/${entrypoint} is not in CODEOWNERS`);
+  }
 });
 
 ok('every root CLI wrapper named in copilot-instructions has a code owner', () => {
@@ -95,9 +88,9 @@ ok('the agent-behavior label fires on the router, not only on its symlinks', () 
     const glob = `${router.split('/').slice(0, 2).join('/')}/**`;
     assert.ok(block.includes(`- ${glob}`), `${glob} missing from the agent-behavior globs`);
   }
-  // Each symlink directory is a path a PR can also touch (retargeting the link).
-  for (const link of skillLinks) {
-    const glob = `${link.split(sep).slice(0, 2).join('/')}/**`;
+  // Each registered entrypoint is a path a PR can also touch.
+  for (const entrypoint of skillEntrypoints) {
+    const glob = `${entrypoint.split('/').slice(0, 2).join('/')}/**`;
     assert.ok(block.includes(`- ${glob}`), `${glob} missing from the agent-behavior globs`);
   }
 });

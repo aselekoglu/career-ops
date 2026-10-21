@@ -30,6 +30,9 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install root CLI runtime dependencies for live scanner integration tests
+        working-directory: .
+        run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm ci
       - run: npm test
       - run: npx tsc --noEmit

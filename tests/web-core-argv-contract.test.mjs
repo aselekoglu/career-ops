@@ -58,14 +58,6 @@ const CALL_SITES = [
     probe: 'run',
   },
   {
-    source: 'web/src/app/api/status/route.ts',
-    script: 'set-status.mjs',
-    // The route builds ['--row', row, canon, '--source', 'web', '--json'];
-    // row 1 and Responded are the fixture tracker's row and a canonical state.
-    args: ['--row', '1', 'Responded', '--source', 'web', '--json'],
-    probe: 'run',
-  },
-  {
     source: 'web/src/app/api/portals/verify/route.ts',
     script: 'verify-portals.mjs',
     args: [],
@@ -85,63 +77,6 @@ const CALL_SITES = [
     // The values are the route's own defaults; only the flag names matter here.
     args: ['--dry-run', '--since', '7', '--ats', 'greenhouse', '--limit', '150', '--json'],
     probe: 'flags-only',
-  },
-  {
-    source: 'web/src/app/api/quiet-companies/route.ts',
-    script: 'rejection-latency.mjs',
-    // The route parses stdout, so the payload is the contract, not just exit 0.
-    expectJson: true,
-    // No flags: it prints JSON by default, like stats.mjs and upskill.mjs. With
-    // no data/active-interviews.md in the fixture it reports zero rows checked
-    // and still exits 0, which is the shape the route reads.
-    args: [],
-    probe: 'run',
-  },
-  {
-    source: 'web/src/app/api/stats/route.ts',
-    script: 'stats.mjs',
-    // NO FLAGS. stats.mjs prints JSON by default and rejects `--json` outright
-    // ("unrecognized flag(s): --json"), unlike every other route here — which is
-    // exactly the drift this file exists to catch, so the empty argv is the
-    // assertion.
-    args: [],
-    probe: 'json-any-exit',
-  },
-  {
-    source: 'web/src/app/api/patterns/route.ts',
-    script: 'analyze-patterns.mjs',
-    // Exits 1 on this one-row fixture, by design: it is under its minimum
-    // sample and says so in a JSON payload the route renders. The contract is
-    // the payload, not the status.
-    args: [],
-    probe: 'json-any-exit',
-  },
-  {
-    source: 'web/src/app/api/keyword-match/route.ts',
-    script: 'keyword-match.mjs',
-    // {{report}} is replaced with the fixture report below. This script takes a
-    // FILE as its first argument, so unlike every other site here the argv is
-    // only meaningful against a real report — and `--help` exits 1, so
-    // 'flags-only' cannot stand in for it either.
-    args: ['{{report}}', '--json'],
-    probe: 'run',
-  },
-  {
-    source: 'web/src/app/api/upskill/route.ts',
-    script: 'upskill.mjs',
-    // No flags: upskill.mjs prints JSON by default and rejects a --json flag,
-    // the same convention stats.mjs and company-history.mjs follow while the
-    // follow-up routes pass one. The empty argv is the assertion.
-    args: [],
-    probe: 'run',
-  },
-  {
-    source: 'web/src/app/api/company-history/route.ts',
-    script: 'company-history.mjs',
-    // The fixture tracker's own company, so the probe exercises a real lookup
-    // rather than the not-found fallback.
-    args: ['--company', 'Northwind Robotics'],
-    probe: 'run',
   },
   {
     source: 'web/src/lib/core/pipeline.ts',

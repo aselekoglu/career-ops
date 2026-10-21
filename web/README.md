@@ -56,10 +56,10 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
 
 ### Hosted AI provider (OpenAI or Gemini)
 
-The Vercel server supports either provider for Career Ops evaluations and
-tailored CV generation. Set these as **encrypted server-only Vercel environment
-variables** (never commit API keys, paste them into an issue/PR, or expose them
-with `NEXT_PUBLIC_`):
+The Vercel server supports either provider for Assistant, AI-assisted Explore,
+evaluations, and tailored CV generation. Set these as **encrypted server-only
+Vercel environment variables** (never commit API keys, paste them into an
+issue/PR, or expose them with `NEXT_PUBLIC_`):
 
 - `OPENAI_API_KEY`: enables OpenAI Responses API.
 - `CAREER_OPS_AI_PROVIDER=openai`: optional explicit selection (recommended
@@ -81,21 +81,23 @@ artifact; a locally generated substitute does not count.
 
 ### Protected Vercel deployment
 
-The Vercel deployment is a protected, read-only cloud shell. Configure
-`GEMINI_API_KEY` as a server-side environment variable in the Vercel project for
-each environment where hosted AI should be available (Preview and/or
-Production). Never add its value to source control, client configuration,
-browser storage, or a request from the browser. The Config page reports only
-whether the key is configured; it never displays the credential. Vercel Deployment
-Protection and the app's Basic authentication must both remain enabled.
+The Vercel deployment is protected. Configure either `OPENAI_API_KEY` or
+`GEMINI_API_KEY` as a server-side environment variable in each Vercel environment
+where hosted AI should be available (Preview and/or Production). Set
+`CAREER_OPS_AI_PROVIDER` to `openai` or `gemini` to select explicitly; without
+that setting, OpenAI is selected when its key is configured, otherwise Gemini is
+selected. Never add keys to source control, client configuration, browser
+storage, or browser requests. The hosted status endpoint reports provider
+readiness without displaying credentials. Vercel Deployment Protection and the
+app's Basic authentication must both remain enabled.
 
-Only exact authenticated, same-origin Gemini API paths whose hosted handlers
-are explicitly enabled by the deployment are allowed through the AI gate. A
+Only exact authenticated, same-origin hosted AI paths whose handlers are
+explicitly enabled by the deployment are allowed through the AI gate. A
 configured key alone never enables a local CLI or file-backed handler; routes
 without an enabled hosted implementation remain blocked. Local CLI execution,
-`/api/run`, scheduled scans, file-backed changes, and other worker or data
-mutation operations remain disabled on Vercel until durable persistence and a
-worker backend are designed.
+`/api/run`, and file-backed operations remain disabled on Vercel. Durable
+database-backed actions use their explicit APIs and external workers; recurring
+scheduled execution stays disabled on Vercel.
 
 ## Scheduled scans on Windows
 

@@ -103,6 +103,14 @@ export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: Discov
             · matched <span className="text-brand/80">{offer.matchedKeyword}</span>
           </span>
         )}
+        {offer.titleFit && (
+          <span
+            className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted"
+            title="Coarse title-word overlap with your target roles. It does not replace the evaluation score."
+          >
+            {offer.titleFit.band} title fit
+          </span>
+        )}
       </div>
 
       {offer.why && (

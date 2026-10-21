@@ -2,8 +2,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { isMainModule } from '../../lib/is-main-module.mjs';
 import { UUID_RE, validateReceipt } from '../src/lib/live-scan-contract.mjs';
 
 const CODE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -17,7 +18,7 @@ export function readScannerReceipt(stdout) {
 
 export async function runScanner(root, sinceDays, spawnFn = spawn) {
   return new Promise((resolve, reject) => {
-    const child = spawnFn(process.execPath, [path.join(CODE_ROOT, 'scan.mjs'),'--dry-run','--json','--since',String(sinceDays),'--quiet'], {
+    const child = spawnFn(process.execPath, [path.join(CODE_ROOT, 'scan.mjs'),'--dry-run','--live-json','--since',String(sinceDays),'--quiet'], {
       // This deployed core version still resolves some data files from cwd.
       // Providers themselves resolve code from import.meta.url.
       cwd: root, env: { ...process.env, CAREER_OPS_ROOT: root, CAREER_OPS_DATA_DIR: root,
@@ -36,8 +37,16 @@ export async function runScanner(root, sinceDays, spawnFn = spawn) {
     child.stderr.on('data', () => {});
     child.once('error', () => finish(new Error('SCANNER_START_FAILED')));
     child.once('close', code => {
-      if (code !== 0) return finish(new Error('SCANNER_FAILED'));
-      try { finish(null, readScannerReceipt(stdout)); } catch { finish(new Error('INVALID_SCANNER_RECEIPT')); }
+      if (code !== 0 && code !== 2) return finish(new Error('SCANNER_FAILED'));
+      try {
+        const receipt = readScannerReceipt(stdout);
+        const failedCompanies = new Set(receipt.sources.filter(source => source.status === 'failed').map(source => source.company));
+        const hasMatchingFailure = receipt.errors.some(error => failedCompanies.has(error.company));
+        if ((code === 2 && !hasMatchingFailure) || (code === 0 && failedCompanies.size > 0)) {
+          return finish(new Error('SCANNER_FAILED'));
+        }
+        finish(null, receipt);
+      } catch { finish(new Error('INVALID_SCANNER_RECEIPT')); }
     });
   });
 }
@@ -74,6 +83,10 @@ export async function runCloudWorker({ id = process.env.SCAN_ID, secret = proces
   finally { if (root) await fs.rm(root, { recursive: true, force: true }); }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  runCloudWorker({ failOnly: process.argv.includes('--fail') }).catch(() => { console.error('Cloud scan worker failed. See the scan status API for its durable state.'); process.exitCode = 1; });
+if (isMainModule(import.meta.url)) {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    console.log('Usage: node web/scripts/cloud-scan-worker.mjs [--fail]');
+  } else {
+    runCloudWorker({ failOnly: process.argv.includes('--fail') }).catch(() => { console.error('Cloud scan worker failed. See the scan status API for its durable state.'); process.exitCode = 1; });
+  }
 }

@@ -20,6 +20,11 @@ const CASES = [
   ["Zürich Re", "zürich re"],
   ["Ação Digital", "ação digital"],
   ["Škoda", "škoda"],
+  ["İstanbul Tekstil", "istanbul tekstil"],
+  ["Istanbul Tekstil", "istanbul tekstil"],
+  ["Żubr", "żubr"],
+  ["Ėmė", "ėmė"],
+  ["Ġenerali", "ġenerali"],
   ["日本電産", "日本電産"],
   ["Acme, Inc.", "acme inc"],
   ["Koda", "koda"],
@@ -41,6 +46,15 @@ test("Škoda does not collide with Koda (the silent-suppression bug)", () => {
 test("CJK company names stay non-empty (the forever-duplicate bug)", () => {
   assert.ok(webKey("日本電産", " "));
   assert.equal(webKey("日本電産", " "), "日本電産");
+});
+
+test("Turkish dotted capital folds without collapsing distinct precomposed dots", () => {
+  assert.equal(webKey("İstanbul Tekstil"), "istanbultekstil");
+  assert.equal(webKey("İstanbul Tekstil", " "), webKey("Istanbul Tekstil", " "));
+  assert.equal(webKey("İstanbul Tekstil"), coreKey("İstanbul Tekstil"));
+  assert.notEqual(webKey("Żubr"), webKey("Zubr"));
+  assert.notEqual(webKey("Ėmė"), webKey("Eme"));
+  assert.notEqual(webKey("Ġenerali"), webKey("Generali"));
 });
 
 test("null/undefined key to empty string (not 'null'/'undefined')", () => {

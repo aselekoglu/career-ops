@@ -6,6 +6,8 @@ import { careerOpsRoot, readMemory, findReportFile } from "@/lib/career-ops";
 import { resolvePdfPaths, type PdfPaths } from "@/lib/pdf-paths.mjs";
 import { renderAndMarkPdf, writeCvHtml, pdfRunOutcome } from "@/lib/pdf-render.mjs";
 import { createCvEnvelopeFilter, type CvEnvelope } from "@/lib/cv-envelope.mjs";
+import { createReportEnvelopeFilter } from "@/lib/report-envelope.mjs";
+import { evaluateRunOutcome, persistEvaluation } from "@/lib/report-persist.mjs";
 import { buildPrompt, isShellSafeCompanyName } from "@/lib/run-prompts.mjs";
 import { claudeCliArgs } from "@/lib/claude-invocation.mjs";
 import { acquireTrackerWrite, releaseTrackerWrite } from "@/lib/core/run-registry";
@@ -104,18 +106,6 @@ export async function POST(req: Request) {
   // enforcement: the capability is still there for an injected posting to reach.
   const args = isClaude ? claudeCliArgs({ kind, prompt }) : spec.args(prompt);
 
-  // For write-needing kinds, snapshot reports/ so we can verify the worker
-  // actually persisted (non-Claude CLIs lack Write auth and silently no-op).
-  const reportsDir = path.join(careerOpsRoot(), "reports");
-  const countReports = () => {
-    try {
-      return fs.readdirSync(reportsDir).filter((f) => f.endsWith(".md")).length;
-    } catch {
-      return 0;
-    }
-  };
-  const persists = kind === "evaluate";
-  const reportsBefore = persists ? countReports() : 0;
   // Tracker-mutating runs hold a write token so a row delete can't race their merge
   // (tracker.mjs delete doesn't yet share a lock with merge-tracker — see run-registry).
   const writeToken = kind === "evaluate" || kind === "pdf" ? acquireTrackerWrite() : null;
@@ -148,6 +138,7 @@ export async function POST(req: Request) {
   // until that work actually settles, instead of releasing the tracker-delete
   // guard while mark-pdf-ready.mjs is still actively writing applications.md.
   let pdfRenderPromise: Promise<void> | null = null;
+  let evaluationPersistPromise: Promise<void> | null = null;
   let writeTokenReleased = false;
   const releaseWriteTokenOnce = () => {
     if (writeToken !== null && !writeTokenReleased) {
@@ -201,8 +192,10 @@ export async function POST(req: Request) {
       // holding the 15-25 KB body out of the run log, which is the agent's
       // narration — see cv-envelope.mjs.
       const cvFilter = kind === "pdf" ? createCvEnvelopeFilter() : null;
+      const reportFilter = kind === "evaluate" ? createReportEnvelopeFilter() : null;
       const sendAgentText = (text: string) => {
-        const visible = cvFilter ? cvFilter.push(text) : text;
+        const filter = cvFilter ?? reportFilter;
+        const visible = filter ? filter.push(text) : text;
         if (visible) send({ type: "text", text: visible });
       };
       /** Surface non-fatal issues in the run log rather than only a server log. */
@@ -214,6 +207,32 @@ export async function POST(req: Request) {
         const written = writeCvHtml({ pdfPaths: paths, html: envelope.html });
         if (!written.ok) send({ type: "error", msg: written.error.slice(0, 200) });
         return written.ok;
+      };
+      const persistEval = async (markdown: string) => {
+        send({ type: "status", label: "Saving report…" });
+        try {
+          const result = await persistEvaluation({
+            spawnFn: spawn,
+            execPath: process.execPath,
+            root: careerOpsRoot(),
+            markdown,
+            url: input,
+            today,
+          });
+          if (!result.ok) {
+            send({ type: "error", msg: result.error.slice(0, 200) });
+            return;
+          }
+          sendWarnings(result.warnings);
+          const reportN = Number(result.num);
+          send(Number.isFinite(reportN)
+            ? { type: "done", tokens: lastTokens, costUsd: lastCostUsd, reportN }
+            : { type: "done", tokens: lastTokens, costUsd: lastCostUsd });
+        } catch (e) {
+          send({ type: "error", msg: `Evaluation persist crashed unexpectedly: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200) });
+        } finally {
+          close();
+        }
       };
 
       child.stdout.on("data", (chunk: string) => {
@@ -369,17 +388,33 @@ export async function POST(req: Request) {
           return close();
         }
 
-        const wroteReport = countReports() > reportsBefore;
+        if (kind === "evaluate") {
+          const tail = reportFilter?.flush();
+          if (tail) send({ type: "text", text: tail });
+          const envelope = reportFilter?.result();
+          const outcome = evaluateRunOutcome({
+            envelope,
+            noOutputMessage: noOutputError(),
+            sawError,
+            cleanExit,
+          });
+          if (!outcome.ok) {
+            send({ type: "error", msg: outcome.message });
+          } else if (envelope?.ok !== true) {
+            send({ type: "error", msg: "Internal error: the evaluate run passed its gate with no report to save — please report this." });
+          } else {
+            evaluationPersistPromise = persistEval(envelope.markdown);
+            return;
+          }
+          return close();
+        }
+
         // Honesty gate (#9): a green "done" with a parsed score requires a CLEAN exit,
-        // real output, AND (for evaluations) a report actually written. Anything else
+        // and real output. Anything else
         // is surfaced — an errored run must never be banked as a confident score.
         const baseErr = noOutputError();
         if (baseErr) {
           send({ type: "error", msg: baseErr });
-        } else if (persists && !wroteReport) {
-          // The worker ran but never wrote the report/tracker row (e.g. a CLI
-          // without file-write authorization) — surface it instead of a fake score.
-          send({ type: "error", msg: "This evaluation didn't save a report, so it's not in your tracker. Full evaluation is verified on Claude Code." });
         } else if (!cleanExit || sawError) {
           // Produced output (maybe even a report) but did NOT finish cleanly — flag it
           // instead of recording a confident score off a half-finished run.
@@ -399,6 +434,8 @@ export async function POST(req: Request) {
         // it to settle before releasing the guard, so a concurrent tracker
         // delete can't race mark-pdf-ready.mjs's still-in-flight write.
         pdfRenderPromise.finally(releaseWriteTokenOnce);
+      } else if (evaluationPersistPromise) {
+        evaluationPersistPromise.finally(releaseWriteTokenOnce);
       } else {
         releaseWriteTokenOnce();
       }

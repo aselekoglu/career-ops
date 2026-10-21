@@ -90,6 +90,24 @@ test("manual tracker add requires canonical explicit status and never invents sc
   assert.deepEqual(targetMap.targets["2"], { url, company: "New Co", role: "Data Engineer" });
 });
 
+test("manual tracker can use the canonical Assessment lifecycle status", async () => {
+  const { store, docs } = fixture();
+  const result = await store.mutate("tracker", {
+    operationId,
+    operation: "add",
+    company: "Assessment Co",
+    role: "Engineer",
+    url,
+    source: "user supplied",
+    date: "2026-10-01",
+    status: "Assessment",
+  });
+
+  assert.equal(result.application.status, "Assessment");
+  assert.match(docs.get("data/applications.md"), /^\| 2 \| 2026-10-01 \| Assessment Co \| user supplied \| Engineer \|  \|  \| Assessment \|/m);
+  assert.match(docs.get("data/status-log.tsv"), /2\t2026-10-01\t-\tAssessment\tmanual\tManual tracker entry\n$/);
+});
+
 test("manual target URL ownership conflicts with another binding and delete removes only its own binding", async () => {
   const { store, docs } = fixture();
   await store.mutate("tracker", { operationId, operation: "add", company: "New Co", role: "Engineer", url, source: "user supplied", status: "Interview" });

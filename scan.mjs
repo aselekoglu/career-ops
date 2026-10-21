@@ -3926,7 +3926,7 @@ function guardStatusFor(code) {
 const KNOWN_FLAGS = [
   '--dry-run', '--verify', '--headed-fallback', '--throttle', '--rediscover-404',
   '--include-blacklisted', '--company', '--posted-after', '--posted-before',
-  '--since', '--quiet', '--json', '--help', '-h',
+  '--since', '--quiet', '--json', '--live-json', '--help', '-h',
 ];
 
 // Flags whose space-separated value is the NEXT argv token (the `--flag=value`
@@ -3949,6 +3949,7 @@ const USAGE = `Usage:
   node scan.mjs --posted-after 2026-07-01    # absolute lower bound on posting date
   node scan.mjs --posted-before 2026-08-01   # absolute upper bound on posting date
   node scan.mjs --json                       # emit one machine-readable receipt on stdout
+  node scan.mjs --live-json                  # emit filtered job details for the hosted scanner
   node scan.mjs --quiet                      # suppress the manifesto footer
   node scan.mjs --help                       # print this usage block and exit`;
 
@@ -3956,7 +3957,10 @@ async function main() {
   const args = process.argv.slice(2);
   validateFlags(args, KNOWN_FLAGS, USAGE, { valueFlags: VALUE_FLAGS });
   const dryRun = args.includes('--dry-run');
-  const jsonMode = args.includes('--json');
+  const liveJsonMode = args.includes('--live-json');
+  const jsonMode = args.includes('--json') || liveJsonMode;
+  const printReceipt = console.log.bind(console);
+  const scanStartedAt = new Date().toISOString();
   if (jsonMode) console.log = console.error.bind(console);
   const verify = args.includes('--verify');
   // Opt-in: on an anti-bot challenge (e.g. pracuj.pl Cloudflare wall), retry the
@@ -4277,6 +4281,10 @@ async function main() {
   let totalFilteredVisa = 0;
   let totalDupes = 0;
   const newOffers = [];
+  const liveMatches = [];
+  const liveSeenUrls = new Set();
+  const liveKnownMatches = new Map();
+  const liveNewCandidateUrls = new Set();
   const verifyDedupKeys = new Map();
   const errors = [...resolveErrors];
   const emptyTargets = [];
@@ -4488,6 +4496,21 @@ async function main() {
           continue;
         }
         const dedupUrl = normalizeUrlForDedup(job.url);
+        const recordKnownLiveMatch = () => {
+          if (!liveJsonMode || cooldownFilter(job).skip || liveSeenUrls.has(dedupUrl)) return;
+          liveSeenUrls.add(dedupUrl);
+          liveKnownMatches.set(dedupUrl, {
+            company: job.company || company.name,
+            title: job.title,
+            location: job.location || '',
+            url: job.url,
+            source: sourceName,
+            postedAt: Number.isFinite(job.postedAt) ? job.postedAt : null,
+            postedAtEvidence: job.postedAtEvidence ?? null,
+            postedAtPrecision: job.postedAtPrecision ?? 'timestamp',
+            known: true,
+          });
+        };
         const language = languageFormsForDedup(job.language);
         // A seen URL key passes only as a language version of that posting no
         // seen row was in; a match on the provider's listing identity stays a
@@ -4502,6 +4525,7 @@ async function main() {
             siblingsByUrl.get(dedupUrl),
           );
           if (!newLanguageVersion) {
+            recordKnownLiveMatch();
             totalDupes++;
             continue;
           }
@@ -4521,6 +4545,7 @@ async function main() {
           requisitions: seenCompanyRoleRequisitions, locatedRequisitions: locatedRequisitionsByBase,
           languages: seenCompanyRoleLanguages, locatedLanguages: locatedLanguagesByBase },
         requisition, dedupIncludeLanguage ? language : [])) {
+          recordKnownLiveMatch();
           totalDupes++;
           continue;
         }
@@ -4563,6 +4588,7 @@ async function main() {
           tracked: Boolean(careersUrlDomain),
           careersUrlDomain,
         };
+        if (liveJsonMode) liveNewCandidateUrls.add(dedupUrl);
         newOffers.push(offerForVerification);
         if (verify) verifyDedupKeys.set(offerForVerification, {
           key, baseKey, requisition, language, newLanguageVersion,
@@ -4643,6 +4669,29 @@ async function main() {
       acceptedOffers.push(offer);
     }
     verifiedOffers = acceptedOffers;
+  }
+
+  if (liveJsonMode) {
+    const matchesByUrl = new Map();
+    for (const offer of verifiedOffers) {
+      const token = normalizeUrlForDedup(offer.url);
+      matchesByUrl.set(token, {
+        company: offer.company,
+        title: offer.title,
+        location: offer.location || '',
+        url: offer.url,
+        source: offer.source,
+        postedAt: Number.isFinite(offer.postedAt) ? offer.postedAt : null,
+        postedAtEvidence: offer.postedAtEvidence ?? null,
+        postedAtPrecision: offer.postedAtPrecision ?? 'timestamp',
+        known: false,
+      });
+    }
+    for (const [token, offer] of liveKnownMatches) {
+      if (liveNewCandidateUrls.has(token) || matchesByUrl.has(token)) continue;
+      matchesByUrl.set(token, offer);
+    }
+    liveMatches.push(...matchesByUrl.values());
   }
 
   // 5.7. Cross-listing check (#1597): fingerprint each new offer's JD body and
@@ -4988,7 +5037,7 @@ async function main() {
   console.log(`\n→ Run /career-ops pipeline to evaluate new offers.`);
   console.log('→ Share results and get help: https://discord.gg/8pRpHETxa4');
 
-  if (jsonMode) {
+  if (jsonMode && !liveJsonMode) {
     const filtered = totalFilteredTitle + totalFilteredDeclaredField + totalFilteredTier + totalFilteredLocation
       + totalFilteredPostingAge + totalFilteredPostedDate + totalFilteredSalary
       + totalFilteredContent + totalFilteredCountryEligibility + totalFilteredBlacklist
@@ -5007,6 +5056,36 @@ async function main() {
       unverified_zero: unverifiedZeroTargets,
       dry_run: dryRun,
     }, errors.length > 0 ? 2 : 0);
+  }
+
+  if (liveJsonMode) {
+    const resolvedNames = new Set(targets.map(t => t.name));
+    const sources = targets.map(t => ({
+      company: t.name,
+      source: t._provider.id,
+      status: errors.some(e => e.company === t.name && !String(e.error).includes('used API fallback'))
+        ? 'failed'
+        : emptyTargets.includes(t.name) ? 'empty' : 'ok',
+    }));
+    for (const entry of [...companies, ...boards]) {
+      if (entry?.enabled === false || !entry?.name || resolvedNames.has(entry.name)
+          || (filterCompany && !entry.name.toLowerCase().includes(filterCompany))) continue;
+      sources.push({ company: entry.name, source: entry.provider || 'unsupported', status: 'unsupported' });
+    }
+    printReceipt(JSON.stringify({
+      version: 'careerops.scan.live@1',
+      startedAt: scanStartedAt,
+      completedAt: new Date().toISOString(),
+      found: totalFound,
+      duplicates: totalDupes,
+      sources,
+      errors: errors.map(e => ({ company: e.company, error: e.error })),
+      jobs: liveMatches,
+    }));
+    // Keep the CLI's partial-failure contract. The hosted worker accepts exit
+    // code 2 only when this complete live receipt carries the corresponding
+    // per-source errors, so successful sources still reach durable scan state.
+    process.exitCode = sources.some(source => source.status === 'failed') ? 2 : 0;
   }
 
   // One-time-ever manifesto note: first successful REAL run only. The state

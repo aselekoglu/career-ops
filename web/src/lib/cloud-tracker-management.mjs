@@ -14,6 +14,7 @@ const CANONICAL_STATES = [
   { label: "Evaluated", aliases: ["evaluada", "condicional", "hold", "evaluar", "verificar"] },
   { label: "Applied", aliases: ["aplicado", "enviada", "aplicada", "sent"] },
   { label: "Responded", aliases: ["respondido"] },
+  { label: "Assessment", aliases: ["screening", "online assessment", "online_assessment", "online screening"] },
   { label: "Interview", aliases: ["entrevista"] },
   { label: "Offer", aliases: ["oferta"] },
   { label: "Rejected", aliases: ["rechazado", "rechazada"] },

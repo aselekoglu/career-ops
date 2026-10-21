@@ -51,10 +51,10 @@ export const GUARDED_PATHS = [
  * each with the reason. A suite that wrote one of these for real would not be
  * reported here.
  *
- * Five are resolved from the checkout, not from the data root, so the scratch
+ * Nine are resolved from the checkout, not from the data root, so the scratch
  * root the suite pins does not move them and a snapshot of the data root does
- * not contain them. The sixth is under the data root and is left out on
- * purpose.
+ * not contain them. The tenth is under the data root and is left out on
+ * purpose because the dashboard continuously writes its operational logs.
  *
  * Kept as a list so that each gap is a decision. tests/data-root-guard.test.mjs
  * holds `USER_PATHS` to this list plus `GUARDED_PATHS`: a path added to the
@@ -63,6 +63,10 @@ export const GUARDED_PATHS = [
  */
 export const UNGUARDED_USER_PATHS = {
   '.career-ops-web': "the dashboard's run logs and memory under the data root, written whenever it is in use: a suite run beside an open dashboard would report it every time",
+  'sites/career-ops-mcp': 'fork-owned hosted deployment code in the checkout, not candidate or job-search records; preserve its custom MCP capabilities during upstream updates',
+  'scripts/install-scan-schedule.ps1': 'fork-owned scheduled-scan installer code in the checkout, not candidate or job-search records',
+  'scripts/scheduled-jobs-runner.mjs': 'fork-owned scheduled-scan worker code in the checkout, not candidate or job-search records',
+  'scripts/uninstall-scan-schedule.ps1': 'fork-owned scheduled-scan uninstaller code in the checkout, not candidate or job-search records',
   'plugins.local': 'installed plugin code, kept beside plugins/ in the checkout',
   'plugins.lock': 'the plugin trust lock, kept beside plugins/ in the checkout',
   'opencode.json': "OpenCode's project config, read from the checkout by that CLI",

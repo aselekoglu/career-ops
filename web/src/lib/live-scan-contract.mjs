@@ -32,6 +32,15 @@ export function selectScanConfig(config, request) {
 export function validateReceipt(receipt) {
   if (!receipt || receipt.version !== 'careerops.scan.live@1' || !Array.isArray(receipt.jobs) || receipt.jobs.length > 5000 || !Array.isArray(receipt.sources) || !Array.isArray(receipt.errors)) throw new Error('Invalid scanner receipt.');
   if (!Number.isFinite(Date.parse(receipt.startedAt)) || !Number.isFinite(Date.parse(receipt.completedAt)) || Date.parse(receipt.completedAt) < Date.parse(receipt.startedAt)) throw new Error('Invalid scan timestamps.');
+  const failedSources = new Set();
+  for (const source of receipt.sources) {
+    if (!source || typeof source.company !== 'string' || !source.company.trim() || typeof source.source !== 'string' || !source.source.trim() || !['ok', 'empty', 'failed', 'unsupported'].includes(source.status)) throw new Error('Invalid scan source.');
+    if (source.status === 'failed') failedSources.add(source.company);
+  }
+  for (const error of receipt.errors) {
+    if (!error || typeof error.company !== 'string' || !error.company.trim() || typeof error.error !== 'string' || !error.error.trim()) throw new Error('Invalid scan error.');
+  }
+  if ([...failedSources].some(company => !receipt.errors.some(error => error.company === company))) throw new Error('Failed scan source has no matching error.');
   for (const job of receipt.jobs) {
     if (!job || typeof job.company !== 'string' || typeof job.title !== 'string' || typeof job.url !== 'string' || job.url.length > 3000 || /[\s|\u0000-\u001f\u007f]/u.test(job.url)) throw new Error('Invalid job.');
     const url = new URL(job.url); if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid source URL.');

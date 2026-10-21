@@ -13,15 +13,17 @@
 // had never run in CI. The sibling check for web/'s own discovery glob is
 // tests/web-test-layout.test.mjs; this is the core half, kept in tests/
 // rather than inline in test-all.mjs so `--only` can reach it.
-import { pass, fail, ROOT } from './helpers.mjs';
+import { pass, fail, warn, ROOT } from './helpers.mjs';
 import { collectMjsFiles } from '../lib/mjs-files.mjs';
-import { relative, sep } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { join, relative, sep } from 'path';
 
 console.log('\ncore test layout — every suite lives where a runner can find it');
 
-// The two trees a runner actually discovers: test-all.mjs's discoverTests()
-// over tests/, and web/'s own `npm test` glob over web/tests/.
-const DISCOVERED_ROOTS = ['tests/', 'web/tests/'];
+// The roots a runner actually discovers: test-all.mjs's discoverTests() over
+// tests/, web/'s own `npm test` glob over web/tests/, and the private MCP
+// project's separate test command under sites/career-ops-mcp/tests/.
+const DISCOVERED_ROOTS = ['tests/', 'web/tests/', 'sites/career-ops-mcp/tests/'];
 
 // collectMjsFiles() skips node_modules, output/, data/ and any nested checkout
 // (a linked worktree marks itself with a `.git` FILE, #3499), so a developer
@@ -42,5 +44,29 @@ if (suites.length === 0) {
     for (const rel of orphans) {
       fail(`${rel} is a *.test.mjs outside ${DISCOVERED_ROOTS.join(' and ')}: no runner discovers it, move it under tests/`);
     }
+  }
+}
+
+// Sites is a separate private project, so test-all.mjs invokes its discovered
+// suites in a separate Node test process instead of mixing them into tests/.
+// If the project is present, its own manifest must declare the same discovery
+// glob and at least one suite; absence is an explicit core-only checkout case.
+const SITES_ROOT = join(ROOT, 'sites', 'career-ops-mcp');
+const sitesPackagePath = join(SITES_ROOT, 'package.json');
+if (!existsSync(sitesPackagePath)) {
+  warn('private MCP Sites project is absent — its separate test command is not applicable in this checkout');
+} else {
+  try {
+    const pkg = JSON.parse(readFileSync(sitesPackagePath, 'utf8'));
+    const projectSuites = suites.filter((rel) => rel.startsWith('sites/career-ops-mcp/tests/'));
+    if (pkg.scripts?.test !== 'node --test tests/*.test.mjs') {
+      fail(`Sites project test script no longer matches its standalone test discovery contract: ${pkg.scripts?.test ?? '(missing)'}`);
+    } else if (projectSuites.length === 0) {
+      fail('Sites project declares node --test tests/*.test.mjs but contains no *.test.mjs suites');
+    } else {
+      pass(`Sites project has ${projectSuites.length} suite(s) for its standalone test command`);
+    }
+  } catch (error) {
+    fail(`could not inspect the private MCP Sites test project: ${error.message}`);
   }
 }

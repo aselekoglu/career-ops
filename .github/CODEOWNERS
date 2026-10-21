@@ -35,11 +35,16 @@
 /OPENCODE.md           @santifer
 /GEMINI.md             @santifer
 /KIMI.md               @santifer
-# The skill router. Every CLI's skill entrypoint (.claude/, .cursor/,
-# .opencode/, .qwen/, .kimi/, .grok/, .antigravitycli/) is a symlink to this
-# one file, so an edit here changes only this path — the symlinks never show
-# up in the diff.
+# The skill router and its CLI entrypoints. The updater may materialize pointer
+# files on Windows, so own both the canonical router and each managed path.
 /.agents/skills/career-ops/SKILL.md  @santifer
+/.claude/skills/career-ops/SKILL.md @santifer
+/.cursor/skills/career-ops/SKILL.md @santifer
+/.opencode/skills/career-ops/SKILL.md @santifer
+/.qwen/skills/career-ops/SKILL.md @santifer
+/.kimi/skills/career-ops/SKILL.md @santifer
+/.grok/skills/career-ops/SKILL.md @santifer
+/.antigravitycli/skills/career-ops/SKILL.md @santifer
 
 # Scoring & the system/user data contract (CI-blind; silent-danger)
 /modes/_shared.md      @santifer

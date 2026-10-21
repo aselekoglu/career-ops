@@ -15,6 +15,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { readTrackerUrl } from "./posting-url.mjs";
 
 /**
  * Canonical tracker-parse field name → web Application field. The web type
@@ -27,7 +28,10 @@ import path from "node:path";
 const WEB_FIELD = {
   num: "n", date: "date", company: "company", via: "via", role: "role", location: "location",
   score: "score", status: "status", pdf: "pdf", report: "report", notes: "notes",
+  url: "url", applylink: "applyLink", followup: "followUp",
 };
+
+export const WEB_FIELD_NAMES = Object.values(WEB_FIELD);
 
 /** @type {Map<string, {mtimeMs: number, size: number, aliases: Record<string, string>}>} */
 const aliasCache = new Map();
@@ -71,7 +75,18 @@ export function loadHeaderAliases(rootDir) {
  * @returns {string[]}
  */
 function trackerCells(line) {
-  return line.split("|").slice(1, -1).map((c) => c.trim());
+  const parts = line.split("|").map((c) => c.trim());
+  return parts.slice(1, line.trimEnd().endsWith("|") ? -1 : undefined);
+}
+
+function emptyRow(pick) {
+  const row = {};
+  for (const field of WEB_FIELD_NAMES) row[field] = pick(field);
+  return row;
+}
+
+function urlCell(field, raw) {
+  return field === "url" ? readTrackerUrl(raw) : raw;
 }
 
 /**
@@ -110,11 +125,12 @@ export function detectColumnMap(lines, aliases) {
  * @param {string} md - content of data/applications.md.
  * @param {string} rootDir - career-ops root holding tracker-aliases.json.
  * @param {Record<string, string>|null} [aliasesOverride] - preloaded shared aliases, used by hosted Neon readers.
- * @returns {{n: string, date: string, company: string, via: string, role: string, score: string, status: string, pdf: string, report: string, raw: string, notes: string}[]}
+ * @returns {{n: string, date: string, company: string, via: string, role: string, location: string, score: string, status: string, pdf: string, report: string, url: string, applyLink: string, followUp: string, raw: string, notes: string}[]}
  */
 export function parseApplications(md, rootDir, aliasesOverride = null) {
   const lines = md.split("\n");
   const map = detectColumnMap(lines, aliasesOverride ?? loadHeaderAliases(rootDir));
+  const mappedWidth = map ? Math.max(...Object.values(map)) + 1 : 0;
   const rows = [];
   for (const raw of lines) {
     const line = raw.trim();
@@ -122,18 +138,16 @@ export function parseApplications(md, rootDir, aliasesOverride = null) {
     const cells = trackerCells(line);
     if (cells.length < 8) continue;
     if (map) {
+      if (cells.length < mappedWidth) continue;
       const at = (/** @type {string} */ k) => cells[map[k]] ?? "";
       if (!/^\d+$/.test(at("n"))) continue; // header / separator / malformed
-      rows.push({
-        n: at("n"), date: at("date"), company: at("company"), via: at("via"), role: at("role"),
-        score: at("score"), status: at("status"), pdf: at("pdf"), report: at("report"), raw: line,
-        notes: at("notes"),
-      });
+      rows.push({ ...emptyRow((k) => urlCell(k, at(k))), raw: line });
     } else {
       // Legacy fixed order; tolerate the 8-cell variant where Notes is absent.
       if (!/^\d+$/.test(cells[0])) continue; // header / separator / malformed
       const [n, date, company, role, score, status, pdf, report, ...rest] = cells;
-      rows.push({ n, date, company, via: "", role, score, status, pdf, report, raw: line, notes: rest.join(" | ") });
+      const positional = { n, date, company, role, score, status, pdf, report, notes: rest.join(" | ") };
+      rows.push({ ...emptyRow((k) => urlCell(k, positional[k] ?? "")), raw: line });
     }
   }
   return rows;

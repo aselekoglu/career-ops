@@ -440,7 +440,7 @@ test('source error allowlist preserves SOURCE_RECORD_TOO_LARGE and INVALID_HISTO
 test('tracker, Inbox and artifact schemas enforce IDs, user-only fields and explicit destructive confirmation', async t => {
   const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
   const toolByName = name => listed.result.tools.find(tool => tool.name === name);
-  assert.deepEqual(toolByName('career_ops_tracker_set_status').inputSchema.properties.status.enum, ['Evaluated', 'Applied', 'Responded', 'Interview', 'Offer', 'Rejected', 'Discarded', 'SKIP', 'Hired']);
+  assert.deepEqual(toolByName('career_ops_tracker_set_status').inputSchema.properties.status.enum, ['Evaluated', 'Applied', 'Responded', 'Assessment', 'Interview', 'Offer', 'Rejected', 'Discarded', 'SKIP', 'Hired']);
   assert.equal(toolByName('career_ops_cv_artifacts').inputSchema.required, undefined);
   assert.equal(toolByName('career_ops_cv_artifacts').inputSchema.properties.limit.maximum, 100);
   assert.equal(toolByName('career_ops_cv_artifacts').inputSchema.properties.offset.maximum, 100000);
@@ -493,6 +493,7 @@ test('tracker and Inbox operations use fixed Basic-authenticated routes and allo
     ['career_ops_tracker_get', { applicationId: '39' }, 'GET', '/api/tracker/39', null],
     ['career_ops_tracker_add', { operationId: op(1), company: 'Synthetic Test Co', role: 'Test Analyst', url: 'https://jobs.example/test-canary', source: 'User', date: '2026-10-03', status: 'Applied', score: '3.5/5' }, 'POST', '/api/tracker/commands', { operationId: op(1), company: 'Synthetic Test Co', role: 'Test Analyst', url: 'https://jobs.example/test-canary', source: 'User', date: '2026-10-03', status: 'Applied', score: '3.5/5', operation: 'add' }],
     ['career_ops_tracker_set_status', { operationId: op(2), applicationId: '39', status: 'Interview', date: '2026-10-03' }, 'POST', '/api/tracker/commands', { operationId: op(2), applicationId: '39', status: 'Interview', date: '2026-10-03', operation: 'set-status' }],
+    ['career_ops_tracker_set_status', { operationId: op(10), applicationId: '39', status: 'Assessment', date: '2026-10-04' }, 'POST', '/api/tracker/commands', { operationId: op(10), applicationId: '39', status: 'Assessment', date: '2026-10-04', operation: 'set-status' }],
     ['career_ops_tracker_update_notes', { operationId: op(3), applicationId: '39', notes: 'User-authored canary note' }, 'POST', '/api/tracker/commands', { operationId: op(3), applicationId: '39', notes: 'User-authored canary note', operation: 'update-notes' }],
     ['career_ops_tracker_archive', { operationId: op(4), applicationId: '39', confirm: true }, 'POST', '/api/tracker/commands', { operationId: op(4), applicationId: '39', confirm: true, operation: 'archive' }],
     ['career_ops_tracker_delete', { operationId: op(5), applicationId: '39', confirm: true }, 'POST', '/api/tracker/commands', { operationId: op(5), applicationId: '39', confirm: true, operation: 'delete' }],

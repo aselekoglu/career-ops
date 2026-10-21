@@ -3,12 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import {
-  emptyScheduledStore,
-  readScheduledStore,
-  withScheduledStore,
-} from "../web/src/lib/scheduled-jobs-store.mjs";
 import {
   buildScanCommand,
   enqueueDueJobs,
@@ -16,7 +12,17 @@ import {
   nextFutureRun,
 } from "../scripts/scheduled-jobs-runner.mjs";
 
-test("scheduled-jobs store starts empty and never seeds candidate-specific targeting", () => {
+// The root suite ships with core-only installs, where web/ is absent. Resolve
+// the web-owned store only after checking its path, so the import guard can
+// prove that a missing web/ checkout skips these store cases safely.
+const scheduledStorePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web/src/lib/scheduled-jobs-store.mjs");
+const hasScheduledStore = fs.existsSync(scheduledStorePath);
+const scheduledStore = hasScheduledStore
+  ? await import(pathToFileURL(scheduledStorePath).href)
+  : null;
+
+test("scheduled-jobs store starts empty and never seeds candidate-specific targeting", { skip: !scheduledStore }, () => {
+  const { emptyScheduledStore, readScheduledStore } = scheduledStore;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-store-"));
   try {
     const store = readScheduledStore(path.join(temp, "scheduled-jobs.json"));
@@ -26,25 +32,29 @@ test("scheduled-jobs store starts empty and never seeds candidate-specific targe
   }
 });
 
-test("scheduled-jobs store serializes concurrent writers without losing jobs", async () => {
+test("scheduled-jobs store serializes concurrent writers without losing jobs", { skip: !scheduledStore }, async () => {
+  const { readScheduledStore, withScheduledStore } = scheduledStore;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-lock-"));
   const storePath = path.join(temp, "scheduled-jobs.json");
   try {
     await Promise.all(
       Array.from({ length: 12 }, (_, index) =>
         withScheduledStore(storePath, (store) => {
-          store.jobs.push({ id: String(index) });
+          const id = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+          const now = new Date().toISOString();
+          store.jobs.push({ id, name: String(index), status: "active", engine: "full", filters: {}, timezone: "UTC", startAt: now, every: 1, unit: "hours", createdAt: now, updatedAt: now });
         }),
       ),
     );
-    const ids = readScheduledStore(storePath).jobs.map((job) => job.id).sort();
+    const ids = readScheduledStore(storePath).jobs.map((job) => job.name).sort();
     assert.deepEqual(ids, Array.from({ length: 12 }, (_, index) => String(index)).sort());
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
 });
 
-test("invalid scheduled-jobs JSON is reported instead of overwritten", () => {
+test("invalid scheduled-jobs JSON is reported instead of overwritten", { skip: !scheduledStore }, () => {
+  const { readScheduledStore } = scheduledStore;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "career-ops-scheduled-invalid-"));
   const storePath = path.join(temp, "scheduled-jobs.json");
   try {

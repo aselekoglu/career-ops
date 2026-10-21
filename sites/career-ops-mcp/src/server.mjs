@@ -37,7 +37,7 @@ const CV_STATUS_SCHEMA = { type: 'object', properties: {
   verifyDownload: { type: 'boolean', default: false, description: 'When true, fetch and validate the completed PDF at its exact Career Ops download URL. Returns verification status and byte count only; PDF bytes are not returned.' },
 }, required: ['runId'], additionalProperties: false };
 const CV_FIELDS = ['runId', 'status', 'company', 'role', 'format', 'artifactPath', 'downloadUrl', 'requestedAt', 'startedAt', 'completedAt', 'errorCode', 'applicationNumber', 'reportPath', 'associationStatus', 'associationPending', 'associationErrorCode'];
-const TRACKER_STATES = ['Evaluated', 'Applied', 'Responded', 'Interview', 'Offer', 'Rejected', 'Discarded', 'SKIP', 'Hired'];
+const TRACKER_STATES = ['Evaluated', 'Applied', 'Responded', 'Assessment', 'Interview', 'Offer', 'Rejected', 'Discarded', 'SKIP', 'Hired'];
 const ARTIFACT_STATES = ['generating', 'queued', 'running', 'completed', 'failed'];
 const ASSOCIATION_STATES = ['unlinked', 'pending', 'linked'];
 const ARTIFACT_PATH_RE = /^output\/[A-Za-z0-9._-]+\.pdf$/;

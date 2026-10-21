@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE = path.resolve(HERE, "../../tracker-aliases.json");
 const OUTPUT = path.resolve(HERE, "../src/lib/tracker-aliases.generated.mjs");
-const FIELDS = new Set(["num", "date", "company", "via", "role", "location", "score", "status", "pdf", "report", "notes"]);
+// The web tracker view projects only Application columns, but the canonical
+// core alias table also names apply-link, follow-up, and URL fields used by the
+// CLI tracker. Accept those aliases in the bundled source and let the web view
+// ignore fields it does not render.
+const FIELDS = new Set(["num", "date", "company", "via", "role", "location", "score", "status", "pdf", "report", "notes", "applylink", "followup", "url"]);
 
 let aliases;
 try { aliases = JSON.parse(fs.readFileSync(SOURCE, "utf8")); }
