@@ -282,4 +282,22 @@ if (!existsSync(WEB_PKG)) {
         + ' does not expand CLI globs there, so `npm test` would find 0 suites and exit 1');
     }
   });
+
+  // The root required test job also runs these suites through test-all.mjs.
+  // Keep its web package dependencies installed when a lockfile is shipped;
+  // standalone Web CI cannot supply node_modules to the separate matrix job.
+  scenario('that the required root CI job installs web dependencies before its suites', () => {
+    const workflowPath = join(ROOT, '.github', 'workflows', 'test.yml');
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const testJob = workflow.match(/\n  test:\n([\s\S]*?)(?=\n  [\w-]+:\n|\s*$)/)?.[1] ?? '';
+    const installAt = testJob.indexOf('npm --prefix web ci --ignore-scripts');
+    const suiteAt = testJob.indexOf('run: node test-all.mjs --quick');
+    const conditionalInstall = /if:\s*\$\{\{\s*hashFiles\(['"]web\/package-lock\.json['"]\)\s*!=\s*''\s*\}\}/.test(testJob);
+    if (conditionalInstall && installAt >= 0 && suiteAt > installAt) {
+      pass('root CI installs web lockfile dependencies before the required web suites');
+    } else {
+      fail('root CI must conditionally run npm --prefix web ci --ignore-scripts before test-all (#4138)'
+        + ' — the required web security suites import web workspace packages');
+    }
+  });
 }

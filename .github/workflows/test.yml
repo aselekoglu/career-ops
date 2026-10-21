@@ -60,6 +60,12 @@ jobs:
       # Skip the postinstall (npx playwright install chromium); the tests
       # never launch a browser, so the ~170 MB download is pure CI overhead.
       - run: npm install --ignore-scripts
+      # test-all.mjs runs the required web security suites in this job too;
+      # install their workspace dependencies rather than relying on Web CI's
+      # separate runner. Skip cleanly for upstream releases without web/.
+      - name: Install web workspace dependencies for the required test suites
+        if: ${{ hashFiles('web/package-lock.json') != '' }}
+        run: npm --prefix web ci --ignore-scripts
       - run: node test-all.mjs --quick
       - name: Go dashboard tests
         run: go test ./...
