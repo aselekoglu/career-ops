@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { CadenceSettings } from "@/components/followups/cadence-settings";
+import { parseAssistantAiStatus } from "@/lib/ai/hosted-assistant-client.mjs";
 
 type Cli = {
   id: string;
@@ -23,6 +24,13 @@ type Cli = {
 };
 
 type Mode = "cli" | "key" | "manual";
+type HostedAiStatus = {
+  hosted: boolean;
+  ready: boolean;
+  geminiConfigured: boolean;
+  openaiConfigured: boolean;
+  provider: "openai" | "gemini";
+};
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic (Claude)" },
@@ -36,6 +44,9 @@ const STORAGE_KEY = "career-ops:config";
 export function ConfigForm() {
   const [mode, setMode] = useState<Mode>("cli");
   const [clis, setClis] = useState<Cli[] | null>(null);
+  const [hosted, setHosted] = useState(false);
+  const [hostedAiStatus, setHostedAiStatus] = useState<HostedAiStatus | null>(null);
+  const [hostedAiStatusError, setHostedAiStatusError] = useState(false);
   const [cliId, setCliId] = useState<string>("");
   const [provider, setProvider] = useState("anthropic");
   const [apiKey, setApiKey] = useState("");
@@ -65,6 +76,20 @@ export function ConfigForm() {
     fetch("/api/clis")
       .then((r) => r.json())
       .then((d) => {
+        setHosted(d.cloud === true);
+        if (d.cloud === true) {
+          fetch("/api/ai/status", { cache: "no-store" })
+            .then((r) => {
+              if (!r.ok) throw new Error("Hosted AI status unavailable");
+              return r.json();
+            })
+            .then((status: unknown) => {
+              const parsedStatus = parseAssistantAiStatus(status);
+              if (!parsedStatus) throw new Error("Hosted AI status is invalid");
+              setHostedAiStatus(parsedStatus);
+            })
+            .catch(() => setHostedAiStatusError(true));
+        }
         const list: Cli[] = d.clis ?? [];
         setClis(list);
         // auto-select first installed if nothing chosen yet
@@ -83,12 +108,17 @@ export function ConfigForm() {
   }
 
   const installed = clis?.filter((c) => c.installed) ?? [];
+  const hostedProvider = hostedAiStatus?.provider ?? "gemini";
+  const hostedProviderName = hostedProvider === "openai" ? "OpenAI" : "Gemini";
+  const hostedProviderKeyName = hostedProvider === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-10">
       <h1 className="font-display text-2xl tracking-tight text-landing">Config</h1>
       <p className="mt-1 text-sm text-muted">
-        Run career-ops on your own AI, right on your computer. Your CV and data never leave your machine.
+        {hosted
+          ? "Hosted AI is managed securely by the Vercel deployment; no API key is entered in this browser."
+          : "Run career-ops on your own AI, right on your computer. Your CV and data never leave your machine."}
       </p>
 
       {/* Engine mode */}
@@ -103,14 +133,14 @@ export function ConfigForm() {
           title="Use an AI tool you have"
           hint="Recommended"
         />
-        <ModeCard
+        {!hosted && <ModeCard
           active={mode === "key"}
           onClick={() => setMode("key")}
           icon={KeyRound}
           title="Paste an AI key"
           hint="Coming soon"
           disabled
-        />
+        />}
         <ModeCard
           active={mode === "manual"}
           onClick={() => setMode("manual")}
@@ -125,10 +155,26 @@ export function ConfigForm() {
         {mode === "cli" && (
           <div>
             <p className="mb-1 text-sm text-muted">
-              career-ops uses an AI tool you already have — signed in, your own usage, nothing to paste.
+              {hosted
+                ? "This hosted app runs on a remote Vercel server and cannot access tools installed on your computer."
+                : "career-ops uses an AI tool you already have — signed in, your own usage, nothing to paste."}
             </p>
-            <p className="mb-3 text-xs text-faint">Works with Claude Code, Codex, OpenCode and more — free ones work great.</p>
-            {clis === null ? (
+            {!hosted && <p className="mb-3 text-xs text-faint">Works with Claude Code, Codex, OpenCode and more — free ones work great.</p>}
+            {hosted ? (
+              <div className="rounded-xl border border-border bg-surface/50 p-4 text-sm text-muted">
+                <p className="font-medium text-foreground">Hosted {hostedProviderName}</p>
+                {hostedAiStatusError ? (
+                  <p className="mt-1">Could not read hosted AI readiness. Refresh this page to try again.</p>
+                ) : hostedAiStatus === null ? (
+                  <p className="mt-1 flex items-center gap-2"><Loader2 className="size-4 animate-spin" /> Checking Vercel configuration…</p>
+                ) : hostedAiStatus.ready ? (
+                  <p className="mt-1">The {hostedProviderName} API key is configured as a server-side Vercel environment variable. Its value is never shown or stored in this browser.</p>
+                ) : (
+                  <p className="mt-1">{hostedProviderName} is not configured for this deployment. Add <code className="font-mono text-foreground">{hostedProviderKeyName}</code> to the Vercel environment; do not paste it here.</p>
+                )}
+                <p className="mt-2 text-xs text-faint">Vercel cannot access AI tools installed on your computer. Local file-backed actions and recurring scheduling remain disabled in hosted mode.</p>
+              </div>
+            ) : clis === null ? (
               <div className="flex items-center gap-2 text-sm text-muted">
                 <Loader2 className="size-4 animate-spin" /> Checking what&apos;s on your computer…
               </div>
@@ -210,7 +256,7 @@ export function ConfigForm() {
           </div>
         )}
 
-        {mode === "key" && (
+        {mode === "key" && !hosted && (
           <div className="space-y-5">
             <div>
               <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-muted">

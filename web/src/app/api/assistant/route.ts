@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 import { resolveCli } from "@/lib/clis";
 import { careerOpsRoot, readMemory, doctorState } from "@/lib/career-ops";
+import { isCloudRuntime } from "@/lib/deployment";
+import { cloudReadCv, cloudReadMemory, cloudPipelineSummary } from "@/lib/cloud-career-ops";
+import { getCloudDocument } from "@/lib/cloud-store";
+import { createHostedAiService } from "@/lib/ai/hosted-ai.mjs";
+import { buildHostedAssistantContext } from "@/lib/ai/hosted-assistant-context.mjs";
+import { handleHostedAssistantRequest, routeAssistantRequest } from "@/lib/ai/hosted-assistant-handler.mjs";
 
-export const runtime = "nodejs"; // child_process (spawn) requires the Node runtime
+export const runtime = "nodejs"; // hosted Gemini and local child_process require Node
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
@@ -18,12 +24,12 @@ The args are a single JSON object. The dashboard parses the envelope and perform
 
 ACTIONS:
 - navigate {"path":"/pipeline?tab=OFFER&min=4"} — take the user to a section. Valid paths: /, /pipeline, /portals, /analytics, /cv, /config, /apply, /pipeline/{n} (a report), /jobs/{id} (a worker). The path may carry a query string.
-- filterPipeline {"tab":"OFFER","min":4,"q":"text","sort":"score","dir":-1} — filter the pipeline table in place. tab ∈ INBOX, ALL, EVALUATED, APPLIED, RESPONDED, INTERVIEW, OFFER, HIRED, REJECTED, DISCARDED, SKIP; min = score floor 0–5.
+- filterPipeline {"tab":"OFFER","min":4,"q":"text","sort":"score","dir":-1} — filter the pipeline table in place. tab ∈ INBOX, ALL, EVALUATED, APPLIED, RESPONDED, ASSESSMENT, INTERVIEW, OFFER, REJECTED, DISCARDED, SKIP, HIRED; min = score floor 0–5.
 - evaluate {"url":"https://…","title":"Evaluate · Acme","subtitle":"Role"} — spin ONE read-only evaluation worker on a SPECIFIC posting URL. Only when you actually have a real URL (e.g. from the page the user is on).
 - evaluateCompany {"company":"Anthropic"} — evaluate ALL of the user's PENDING inbox postings for that company. Emit the COMPANY NAME ONLY — never URLs; the app resolves the concrete postings itself. Big batches ask the user to confirm first.
 - research {"target":"https://… or 'my portfolio'","title":"Research · X"} — spin a read-only research worker.
 - generatePdf {"n":"42"} — generate an ATS-optimized CV tailored to application #42 (runs the real pdf mode → output/ + marks the tracker PDF column). Spends tokens.
-- setStatus {"n":"42","status":"Applied"} — move a tracked application to a new state (asks the user to confirm first). Canonical states: Evaluated, Applied, Responded, Interview, Offer, Hired, Rejected, Discarded, SKIP. Use the application number (the "#42" on its report page).
+- setStatus {"n":"42","status":"Applied"} — move a tracked application to a new state (asks the user to confirm first). Canonical states: Evaluated, Applied, Responded, Assessment, Interview, Offer, Rejected, Discarded, SKIP, Hired. Use the application number (the "#42" on its report page).
 - apply {"url":"https://…"} — open the apply form-proxy for a posting URL (we re-render the real form in plain language; the user verifies and submits it themselves — never auto-submit).
 - setApplyField {"field":"Why this role?","value":"<the answer>"} — write or revise an answer in the apply form the user is filling (only when an APPLY FORM is shown in your context). Use the field's label or id. When the user asks to make an answer shorter/sharper/etc, generate the new text and emit this.
 - remember {"fact":"the concise fact"} — durably remember a preference/fact about the user (carries across sessions and across whichever CLI runs).
@@ -44,7 +50,27 @@ Keep replies short, warm, and useful. Don't dump raw files or narrate internal d
 
 type Msg = { role: "user" | "assistant"; content: string };
 
-export async function POST(req: Request) {
+export function POST(req: Request) {
+  return routeAssistantRequest(req, {
+    isCloud: isCloudRuntime(),
+    hosted: (request: Request) => handleHostedAssistantRequest(request, {
+      service: createHostedAiService(),
+      context: ({ message, pagePath }: { message: string; pagePath: string }) => buildHostedAssistantContext({
+        message, pagePath,
+        readCv: cloudReadCv,
+        readMemory: cloudReadMemory,
+        readProfile: async () => {
+          const row = await getCloudDocument("config/profile.yml");
+          return row?.content_encoding === "utf8" ? row.content : "";
+        },
+        readPipeline: cloudPipelineSummary,
+      }),
+    }),
+    local: localAssistantPOST,
+  });
+}
+
+async function localAssistantPOST(req: Request) {
   let body: { message?: string; cliId?: string; history?: Msg[]; pageContext?: string };
   try {
     body = await req.json();

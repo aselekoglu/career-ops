@@ -1,0 +1,347 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import test from "node:test";
+
+const { createCloudTrackerManagement, validatePublicUrl } = await import(new URL("../../src/lib/cloud-tracker-management.mjs", import.meta.url));
+const { reserveCareerOpsReportNumber } = await import(new URL("../../src/lib/cloud-report-numbering.mjs", import.meta.url));
+const { importedPostingPath } = await import(new URL("../../src/lib/job-import.mjs", import.meta.url));
+const url = "https://jobs.example.test/roles/alpha";
+const aliases = JSON.stringify({"#":"num",date:"date",company:"company",via:"via",role:"role",location:"location",score:"score",status:"status",pdf:"pdf",report:"report",notes:"notes"});
+const tracker = `# Applications Tracker\n\n| # | Date | Company | Via | Role | Location | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|---|---|\n| 1 | 2026-09-01 | Existing Co | Direct | Engineer | Remote | 4.0/5 | Evaluated | ❌ | [001](../reports/001-existing.md) | Applied 2026-09-15 |\n`;
+const pipeline = `# Pipeline\n\n- [ ] ${url} | Example Co | Engineer\n- [ ] https://jobs.example.test/roles/other | Other Co | Analyst\n`;
+
+function fixture({ beforeCommit = null, trackerText = tracker, includeAliases = true, reportDocs = [] } = {}) {
+  const docs = new Map([
+    ["data/applications.md", trackerText], ["data/pipeline.md", pipeline],
+    ["data/status-log.tsv", "1\t2026-09-01\t-\tEvaluated\tmanual\tImported\n"],
+    ["data/follow-ups.md", "# Follow-ups\n\n"], ["config/profile.yml", "followup_cadence:\n  applied_first_days: 10\n"],
+  ]);
+  for (const [path, content] of reportDocs) docs.set(path, content);
+  if (includeAliases) docs.set("data/tracker-aliases.json", aliases);
+  const mutations = new Map(), statements = []; let before = beforeCommit, nextNumber = 1;
+  const row = (path, content) => ({ path, content, sha256: createHash("sha256").update(content).digest("hex"), content_encoding: "utf8" });
+  const sql = { async query(statement, params = []) {
+    statements.push(statement);
+    if (statement.startsWith("CREATE TABLE")) return [];
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) {
+      if (!statement.includes("RETURNING last_number AS num")) return [];
+      return [{ num: ++nextNumber }];
+    }
+    if (statement.startsWith("SELECT payload_sha256,result FROM career_ops_tracker_mutations WHERE id=")) {
+      const prior = mutations.get(params[0]); return prior ? [{ payload_sha256: prior.hash, result: prior.result }] : [];
+    }
+    if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
+      const content = docs.get(params[0]); return content === undefined ? [] : [row(params[0], content)];
+    }
+    if (statement.startsWith("SELECT path,") && statement.includes("octet_length(content)")) {
+      const content = docs.get(params[0]); return content === undefined ? [] : [{ ...row(params[0], content), too_large: false }];
+    }
+    if (statement.startsWith("SELECT path,") && statement.includes("regexp_match(content")) {
+      return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => {
+        const rawUrl = content.match(/^\*\*URL:\*\*\s*(https?:\/\/\S+)/mi)?.[1] ?? null;
+        return { path, url: rawUrl && rawUrl.length <= 2048 ? rawUrl : null };
+      });
+    }
+    if (statement.startsWith("SELECT path,content FROM career_ops_documents WHERE path LIKE 'reports/%'")) {
+      return [...docs.entries()].filter(([path]) => path.startsWith("reports/")).map(([path, content]) => ({ path, content, content_encoding: "utf8" }));
+    }
+    if (statement.startsWith("WITH incoming AS MATERIALIZED")) {
+      before?.(docs); before = null;
+      const [id, payloadHash, jsonIncoming, jsonResult] = params, prior = mutations.get(id);
+      if (prior) return [{ payload_sha256: prior.hash, result: prior.result, applied: false, cas_ok: true, writes_ok: true }];
+      const incoming = JSON.parse(jsonIncoming);
+      const cas = incoming.every(d => {
+        const content = docs.get(d.path); return (content === undefined ? null : row(d.path, content).sha256) === d.expected_sha;
+      });
+      if (!cas) return [{ payload_sha256: null, result: null, applied: false, cas_ok: false, writes_ok: true }];
+      for (const doc of incoming) docs.set(doc.path, doc.content);
+      const result = JSON.parse(jsonResult); mutations.set(id, { hash: payloadHash, result });
+      return [{ payload_sha256: payloadHash, result, applied: true, cas_ok: true, writes_ok: true }];
+    }
+    throw new Error(`Unexpected SQL: ${statement}`);
+  } };
+  return { docs, sql, statements, store: createCloudTrackerManagement({ sql, now: () => new Date("2026-10-02T12:00:00.000Z") }) };
+}
+
+const operationId = "55555555-5555-4555-8555-555555555555";
+
+test("exact application lookup distinguishes unknown IDs", async () => {
+  const { store } = fixture();
+  assert.equal((await store.getApplication("1")).company, "Existing Co");
+  await assert.rejects(store.getApplication("2"), { message: "APPLICATION_NOT_FOUND" });
+});
+
+test("manual tracker add requires canonical explicit status and never invents score or report", async () => {
+  const { store, docs } = fixture();
+  const base = { operationId, operation: "add", company: "New Co", role: "Data Engineer", url, source: "user supplied", date: "2026-10-01" };
+  await assert.rejects(store.mutate("tracker", base), { message: "INVALID_STATUS" });
+  const result = await store.mutate("tracker", { ...base, status: "Interview" });
+  assert.equal(result.application.n, "2");
+  assert.equal(result.application.score, null);
+  assert.equal(result.application.report, null);
+  assert.match(docs.get("data/applications.md"), /^\| 2 \| 2026-10-01 \| New Co \| user supplied \| Data Engineer \|  \|  \| Interview \| ❌ \|  \| Added manually from /m);
+  assert.match(docs.get("data/status-log.tsv"), /2\t2026-10-01\t-\tInterview\tmanual\tManual tracker entry\n$/);
+  assert.match(docs.get("data/applications.md"), /^\| 2 \|[^\n]*\| Interview \| ❌ \|  \| Added manually from /m);
+  const replay = await store.mutate("tracker", { ...base, status: "Interview" });
+  assert.equal(replay.application.n, "2");
+  assert.equal(replay.replayed, true);
+  assert.equal((docs.get("data/applications.md").match(/^\| 2 \|/gm) || []).length, 1);
+  const targetMap = JSON.parse(docs.get("data/tracker-targets.json"));
+  assert.deepEqual(targetMap.targets["2"], { url, company: "New Co", role: "Data Engineer" });
+});
+
+test("manual tracker can use the canonical Assessment lifecycle status", async () => {
+  const { store, docs } = fixture();
+  const result = await store.mutate("tracker", {
+    operationId,
+    operation: "add",
+    company: "Assessment Co",
+    role: "Engineer",
+    url,
+    source: "user supplied",
+    date: "2026-10-01",
+    status: "Assessment",
+  });
+
+  assert.equal(result.application.status, "Assessment");
+  assert.match(docs.get("data/applications.md"), /^\| 2 \| 2026-10-01 \| Assessment Co \| user supplied \| Engineer \|  \|  \| Assessment \|/m);
+  assert.match(docs.get("data/status-log.tsv"), /2\t2026-10-01\t-\tAssessment\tmanual\tManual tracker entry\n$/);
+});
+
+test("manual target URL ownership conflicts with another binding and delete removes only its own binding", async () => {
+  const { store, docs } = fixture();
+  await store.mutate("tracker", { operationId, operation: "add", company: "New Co", role: "Engineer", url, source: "user supplied", status: "Interview" });
+  await assert.rejects(store.mutate("tracker", { operationId: "abababab-abab-4bab-8bab-abababababab", operation: "add", company: "Other Co", role: "Analyst", url: `${url}?utm_source=board`, source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_URL_CONFLICT" });
+  await store.mutate("tracker", { operationId: "acacacac-acac-4cac-8cac-acacacacacac", operation: "delete", applicationId: "2", confirm: true });
+  assert.deepEqual(JSON.parse(docs.get("data/tracker-targets.json")), { version: 1, targets: {} });
+  assert.doesNotMatch(docs.get("data/applications.md"), /^\| 2 \|/m);
+});
+
+test("manual target URL cannot duplicate a report-backed tracker application", async () => {
+  const { store } = fixture({ reportDocs: [["reports/001-existing.md", "**URL:** https://jobs.example.test/roles/alpha\n"]] });
+  await assert.rejects(store.mutate("tracker", { operationId, operation: "add", company: "Existing Co", role: "Engineer", url: "https://jobs.example.test/roles/alpha", source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_URL_CONFLICT" });
+});
+
+test("legacy report URL extraction obeys PostgreSQL quantifier bounds and rejects rather than truncates overlong URLs", async () => {
+  const prefix = `https://jobs.example.test/${"a".repeat(2048 - "https://jobs.example.test/".length)}`;
+  const overlongUrl = `${prefix}b`;
+  const { store, statements } = fixture({ reportDocs: [["reports/001-existing.md", `**URL:** ${overlongUrl}\n`]] });
+  const result = await store.mutate("tracker", { operationId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", operation: "add", company: "New Co", role: "Engineer", url: prefix, source: "user supplied", status: "Interview" });
+  const reportQuery = statements.find((statement) => statement.includes("regexp_match(content"));
+  assert.match(reportQuery, /CASE WHEN char_length\(url\)<=2048 THEN url ELSE NULL END/);
+  assert.match(reportQuery, /LIMIT \$1/);
+  assert.doesNotMatch(reportQuery, /\{1,2048\}/);
+  assert.equal(result.application.url, prefix);
+});
+
+test("raw legacy report scan limit fails closed before filtering unlinked report rows", async () => {
+  const reportDocs = Array.from({ length: 10_001 }, (_, index) => [`reports/${String(index + 1000).padStart(5, "0")}-orphan.md`, `**URL:** https://jobs.example.test/roles/orphan-${index}\n`]);
+  const { store, docs } = fixture({ reportDocs });
+  await assert.rejects(store.mutate("tracker", { operationId, operation: "add", company: "New Co", role: "Engineer", url: "https://jobs.example.test/roles/new", source: "user supplied", status: "Interview" }), { message: "TRACKER_TARGET_REPORT_SCAN_TOO_LARGE" });
+  assert.equal(docs.has("data/tracker-targets.json"), false);
+  assert.equal(docs.get("data/applications.md"), tracker);
+});
+
+test("manual add explicitly marked Applied seeds its follow-up from the supplied date", async () => {
+  const { store, docs } = fixture();
+  const result = await store.mutate("tracker", { operationId: "88888888-8888-4888-8888-888888888888", operation: "add", company: "New Co", role: "Engineer", url: "https://jobs.example.test/roles/new", source: "user supplied", date: "2026-10-01", status: "Applied" });
+  assert.equal(result.application.score, null);
+  assert.equal(result.application.report, null);
+  assert.match(docs.get("data/follow-ups.md"), /- next #2 2026-10-11 \(set 2026-10-02\)/);
+});
+
+test("manual tracker add shares the serialized counter with reserved evaluation report numbers", async () => {
+  const { store, sql } = fixture();
+  const reservedEvaluationNumber = await reserveCareerOpsReportNumber(sql);
+  const result = await store.mutate("tracker", { operationId: "99999999-9999-4999-8999-999999999999", operation: "add", company: "Manual Co", role: "Engineer", url: "https://jobs.example.test/roles/manual", source: "user supplied", status: "Evaluated" });
+  assert.equal(reservedEvaluationNumber, "2");
+  assert.equal(result.application.n, "3");
+});
+
+test("status transition appends the canonical ledger and follow-up pin atomically", async () => {
+  const { store, docs } = fixture();
+  await store.mutate("tracker", { operationId, operation: "set-status", applicationId: "1", status: "Applied", date: "2026-09-20" });
+  assert.match(docs.get("data/applications.md"), /^\| 1 \|.*\| Applied \|/m);
+  assert.match(docs.get("data/status-log.tsv"), /1\t2026-09-20\tEvaluated\tApplied\tset-status\t\n$/);
+  assert.match(docs.get("data/follow-ups.md"), /- next #1 2026-09-30 \(set 2026-10-02\)/);
+});
+
+test("Applied transition uses an existing Applied note date before today's fallback", async () => {
+  const { store, docs } = fixture();
+  await store.mutate("tracker", { operationId, operation: "set-status", applicationId: "1", status: "Applied" });
+  assert.match(docs.get("data/follow-ups.md"), /- next #1 2026-09-25 \(set 2026-10-02\)/);
+});
+
+test("Applied transition falls back to today when no explicit or note date exists", async () => {
+  const trackerWithoutAppliedDate = tracker.replace("Applied 2026-09-15", "Date not recorded");
+  const { store, docs } = fixture({ trackerText: trackerWithoutAppliedDate });
+  await store.mutate("tracker", { operationId, operation: "set-status", applicationId: "1", status: "Applied" });
+  assert.match(docs.get("data/follow-ups.md"), /- next #1 2026-10-12 \(set 2026-10-02\)/);
+});
+
+test("stale SHA conflicts preserve concurrent changes instead of overwriting them", async () => {
+  const { store, docs } = fixture({ beforeCommit(current) { current.set("data/applications.md", current.get("data/applications.md") + "<!-- Concurrent update -->\n"); } });
+  const beforeTracker = docs.get("data/applications.md");
+  await assert.rejects(store.mutate("tracker", { operationId, operation: "update-notes", applicationId: "1", notes: "Edited" }), { message: "WRITE_CONFLICT" });
+  assert.equal(docs.get("data/applications.md"), `${beforeTracker}<!-- Concurrent update -->\n`);
+  assert.doesNotMatch(docs.get("data/applications.md"), /\| Edited \|/);
+});
+
+test("Inbox commands target exact URLs and preserve unrelated lines", async () => {
+  const { store, docs } = fixture();
+  await assert.rejects(store.mutate("inbox", { operationId, operation: "archive", targetUrl: "https://jobs.example.test/roles/alph" , confirm: true }), { message: "INBOX_URL_NOT_FOUND" });
+  await store.mutate("inbox", { operationId, operation: "edit", targetUrl: url, newUrl: "https://jobs.example.test/roles/beta", company: "Updated Co" });
+  const changed = docs.get("data/pipeline.md");
+  assert.ok(changed.includes("https://jobs.example.test/roles/beta | Updated Co | Engineer"));
+  assert.ok(changed.includes("https://jobs.example.test/roles/other | Other Co | Analyst"));
+  await assert.rejects(store.mutate("inbox", { operationId: "66666666-6666-4666-8666-666666666666", operation: "delete", targetUrl: "https://jobs.example.test/roles/beta" }), { message: "CONFIRMATION_REQUIRED" });
+  await store.mutate("inbox", { operationId: "77777777-7777-4777-8777-777777777777", operation: "archive", targetUrl: "https://jobs.example.test/roles/beta", confirm: true });
+  assert.match(docs.get("data/pipeline.md"), /^- \[x\] https:\/\/jobs\.example\.test\/roles\/beta/m);
+});
+
+test("delete replay returns its first result after the target row is gone without another write", async () => {
+  const { store, docs } = fixture();
+  const command = { operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", operation: "delete", applicationId: "1", confirm: true };
+  const first = await store.mutate("tracker", command);
+  const afterDelete = [...docs.entries()];
+  const replay = await store.mutate("tracker", command);
+  assert.equal(first.operation, "delete");
+  assert.equal(replay.replayed, true);
+  assert.deepEqual([...docs.entries()], afterDelete);
+});
+
+test("operation IDs cannot replay across tracker and inbox command kinds", async () => {
+  const { store, docs } = fixture();
+  const id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  await store.mutate("tracker", { operationId: id, operation: "update-notes", applicationId: "1", notes: "Reviewed" });
+  const afterTrackerWrite = [...docs.entries()];
+  await assert.rejects(store.mutate("inbox", { operationId: id, operation: "delete", targetUrl: url, confirm: true }), { message: "IDEMPOTENCY_KEY_CONFLICT" });
+  assert.deepEqual([...docs.entries()], afterTrackerWrite);
+});
+
+const magnet = {
+  company: "Magnet Forensics", role: "AI & Automation Engineer (Enterprise)", location: "Toronto, Ontario",
+  workArrangement: null, postingDate: null, employmentType: "Full-time", compensation: null,
+  jobDescription: "Build automation for enterprise workflows.\n\nRequirements: experience building reliable systems.",
+  ats: "lever", externalPostingId: "454d7903-cb1b-40ff-b7a8-5bc2e87e7329", source: "LinkedIn",
+};
+const magnetUrl = "https://jobs.lever.co/magnetforensics/454d7903-cb1b-40ff-b7a8-5bc2e87e7329";
+
+test("job import atomically creates the canonical Inbox row and durable posting record", async () => {
+  const { store, docs } = fixture();
+  const result = await store.importPosting({ originalUrl: `${magnetUrl}/apply?source=LinkedIn`, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "imported");
+  assert.equal(result.existing, false);
+  assert.match(result.inboxId, /^inb_[a-f0-9]{32}$/);
+  assert.equal(result.normalizedUrl, magnetUrl);
+  assert.match(docs.get("data/pipeline.md"), new RegExp(`^- \\[ \\] ${magnetUrl.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")} \\| Magnet Forensics \\| AI & Automation Engineer \\(Enterprise\\)` , "m"));
+  const saved = JSON.parse(docs.get(importedPostingPath(magnetUrl)));
+  assert.equal(saved.normalizedUrl, magnetUrl);
+  assert.match(saved.jobDescription, /Requirements/);
+  assert.equal(saved.source, "LinkedIn");
+});
+
+test("canonical URL variants deduplicate and preserve the checked Inbox lifecycle", async () => {
+  const { store, docs } = fixture();
+  const url = "https://jobs.lever.co/example/12345678-abcd-4abc-8abc-123456789abc";
+  docs.set("data/pipeline.md", `${docs.get("data/pipeline.md")}- [x] ${url}/apply?source=Indeed | Example Co | Engineer\n`);
+  const before = docs.get("data/pipeline.md");
+  const result = await store.importPosting({ originalUrl: `${url}/apply?source=LinkedIn`, normalizedUrl: url, posting: magnet, forceRefresh: true });
+  assert.equal(result.status, "already_exists");
+  assert.equal(result.existing, true);
+  assert.equal(result.normalizedUrl, `${url}/apply?source=Indeed`);
+  assert.equal(docs.get("data/pipeline.md"), before);
+  assert.equal(docs.has(importedPostingPath(url)), false);
+});
+
+test("concurrent identical imports produce one row and a replayable stable ID", async () => {
+  const { store, docs } = fixture();
+  const input = { originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet };
+  const results = await Promise.all([store.importPosting(input), store.importPosting(input)]);
+  assert.equal(results.filter(result => result.status === "imported").length, 1);
+  assert.equal(results.filter(result => result.status === "already_exists").length, 1);
+  assert.equal((docs.get("data/pipeline.md").match(new RegExp(magnetUrl, "g")) ?? []).length, 1);
+});
+
+test("report-linked URL is recognized without rewriting or re-adding the Inbox item", async () => {
+  const { store, docs } = fixture();
+  docs.set("reports/001-existing.md", `# Existing\n**URL:** ${magnetUrl}\n`);
+  const before = docs.get("data/pipeline.md");
+  const result = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "already_exists");
+  assert.equal(result.applicationNumber, "1");
+  assert.equal(docs.get("data/pipeline.md"), before);
+});
+
+test("refresh preserves checked rows and an existing good sidecar", async () => {
+  const { store, docs } = fixture();
+  const original = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  const path = importedPostingPath(magnetUrl), before = docs.get(path);
+  docs.set("data/pipeline.md", docs.get("data/pipeline.md").replace(`- [ ] ${magnetUrl}`, `- [x] ${magnetUrl}`));
+  const updatedPosting = { ...magnet, jobDescription: "Changed content that must not replace the existing evaluated record." };
+  const refreshed = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: updatedPosting, forceRefresh: true });
+  assert.equal(refreshed.status, "already_exists");
+  assert.equal(docs.get(path), before);
+  assert.equal(refreshed.inboxId, original.inboxId);
+});
+
+test("redirect aliases deduplicate to the canonical Inbox item before another fetch", async () => {
+  const { store, docs } = fixture();
+  const alias = "https://jobs.example.test/redirect";
+  await store.importPosting({ originalUrl: alias, requestedNormalizedUrl: alias, normalizedUrl: magnetUrl, posting: magnet });
+  const existing = await store.findImport({ originalUrl: alias, normalizedUrl: alias });
+  assert.equal(existing.status, "already_exists");
+  assert.equal(existing.normalizedUrl, magnetUrl);
+  assert.equal(existing.inboxId, `inb_${createHash("sha256").update(magnetUrl).digest("hex").slice(0, 32)}`);
+  assert.ok(docs.has(importedPostingPath(alias)));
+});
+
+test("a concurrent evaluation that checks the Inbox row wins over a pending import refresh", async () => {
+  const { store, docs } = fixture({ beforeCommit(current) {
+    current.set("data/pipeline.md", `${current.get("data/pipeline.md")}- [x] ${magnetUrl} | Magnet Forensics | AI & Automation Engineer (Enterprise)\n`);
+  } });
+  const result = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "already_exists");
+  assert.equal(result.normalizedUrl, magnetUrl);
+  assert.match(docs.get("data/pipeline.md"), new RegExp(`^- \\[x\\] ${magnetUrl.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`, "m"));
+  assert.equal(docs.has(importedPostingPath(magnetUrl)), false);
+});
+
+test("unrelated malformed checkbox lines do not block a valid import or change their raw text", async () => {
+  const { store, docs } = fixture();
+  const legacyRows = [
+    "- [ ] Review imported roles | task list | legacy note",
+    "- [x] malformed-url | Old role | legacy archive",
+    "- [ ] http://[broken | Broken URL | legacy data",
+    `- [ ] ${magnetUrl} |  |`,
+  ];
+  const original = `${docs.get("data/pipeline.md")}${legacyRows.join("\n")}\n`;
+  docs.set("data/pipeline.md", original);
+  const result = await store.importPosting({ originalUrl: magnetUrl, normalizedUrl: magnetUrl, posting: magnet });
+  assert.equal(result.status, "imported");
+  const saved = docs.get("data/pipeline.md");
+  for (const line of legacyRows) assert.ok(saved.includes(line), `preserved raw row: ${line}`);
+  assert.ok(saved.includes(`- [ ] ${magnetUrl} | Magnet Forensics | AI & Automation Engineer (Enterprise)`));
+});
+
+test("tracker CRUD reads legacy Num header through canonical aliases without a Neon alias document", async () => {
+  const legacyTracker = `# Applications Tracker
+
+| Num | Date | Company | Role | Score | Status | PDF | Report | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 39 | 2026-10-03 | Example Corp | Engineer | 4.1/5 | Evaluated | ❌ | [039](../reports/039-example-2026-10-03.md) | Preserve legacy note |
+`;
+  const { store, docs } = fixture({ trackerText: legacyTracker, includeAliases: false });
+  assert.equal((await store.getApplication("39")).company, "Example Corp");
+  await store.mutate("tracker", { operationId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", operation: "update-notes", applicationId: "39", notes: "Updated safely" });
+  assert.match(docs.get("data/applications.md"), /^\| 39 \|.*\| Updated safely \|/m);
+  assert.equal(docs.has("data/tracker-aliases.json"), false, "fallback aliases must not be copied into Neon");
+});
+
+test("manual Inbox URL validation reuses the public URL boundary and preserves valid identity", () => {
+  const exact = "https://jobs.example.com/role?jobId=42";
+  assert.equal(validatePublicUrl(exact), exact);
+  for (const invalid of ["https://[::1]/job", "https://[::ffff:127.0.0.1]/job", "https://metadata.internal/latest", "http://2130706433/admin"]) {
+    assert.throws(() => validatePublicUrl(invalid), { message: "INVALID_URL" });
+  }
+});

@@ -16,6 +16,8 @@ import {
   type ScanEvent,
 } from "@/lib/explore";
 import { makeAiStreamParser, type AiTraceChunk } from "@/lib/explore-ai";
+import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
+import { loadExploreExecutionStatus } from "@/lib/explore-execution-status.mjs";
 
 export type Phase =
   | "idle"
@@ -30,6 +32,7 @@ export type Phase =
   | "hunting" // AI search streaming
   | "blocked"; // AI search needs a CLI
 export type AiCost = { searches: number; candidates: number; fetches: number };
+export type ExploreExecutionMode = "unknown" | "local" | "hosted";
 export type SourceState = {
   state: "queued" | "active" | "swept" | "noisy";
   companies?: number;
@@ -46,6 +49,7 @@ type ExploreCtx = {
    *  yet — so a fresh page mount can't clobber assistant-set filters. */
   initFilters: (f: ExploreFilters) => void;
   phase: Phase;
+  scannerMissing: boolean;
   running: boolean;
   offers: DiscoveredOffer[];
   sources: Partial<Record<AtsSource, SourceState>>;
@@ -72,6 +76,9 @@ type ExploreCtx = {
   aiIntent: string;
   setAiIntent: (s: string) => void;
   discoverAI: () => Promise<void>;
+  executionMode: ExploreExecutionMode;
+  hostedMode: boolean;
+  hostedReady: boolean;
   aiTrace: AiTraceChunk[];
   aiCost: AiCost;
 };
@@ -91,6 +98,7 @@ type ResultSnapshot = {
   v: number;
   mode: ExploreMode;
   phase: Phase;
+  scannerMissing?: boolean;
   offers: DiscoveredOffer[];
   matchCount: number;
   companiesScanned: number;
@@ -109,6 +117,10 @@ type ResultSnapshot = {
 
 export function ExploreProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const [executionStatus, setExecutionStatus] = useState<{ mode: ExploreExecutionMode; hostedReady: boolean }>({ mode: "unknown", hostedReady: false });
+  const executionMode = executionStatus.mode;
+  const hostedMode = executionMode === "hosted";
+  const hostedReady = hostedMode && executionStatus.hostedReady;
   const [filters, setFiltersState] = useState<ExploreFilters>({ ...DEFAULT_FILTERS, ats: [...DEFAULT_FILTERS.ats] });
   const touched = useRef(false);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -124,10 +136,17 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState("");
   const [partial, setPartial] = useState(false);
   const [error, setError] = useState("");
+  const [scannerMissing, setScannerMissing] = useState(false);
   const [added, setAdded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState<Set<string>>(new Set());
   const [mode, setModeState] = useState<ExploreMode>("scan");
   const [aiIntent, setAiIntent] = useState("");
+  useEffect(() => {
+    void loadExploreExecutionStatus().then((loaded) => {
+      const mode = loaded.mode === "local" || loaded.mode === "hosted" ? loaded.mode : "unknown";
+      setExecutionStatus({ mode, hostedReady: mode === "hosted" && loaded.hostedReady === true });
+    });
+  }, []);
   const [aiTrace, setAiTrace] = useState<AiTraceChunk[]>([]);
   const [aiCost, setAiCost] = useState<AiCost>({ searches: 0, candidates: 0, fetches: 0 });
   const runningRef = useRef(false);
@@ -160,6 +179,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     setDroppedNoDate(0);
     setPartial(false);
     setError("");
+    setScannerMissing(false);
     setStatus("Casting the net across the ATS network…");
     const init: Partial<Record<AtsSource, SourceState>> = {};
     for (const a of f.ats) init[a] = { state: "queued" };
@@ -181,9 +201,10 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(f),
       });
-      if (r.status === 400) {
+      if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         sawError = d.error || "The scanner isn't available.";
+        setScannerMissing(d.code === "SCANNER_MISSING");
       } else if (!r.body) {
         sawError = "No response stream.";
       } else {
@@ -325,6 +346,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addToPipeline = useCallback(async (list: DiscoveredOffer[]) => {
+    if (list.some((offer) => isHostedExploreReadOnly(executionMode, mode, offer.source))) return 0;
     const fresh = list.filter((o) => !added.has(o.url));
     if (fresh.length === 0) return 0;
     setAdding((s) => new Set([...s, ...fresh.map((o) => o.url)]));
@@ -356,7 +378,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
     }
-  }, [added, router]);
+  }, [added, router, executionMode, mode]);
 
   const applyPatch = useCallback((raw: Record<string, unknown>, opts?: { merge?: boolean; run?: boolean }) => {
     const next = parseExplorePatch(raw, filtersRef.current, opts?.merge ?? false);
@@ -375,6 +397,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     setStatus("");
     setPartial(false);
     setError("");
+    setScannerMissing(false);
     setAiTrace([]);
     setAiCost({ searches: 0, candidates: 0, fetches: 0 });
     try {
@@ -395,7 +418,17 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     } catch {
       cliId = null;
     }
-    if (!cliId) {
+    if (executionMode === "unknown") {
+      setError("Explore execution mode could not be confirmed. Reload Explore to try again.");
+      setPhase("failed");
+      return;
+    }
+    if (hostedMode && !hostedReady) {
+      setError("Hosted Gemini is not configured in this deployment.");
+      setPhase("failed");
+      return;
+    }
+    if (executionMode === "local" && !cliId) {
       setPhase("blocked");
       return;
     }
@@ -406,6 +439,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     setAiTrace([]);
     setAiCost({ searches: 0, candidates: 0, fetches: 0 });
     setError("");
+    setScannerMissing(false);
     setStatus("Casting across the open web…");
     if (typeof window !== "undefined") window.history.replaceState(null, "", `/explore?${aiToParams(intent)}`);
 
@@ -444,14 +478,14 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
       const r = await fetch("/api/explore/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: intent, cliId }),
+        body: JSON.stringify(executionMode === "hosted" ? { query: intent } : { query: intent, cliId }),
       });
       if (r.status === 404) {
         runningRef.current = false;
         setPhase("blocked");
         return;
       }
-      if (r.status === 400) {
+      if (!r.ok) {
         const d = await r.json().catch(() => ({}));
         sawError = d.error || "AI search isn't available.";
       } else if (!r.body) {
@@ -482,7 +516,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     } else {
       setPhase("empty-loose");
     }
-  }, []);
+  }, [executionMode, hostedMode, hostedReady]);
 
   // Switch surface but PRESERVE the current results + filters — toggling scan↔AI must
   // not throw away a completed search (disc#5). A new search (discover/discoverAI)
@@ -515,6 +549,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     setPartial(!!snap.partial);
     setStatus(typeof snap.status === "string" ? snap.status : "");
     setError(typeof snap.error === "string" ? snap.error : "");
+    setScannerMissing(snap.scannerMissing === true);
     setAdded(new Set(Array.isArray(snap.added) ? snap.added : []));
     setAiTrace(Array.isArray(snap.aiTrace) ? snap.aiTrace : []);
     setAiCost(snap.aiCost ?? { searches: 0, candidates: 0, fetches: 0 });
@@ -531,7 +566,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     try {
       const snap: ResultSnapshot = {
         v: 1, mode, phase, offers, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, sources,
-        partial, status, error, added: [...added], aiTrace, aiCost, aiIntent,
+        partial, status, error, scannerMissing, added: [...added], aiTrace, aiCost, aiIntent,
       };
       sessionStorage.setItem(RESULTS_KEY, JSON.stringify(snap));
     } catch {
@@ -543,11 +578,11 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     () => ({
       filters, setFilters, initFilters, phase,
       running: phase === "casting" || phase === "scanning" || phase === "revealing" || phase === "hunting",
-      offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, added, adding,
+      offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding,
       discover, loadFresh, addToPipeline, applyPatch, reset,
-      mode, setMode, aiIntent, setAiIntent, discoverAI, aiTrace, aiCost,
+      mode, setMode, aiIntent, setAiIntent, discoverAI, executionMode, hostedMode, hostedReady, aiTrace, aiCost,
     }),
-    [filters, setFilters, initFilters, phase, offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, added, adding, discover, loadFresh, addToPipeline, applyPatch, reset, mode, setMode, aiIntent, discoverAI, aiTrace, aiCost],
+    [filters, setFilters, initFilters, phase, offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding, discover, loadFresh, addToPipeline, applyPatch, reset, mode, setMode, aiIntent, discoverAI, executionMode, hostedMode, hostedReady, aiTrace, aiCost],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

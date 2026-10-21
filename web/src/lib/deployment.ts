@@ -1,0 +1,56 @@
+import { toPublicHostedAiStatus } from "./ai/cloud-ai-gate.mjs";
+
+/**
+ * Deployment policy for the web UI.
+ *
+ * The dashboard is intentionally local-first today: it reads user-layer files
+ * and can launch local CLI/Playwright processes. Those capabilities cannot be
+ * made durable or safe by a serverless filesystem, so cloud deployments must
+ * fail closed until an external persistence + worker adapter is configured.
+ */
+export function isCloudRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.VERCEL === "1" || env.CAREER_OPS_RUNTIME === "vercel";
+}
+
+export const CLOUD_EXECUTION_MESSAGE =
+  "This Career Ops deployment is a protected cloud shell. Local data, scans, scheduler jobs, and application assistance stay disabled until a durable persistence and worker backend is configured.";
+
+export function cloudHealth(env: NodeJS.ProcessEnv = process.env) {
+  const cloud = isCloudRuntime(env);
+  const geminiConfigured = Boolean(env.GEMINI_API_KEY?.trim());
+  const openaiConfigured = Boolean(env.OPENAI_API_KEY?.trim());
+  const provider = env.CAREER_OPS_AI_PROVIDER === "openai" || env.CAREER_OPS_AI_PROVIDER === "gemini"
+    ? env.CAREER_OPS_AI_PROVIDER
+    : (openaiConfigured ? "openai" : "gemini");
+  const hostedAi = toPublicHostedAiStatus({
+    geminiConfigured,
+    openaiConfigured,
+    provider,
+    ready: provider === "openai" ? openaiConfigured : geminiConfigured,
+  }, true);
+  const liveScans = Boolean(env.DATABASE_URL && env.CAREER_OPS_SCAN_DISPATCH_TOKEN && env.CAREER_OPS_SCAN_WORKER_SECRET && env.CAREER_OPS_SCAN_REF);
+  const cvGeneration = Boolean(
+    env.DATABASE_URL &&
+    hostedAi.ready &&
+    env.CAREER_OPS_SCAN_DISPATCH_TOKEN &&
+    env.CAREER_OPS_SCAN_WORKER_SECRET &&
+    (env.CAREER_OPS_CV_REF || env.VERCEL_GIT_COMMIT_REF || env.CAREER_OPS_SCAN_REF)
+  );
+  const evaluations = Boolean(
+    env.DATABASE_URL &&
+    hostedAi.ready &&
+    env.CAREER_OPS_SCAN_DISPATCH_TOKEN &&
+    env.CAREER_OPS_SCAN_WORKER_SECRET &&
+    env.CAREER_OPS_SCAN_REF
+  );
+  return {
+    status: "ok" as const,
+    runtime: cloud ? "vercel" : "local",
+    execution: cloud ? (liveScans ? "on-demand-portal-worker" : "disabled-pending-worker") : "local-enabled",
+    scheduler: cloud ? "external-worker-required" : "local-task-scheduler",
+    scans: { available: cloud && liveScans, modes: cloud && liveScans ? ['portals'] : [], worker: cloud && liveScans ? 'github-actions' : null },
+    cvGeneration: { available: cloud && cvGeneration, ai: cloud && cvGeneration ? `${hostedAi.provider}-hosted` : null, renderer: cloud && cvGeneration ? 'github-actions' : null },
+    evaluations: { available: cloud && evaluations, ai: cloud && evaluations ? `${hostedAi.provider}-hosted` : null, worker: cloud && evaluations ? 'github-actions' : null },
+    scheduledExecution: !cloud,
+  };
+}

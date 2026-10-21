@@ -7,7 +7,7 @@ import { atomicWrite } from "@/lib/core/safe-write";
 
 // Writeback: UPDATE the status cell of an EXISTING tracker row only. Never adds
 // rows — per the core data contract, new rows go through the TSV + merge flow.
-// HARDENED: validate against the 8 canonical states (states.yml SSOT); reject any
+// HARDENED: validate against every canonical state (states.yml SSOT); reject any
 // value with table-breaking chars (| \r \n **) that would scramble the row; detect
 // the Status column from the header (8- and 9-col layouts); atomic write.
 export async function POST(req: Request) {

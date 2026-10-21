@@ -1,29 +1,17 @@
 import Link from "next/link";
 import { pipelineSummary } from "@/lib/career-ops";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudPipelineSummary } from "@/lib/cloud-career-ops";
 import { canonStatus, scoreNum } from "@/lib/format";
+import { computeProgressMetrics } from "@/lib/analytics-metrics.mjs";
 
 export const dynamic = "force-dynamic";
 
-const STAGES: { key: string; label: string }[] = [
-  { key: "EVALUATED", label: "Evaluated" },
-  { key: "APPLIED", label: "Applied" },
-  { key: "RESPONDED", label: "Responded" },
-  { key: "INTERVIEW", label: "Interview" },
-  { key: "OFFER", label: "Offer" },
-  { key: "HIRED", label: "Hired" },
-  { key: "REJECTED", label: "Rejected" },
-  { key: "DISCARDED", label: "Discarded" },
-];
-
-export default function Analytics() {
-  const { applications } = pipelineSummary();
+export default async function Analytics() {
+  const { applications } = cloudDataEnabled() ? await cloudPipelineSummary() : pipelineSummary();
   const total = applications.length;
-
-  const stageCounts = STAGES.map((s) => ({
-    ...s,
-    n: applications.filter((a) => canonStatus(a.status).includes(s.key)).length,
-  }));
-  const maxStage = Math.max(1, ...stageCounts.map((s) => s.n));
+  const { funnel, activeApps, totalOffers } = computeProgressMetrics(applications, canonStatus);
+  const maxStage = Math.max(1, ...funnel.map((stage) => stage.count));
 
   const scores = applications.map((a) => scoreNum(a.score)).filter((n) => !Number.isNaN(n));
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
@@ -40,8 +28,8 @@ export default function Analytics() {
   const topCompanies = [...companyCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
   const maxCompany = Math.max(1, ...topCompanies.map((c) => c[1]));
 
-  const offers = stageCounts.find((s) => s.key === "OFFER")?.n ?? 0;
-  const interviews = stageCounts.find((s) => s.key === "INTERVIEW")?.n ?? 0;
+  const offers = totalOffers;
+  const interviews = funnel.find((stage) => stage.key === "INTERVIEW")?.count ?? 0;
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
@@ -49,8 +37,9 @@ export default function Analytics() {
       <p className="mt-1 text-sm text-muted">Across {total} tracked evaluations.</p>
 
       {/* headline stats */}
-      <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-5">
         <Stat value={total} label="evaluated" />
+        <Stat value={activeApps} label="active applications" />
         <Stat value={avg ? avg.toFixed(2) : "—"} label="avg score" />
         <Stat
           value={interviews}
@@ -64,15 +53,15 @@ export default function Analytics() {
         />
       </div>
 
-      <Section title="Pipeline by stage">
-        {stageCounts.map((s) => (
+      <Section title="Progress funnel">
+        {funnel.map((stage) => (
           <Bar
-            key={s.key}
-            label={s.label}
-            value={s.n}
-            pct={(s.n / maxStage) * 100}
+            key={stage.key}
+            label={stage.label}
+            value={stage.count}
+            pct={(stage.count / maxStage) * 100}
             total={total}
-            tone={s.key === "OFFER" ? "positive" : "neutral"}
+            tone={stage.key === "OFFER" ? "positive" : "neutral"}
           />
         ))}
       </Section>

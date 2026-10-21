@@ -49,6 +49,8 @@ export type DiscoveredOffer = {
   source: string;
   /** which positive keyword matched the title (transparency, e.g. "ai" in "Nail") */
   matchedKeyword?: string;
+  /** Advisory title-vs-profile band; never a filter or replacement for evaluation score. */
+  titleFit?: { band: "strong" | "related" | "weak"; score: number };
   /** optional free-text ranking signal preserved to pipeline.md by the canonical
    *  writer (scan.mjs formatPipelineOffer). Generic and source-agnostic — an
    *  importer can attach a note; the deterministic scan omits it. */

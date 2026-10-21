@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { careerOpsRoot, rootScript } from "@/lib/career-ops";
+import { titleFit } from "@/lib/title-fit.mjs";
 import { writeTempPortals, cleanupTempPortals } from "./portals";
 import { ATS_SOURCES, type DiscoveredOffer, type ExploreFilters, type ScanEvent } from "@/lib/explore";
 
@@ -146,7 +147,7 @@ export function runDiscovery(filters: ExploreFilters, onEvent: (e: ScanEvent) =>
         const url = trimmed.split(/\s+/)[0];
         if (!seen.has(url)) {
           seen.add(url);
-          const offer: DiscoveredOffer = { ...pending, url, matchedKeyword: firstMatch(pending.title, filters.positive) };
+          const offer: DiscoveredOffer = { ...pending, url, matchedKeyword: firstMatch(pending.title, filters.positive), titleFit: titleFit(pending.title, filters.positive) ?? undefined };
           offers.push(offer);
           onEvent({ kind: "offer", offer });
         }
@@ -245,6 +246,7 @@ export function runDiscovery(filters: ExploreFilters, onEvent: (e: ScanEvent) =>
               source,
               url,
               matchedKeyword: firstMatch(o.title, filters.positive),
+              titleFit: titleFit(o.title, filters.positive) ?? undefined,
             };
             offers.push(offer);
             onEvent({ kind: "offer", offer });
