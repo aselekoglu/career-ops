@@ -373,6 +373,24 @@ ${bullets}
   }).join('\n  ');
 }
 
+// Project URLs must be explicit verified web links; never turn arbitrary strings
+// into clickable links or allow script schemes in the final PDF.
+function projectUrl(raw) {
+  if (typeof raw !== 'string' || !/^https?:\/\//i.test(raw.trim())) return '';
+  try {
+    const u = new URL(raw.trim());
+    if (!['https:', 'http:'].includes(u.protocol) || !u.hostname || u.username || u.password) return '';
+    return sanitizeUrl(u.href);
+  } catch {
+    return '';
+  }
+}
+
+function projectLinkLabel(entry) {
+  const url = String(entry?.url || '').trim();
+  return escapeHtml(entry?.url_label || url.replace(/^https?:\/\//i, ''));
+}
+
 function buildProjects(entries, partial) {
   if (!Array.isArray(entries) || entries.length === 0) return '';
   if (!partial) {
@@ -390,8 +408,10 @@ function buildProjects(entries, partial) {
       const tech = e.tech
         ? `\n    <div class="project-tech">${escapeHtml(e.tech)}</div>`
         : '';
+      const url = projectUrl(e.url);
+      const link = url ? `\n    <div class="project-link"><a href="${url}">${projectLinkLabel(e)}</a></div>` : '';
       return `<div class="project">
-    <div class="project-title">${escapeHtml(e.name)}${badge}</div>${desc}${tech}
+    <div class="project-title">${escapeHtml(e.name)}${badge}</div>${link}${desc}${tech}
   </div>`;
     }).join('\n  ');
   }
@@ -400,16 +420,20 @@ function buildProjects(entries, partial) {
   return entries.filter(Boolean).map(e => {
     const descText = e.description
       || (Array.isArray(e.bullets) ? e.bullets.filter(Boolean).join(' ') : '');
+    const url = projectUrl(e.url);
     const blockValues = new Map([
       ['BADGE_BLOCK', { value: escapeHtml(e.badge || ''), present: Boolean(e.badge) }],
+      ['URL_BLOCK',   { value: url,                      present: Boolean(url) }],
       ['DESC_BLOCK',  { value: escapeHtml(descText),      present: Boolean(descText) }],
       ['TECH_BLOCK',  { value: escapeHtml(e.tech || ''),  present: Boolean(e.tech) }],
     ]);
     return fillEntry(entryTemplate, blocks, {
-      NAME:  escapeHtml(e.name || ''),
-      BADGE: escapeHtml(e.badge || ''),
-      DESC:  escapeHtml(descText),
-      TECH:  escapeHtml(e.tech || ''),
+      NAME:      escapeHtml(e.name || ''),
+      BADGE:     escapeHtml(e.badge || ''),
+      URL:       url,
+      URL_LABEL: projectLinkLabel(e),
+      DESC:      escapeHtml(descText),
+      TECH:      escapeHtml(e.tech || ''),
     }, blockValues);
   }).join('\n  ');
 }
@@ -768,6 +792,7 @@ async function runSelfTest() {
     }],
     projects: [{
       name: 'Test Project',
+      url: 'https://github.com/test/test-project',
       badge: 'Open Source',
       tech: 'Python, FastAPI, Docker',
       description: 'Built a REST API with automated test coverage exceeding 90%.',
@@ -846,6 +871,24 @@ async function runSelfTest() {
   }
   if (countSeparators(htmlWithRejectedGithub) !== countSeparators(html) - 1) {
     console.error('Self-test failed: rejected github URL left a dangling separator in the contact row');
+    process.exit(1);
+  }
+
+  // Each included project URL is a visible, clickable PDF anchor. Missing and
+  // rejected URLs must not result in empty href attributes or fake links.
+  if (!html.includes('href="https://github.com/test/test-project"') || !html.includes('github.com/test/test-project')) {
+    console.error('Self-test failed: project repository link missing from output');
+    process.exit(1);
+  }
+  const invalidProject = { ...sample.projects[0], url: 'javascript:alert(1)' };
+  const htmlInvalidProject = renderHtml(template, { ...sample, projects: [invalidProject] }, TEMPLATE_PATH);
+  if (htmlInvalidProject.includes('href=""') || htmlInvalidProject.includes('javascript:alert(1)') || htmlInvalidProject.includes('class="project-link"')) {
+    console.error('Self-test failed: unsafe project URL emitted a link');
+    process.exit(1);
+  }
+  const htmlNoProjectUrl = renderHtml(template, { ...sample, projects: [{ ...sample.projects[0], url: '' }] }, TEMPLATE_PATH);
+  if (htmlNoProjectUrl.includes('class="project-link"')) {
+    console.error('Self-test failed: empty project URL emitted a link');
     process.exit(1);
   }
 
