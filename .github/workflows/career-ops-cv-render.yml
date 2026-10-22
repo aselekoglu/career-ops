@@ -30,10 +30,19 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # GitHub-hosted Ubuntu runners already provide Chromium's core system libraries.
+      # Avoid apt install --with-deps on every CV render (8+ minutes on Ubuntu 26.04).
+      - name: Cache Chromium headless shell
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-cv-chromium-shell-${{ hashFiles('package.json') }}-v1
       - name: Install renderer dependencies
         run: |
           npm install --ignore-scripts --no-audit --no-fund
-          npx playwright install chromium --with-deps
+          npx playwright install chromium --only-shell
+      - name: Test CV worker diagnostics
+        run: node --test tests/cloud-cv-worker-diagnostics.test.mjs
       - name: Render tailored CV
         run: node web/scripts/cloud-cv-worker.mjs
       - name: Persist worker failure
