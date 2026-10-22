@@ -128,6 +128,30 @@ test("CV task gets a larger private context budget and an 8192-token output cap"
   assert.equal(calls, 1);
 });
 
+test("CV task allocates enough output tokens with low thinking and no web tools", async () => {
+  const calls = [];
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async (input) => {
+        calls.push(input);
+        return (async function* () {
+          yield { event_type: "step.delta", delta: { type: "text", text: "<!doctype html><html></html>" } };
+          yield { event_type: "interaction.completed", interaction: { status: "completed" } };
+        })();
+      },
+    },
+  });
+  const service = createHostedAiService({ env: { GEMINI_API_KEY: "test-key" }, gemini: provider });
+  assert.deepEqual(await collect(service.stream({
+    ...request,
+    task: "cv",
+    messages: [{ role: "user", content: "Use the supplied CV template." }],
+  })), [{ type: "text", text: "<!doctype html><html></html>" }]);
+  assert.equal(calls[0].generation_config.max_output_tokens, 16384);
+  assert.equal(calls[0].generation_config.thinking_level, "low");
+  assert.equal(calls[0].tools, undefined);
+});
+
 test("evaluation task accepts bounded canonical context without enabling web search", async () => {
   const requests = [];
   const provider = createGeminiProvider({
