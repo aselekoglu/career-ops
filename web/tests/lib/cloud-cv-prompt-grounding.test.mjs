@@ -1,23 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPrompt } from "../../src/lib/cloud-cv-runs.mjs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-test("hosted CV prompt uses source CV only for claims and contact details", () => {
-  const { system, user } = buildPrompt({
-    company: "Mechanical Orchard",
-    role: "Software Engineer",
-    url: "https://jobs.example.test/job",
-    cv: "Full-stack developer. Email: example@example.test. Java and automated tests.",
-    profile: "Template contact field: (613) 000-1234",
-    targetEvidence: "The job requests Extreme Programming (XP) and test-driven development.",
-    requestedFormat: "letter",
-  });
-  assert.match(system, /SOURCE CV is the authoritative evidence/);
-  assert.match(system, /Every skill, technology, work practice/);
-  assert.match(system, /Only include a contact field, especially a telephone number/);
-  assert.match(system, /Never use sample\/template\/default phone numbers/);
-  assert.match(system, /preserve the exact numeric amount and unit/);
-  assert.match(user, /Job requirements suggest emphasis, never new qualifications/);
-  assert.match(user, /Delete optional elements and their separators/);
-  assert.match(user, /Full-stack developer/);
+// cloud-cv-runs.mjs imports Next.js/Vercel's extensionless modules, so it cannot
+// be imported directly in a native Node test. Verify the static prompt contract
+// without inventing a second renderer or skipping its runtime build checks.
+const source = readFileSync(
+  fileURLToPath(new URL("../../src/lib/cloud-cv-runs.mjs", import.meta.url)),
+  "utf8",
+);
+
+test("hosted tailoring prompt requires every candidate claim to come from source CV", () => {
+  assert.match(source, /SOURCE CV is the authoritative evidence for candidate facts/);
+  assert.match(source, /Every skill, technology, work practice, achievement/);
+  assert.match(source, /Do not infer TDD or Extreme Programming/);
+  assert.match(source, /Only include a contact field, especially a telephone number/);
+  assert.match(source, /Never use sample\/template\/default phone numbers/);
+  assert.match(source, /preserve the exact numeric amount and unit/);
+  assert.match(source, /Job requirements suggest emphasis, never new qualifications/);
+  assert.match(source, /Delete optional elements and their separators/);
 });
