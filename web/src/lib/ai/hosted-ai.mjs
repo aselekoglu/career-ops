@@ -73,8 +73,13 @@ export function createGeminiProvider(client) {
         input: history,
         system_instruction: input.system,
         generation_config: {
-          max_output_tokens: input.task === "evaluation" ? 16384 : input.task === "cv" ? 8192 : input.task === "explore" ? 4096 : 2048,
-          ...(input.task === "evaluation" ? { thinking_level: "low" } : {}),
+          // CV HTML is substantially longer than a short chat answer; the previous
+          // 8192-token ceiling repeatedly yielded incomplete Gemini responses.
+          max_output_tokens: input.task === "evaluation" ? 16384 : input.task === "cv" ? 16384 : input.task === "explore" ? 4096 : 2048,
+          // CV tailoring has its facts and layout supplied in the prompt. Use
+          // the same bounded reasoning mode as evaluations to leave tokens
+          // and latency budget for emitting the complete HTML document.
+          ...(["evaluation", "cv"].includes(input.task) ? { thinking_level: "low" } : {}),
         },
         ...(input.task === "explore" && input.webSearch ? { tools: [{ type: "google_search" }] } : {}),
         stream: true,
