@@ -22,7 +22,7 @@
  */
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, realpathSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, chmodSync, rmSync, existsSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -69,6 +69,32 @@ function writeGitConfig(work, mirror) {
   const cfg = join(work, 'gitconfig');
   const url = pathToFileURL(mirror).href;
   writeFileSync(cfg, `[user]\n\tname = upgrade-tests\n\temail = upgrade-tests@career-ops.test\n[url "${url}"]\n\tinsteadOf = ${CANONICAL}\n\tinsteadOf = ${CANONICAL_LEGACY}\n[safe]\n\tdirectory = *\n`);
+
+  // The updater also consults GitHub's HTTPS ref API for target identity.
+  // Git's insteadOf cannot rewrite curl requests, so the old harness mixed
+  // mirror/main (the fork commit) with public upstream/main (an unrelated SHA).
+  // A test-local curl executable supplies the same ref FROM THE MIRROR.
+  // Unknown URLs fail closed: this test never reaches the actual network.
+  const shimDir = join(work, 'curl-shim');
+  mkdirSync(shimDir, { recursive: true });
+  const shim = [
+    '#!/usr/bin/env node',
+    'const { execFileSync } = require("node:child_process");',
+    'const mirror = process.env.CAREER_OPS_TEST_MIRROR;',
+    'const url = process.argv.slice(2).find(a => a.startsWith("https://"));',
+    'const base = "https://api.github.com/repos/career-ops-hq/career-ops/git/ref/";',
+    'if (!mirror || !url || !url.startsWith(base)) process.exit(22);',
+    'const name = url.slice(base.length);',
+    'if (!/^heads\\/main$|^tags\\/career-ops-v[0-9]+\\.[0-9]+\\.[0-9]+$/.test(name)) process.exit(22);',
+    'const ref = "refs/" + name;',
+    'let sha;',
+    'try { sha = execFileSync("git", ["--git-dir", mirror, "rev-parse", "--verify", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { process.exit(22); }',
+    'if (!/^[0-9a-f]{40}$/.test(sha)) process.exit(22);',
+    'process.stdout.write(JSON.stringify({ ref, object: { sha } }));',
+  ].join('\\n') + '\\n';
+  const curlPath = join(shimDir, 'curl');
+  writeFileSync(curlPath, shim);
+  chmodSync(curlPath, 0o755);
   return cfg;
 }
 
@@ -82,8 +108,13 @@ function writeGitConfig(work, mirror) {
  *  URL out from under the mirror, and the failure looks like a real regression
  *  rather than a poisoned harness. Close both. */
 function hermeticEnv(cfg) {
+  const work = dirname(cfg);
   return {
     ...process.env,
+    // The fake curl reads the mirror's current ref, including canary commits.
+    // PATH overrides apply ONLY to this temporary subprocess environment.
+    CAREER_OPS_TEST_MIRROR: join(work, 'mirror.git'),
+    PATH: join(work, 'curl-shim') + (process.env.PATH ? process.platform === 'win32' ? ';' + process.env.PATH : ':' + process.env.PATH : ''),
     GIT_CONFIG_GLOBAL: cfg,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_COUNT: '0',
