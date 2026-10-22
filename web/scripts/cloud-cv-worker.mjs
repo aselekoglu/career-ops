@@ -9,13 +9,38 @@ const CODE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const API = "https://career-ops-aselekoglu.vercel.app/api/cv-worker";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// Only emit predefined diagnostic codes. Renderer output may contain personal CV data.
+export function classifyRendererFailure(stderr = "") {
+  const message = String(stderr);
+  if (/ENOSPC|no space left on device/i.test(message)) return "CV_RENDER_DISK_FULL";
+  if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module/i.test(message)) return "CV_RENDER_MODULE_MISSING";
+  if (/Executable doesn't exist|browserType\\.launch|Failed to launch chromium|browser has been closed/i.test(message)) {
+    return "CV_RENDER_BROWSER_LAUNCH_FAILED";
+  }
+  if (/escapes the tracker workspace|could not be canonicalized against the tracker workspace/i.test(message)) {
+    return "CV_RENDER_WORKSPACE_GUARD";
+  }
+  if (/timed out|timeout exceeded/i.test(message)) return "CV_RENDER_TIMEOUT";
+  return "CV_RENDER_FAILED";
+}
+
+function safeWorkerErrorCode(error) {
+  const value = String(error?.message || "");
+  return /^CV_[A-Z0-9_]{3,80}$/.test(value) ? value : "CV_WORKER_UNEXPECTED_ERROR";
+}
+
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd || CODE_ROOT,
       env: options.env || process.env,
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
+    });
+    // Keep enough stderr to classify the failure, but never log CV content.
+    let stderr = "";
+    child.stderr?.on("data", chunk => {
+      stderr = (stderr + String(chunk)).slice(-24000);
     });
     let settled = false;
     const timer = setTimeout(() => {
@@ -36,7 +61,7 @@ function runProcess(command, args, options = {}) {
       clearTimeout(timer);
       if (settled) return;
       settled = true;
-      code === 0 ? resolve() : reject(new Error("CV_RENDER_FAILED"));
+      code === 0 ? resolve() : reject(new Error(classifyRendererFailure(stderr)));
     });
   });
 }
@@ -90,28 +115,36 @@ export async function runCloudCvWorker({
   if (!UUID_RE.test(id || "") || !secret) throw new Error("CV_WORKER_CONFIGURATION_INVALID");
 
   async function callback(action, extra = {}) {
-    const response = await fetchFn(API, {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(45_000),
-      headers: {
-        Authorization: "Bearer " + secret,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(Object.assign({ action, runId: id }, extra)),
-    });
+    let response;
+    try {
+      response = await fetchFn(API, {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(45_000),
+        headers: {
+          Authorization: "Bearer " + secret,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(Object.assign({ action, runId: id }, extra)),
+      });
+    } catch {
+      throw new Error("CV_WORKER_" + action.toUpperCase() + "_NETWORK_ERROR");
+    }
     if (action === "claim" && response.status === 409) throw new Error("CV_RUN_NOT_CLAIMABLE");
-    if (!response.ok) throw new Error("CV_WORKER_CALLBACK_FAILED");
+    if (!response.ok) throw new Error("CV_WORKER_" + action.toUpperCase() + "_HTTP_" + response.status);
     return response.json();
   }
 
   if (failOnly) return callback("fail");
 
   let lease = null;
+  let stage = "claim";
   try {
     const claim = await callback("claim");
     lease = claim.lease;
+    stage = "render";
     const receipt = await renderClaim(claim);
+    stage = "complete";
     const result = await callback("complete", { lease, receipt });
     console.log(JSON.stringify({
       runId: id,
@@ -120,6 +153,12 @@ export async function runCloudCvWorker({
     }));
     return result;
   } catch (error) {
+    // Log only constant error codes and a fixed stage, never HTTP bodies or CV text.
+    console.error(JSON.stringify({
+      event: "career_ops_cv_worker_failed",
+      stage,
+      code: safeWorkerErrorCode(error),
+    }));
     if (error.message !== "CV_RUN_NOT_CLAIMABLE") {
       try { await callback("fail", { lease }); } catch {}
     }
