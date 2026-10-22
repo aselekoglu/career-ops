@@ -123,7 +123,7 @@ async function fetchPostingText(url, fetchFn = fetch) {
   return text;
 }
 
-function buildPrompt(args) {
+export function buildPrompt(args) {
   const format = args.requestedFormat === "a4" ? "a4" : "letter";
   const system = [
     "You are the hosted Career Ops CV tailoring worker.",
