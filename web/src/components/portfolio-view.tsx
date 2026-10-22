@@ -375,7 +375,11 @@ export function PortfolioView() {
       const opId = operationKeys.current.begin(`facts-preview:${activeRun.runId}`, payload);
       const response = await portfolioRequest<{ run: PortfolioRun; factsReview: PortfolioRun["factsReview"] }>(`/api/portfolio/runs/${encodeURIComponent(activeRun.runId)}/facts/preview`, json({ ...payload, operationId: opId }));
       operationKeys.current.complete(`facts-preview:${activeRun.runId}`, opId); setActiveRun({ ...activeRun, ...response.run, sourceReview: response.factsReview });
-      setSuccess("Source changes are previewed. Review the exact profile diff before applying it separately.");
+      const hasProfileProposal = Boolean(response.factsReview?.profileProposalId);
+      const hasProfileChanges = Array.isArray(response.factsReview?.sourceDiff) ? response.factsReview.sourceDiff.length > 0 : Boolean(response.factsReview?.sourceDiff);
+      setSuccess(hasProfileProposal && hasProfileChanges
+        ? "The profile diff is ready. Review it below before applying it separately."
+        : "Claim decisions are previewed. No primary source has changed.");
     });
   }
 
@@ -391,7 +395,9 @@ export function PortfolioView() {
       operationKeys.current.complete(`facts-apply:${activeRun.runId}`, opId);
       if (sourceOperationId) operationKeys.current.complete(`source-apply:${activeRun.runId}`, sourceOperationId);
       setActiveRun({ ...activeRun, ...response.run, sourceReview: response.factsReview });
-      setSuccess("The confirmed profile source update was applied. Review the refreshed draft before rendering.");
+      setSuccess(response.factsReview?.profileProposalId && (Array.isArray(response.factsReview.sourceDiff) ? response.factsReview.sourceDiff.length > 0 : Boolean(response.factsReview.sourceDiff))
+        ? "The confirmed profile diff was applied. Review the refreshed draft before rendering."
+        : "Claim decisions are saved. No primary source was changed. Review the refreshed draft before rendering.");
     });
   }
 
