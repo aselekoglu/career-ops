@@ -46,7 +46,8 @@ jobs:
       # Test the actual GitHub runner's browser libraries before touching
       # private CV data; this distinguishes a missing library from a bad CV.
       - name: Smoke test headless Chromium on runner
-        run: node --input-type=module -e "import { chromium } from 'playwright'; const browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); await page.setContent('<h1>CV renderer smoke</h1>'); await page.pdf(); await browser.close();"
+        run: |
+          node --input-type=module -e "import { chromium } from 'playwright'; const browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); await page.setContent('<h1>CV renderer smoke</h1>'); await page.pdf(); await browser.close();"
       - name: Render tailored CV
         run: node web/scripts/cloud-cv-worker.mjs
       - name: Persist worker failure
