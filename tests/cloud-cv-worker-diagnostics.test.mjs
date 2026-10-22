@@ -43,6 +43,13 @@ test("CV worker distinguishes document ordering from missing browser libraries",
   );
 });
 
+test("CV worker gives private fact-check failures safe categories", { skip: !hasWeb }, () => {
+  assert.equal(classifyRendererFailure("Fact check failed: non-metric facts absent from sources: confidential-claim"), "CV_RENDER_UNSUPPORTED_FACT");
+  assert.equal(classifyRendererFailure("Fact check failed: metric-like claims absent from sources: private-number"), "CV_RENDER_UNSUPPORTED_METRIC");
+  assert.equal(classifyRendererFailure("Fact check failed: forbidden phrases found: private-phrase"), "CV_RENDER_FORBIDDEN_PHRASE");
+  assert.equal(classifyRendererFailure("Fact check failed"), "CV_RENDER_FACT_VALIDATION");
+});
+
 test("CV worker never exposes input stderr or CV contents in failure codes", { skip: !hasWeb }, () => {
   const secret = "PRIVATE_CV_TEXT secret_token_123";
   const classified = classifyRendererFailure("Error: " + secret);

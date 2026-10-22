@@ -29,6 +29,10 @@ export function classifyRendererFailure(stderr = "") {
   if (/escapes the tracker workspace|could not be canonicalized against the tracker workspace/i.test(message)) {
     return "CV_RENDER_WORKSPACE_GUARD";
   }
+  // Classify failure types without printing private claims or raw resume text.
+  if (/non-metric facts absent from sources/i.test(message)) return "CV_RENDER_UNSUPPORTED_FACT";
+  if (/metric-like claims absent from sources/i.test(message)) return "CV_RENDER_UNSUPPORTED_METRIC";
+  if (/forbidden phrases found/i.test(message)) return "CV_RENDER_FORBIDDEN_PHRASE";
   if (/fact check failed|CV fact check|unverified numerical claim|unsupported metric/i.test(message)) {
     return "CV_RENDER_FACT_VALIDATION";
   }
