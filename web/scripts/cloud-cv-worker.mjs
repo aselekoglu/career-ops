@@ -14,7 +14,7 @@ export function classifyRendererFailure(stderr = "") {
   const message = String(stderr);
   if (/ENOSPC|no space left on device/i.test(message)) return "CV_RENDER_DISK_FULL";
   if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module/i.test(message)) return "CV_RENDER_MODULE_MISSING";
-  if (/Executable doesn't exist|browserType\\.launch|Failed to launch chromium|browser has been closed/i.test(message)) {
+  if (/Executable doesn't exist|browserType[.]launch|Failed to launch chromium|browser has been closed/i.test(message)) {
     return "CV_RENDER_BROWSER_LAUNCH_FAILED";
   }
   if (/escapes the tracker workspace|could not be canonicalized against the tracker workspace/i.test(message)) {
