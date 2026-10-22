@@ -42,7 +42,7 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund
           npx playwright install chromium --only-shell
       - name: Test CV worker diagnostics
-        run: node --test web/tests/cloud-cv-worker.test.mjs
+        run: node --test tests/cloud-cv-worker-diagnostics.test.mjs
       - name: Render tailored CV
         run: node web/scripts/cloud-cv-worker.mjs
       - name: Persist worker failure
