@@ -55,7 +55,7 @@ test("rankings are deterministic and do not auto-link anything",()=>{
 });
 test("queries use existing career_ops_documents store and archive immutable versions",async()=>{
   const calls=[];
-  const sql={query:async(q,args)=>{calls.push([q,args]);if(q.startsWith("WITH p AS"))return [{version:q.includes("INSERT INTO career_ops_portfolios")?1:2}];return [];}};
+  const sql={query:async(q,args)=>{calls.push([q,args]);if(q.includes("WITH existing AS")&&(q.includes("INSERT INTO career_ops_portfolios")||q.includes("UPDATE career_ops_portfolios")))return [{version:q.includes("INSERT INTO career_ops_portfolios")?1:2}];return [];}};
   const store=createPortfolioStore(sql);
   const one=await store.upload({title:"Master",kind:"master",tags:["analytics"],projectIds:[]},fakePdf);
   assert.equal(one.version,1);
@@ -63,7 +63,7 @@ test("queries use existing career_ops_documents store and archive immutable vers
   const result=await store.upload({portfolioId:one.portfolioId},fakePdf);
   assert.equal(result.version,2);
   assert.equal(result.portfolioId,one.portfolioId);
-  assert.ok(calls.some(([query])=>query.includes("FOR UPDATE")));
+  assert.ok(calls.some(([query])=>query.includes("UPDATE career_ops_portfolios SET revision=revision+1")));
   assert.ok(calls.filter(([query])=>query.includes("INSERT INTO career_ops_documents")).every(([,args])=>args[5].startsWith("portfolios/")));
 });
 test("application association checks exact numeric tracker ID first",async()=>{

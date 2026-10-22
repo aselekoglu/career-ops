@@ -1,0 +1,43 @@
+name: Career Ops portfolio worker
+run-name: Career Ops portfolio ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Authenticated durable portfolio run identifier
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: career-ops-portfolio-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PORTFOLIO_RUN_ID: ${{ inputs.run_id }}
+      CAREER_OPS_SCAN_WORKER_SECRET: ${{ secrets.CAREER_OPS_SCAN_WORKER_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install renderer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+          npm install --ignore-scripts --no-audit --no-fund
+          npx playwright install chromium --with-deps
+      - name: Process portfolio run
+        run: node web/scripts/cloud-portfolio-worker.mjs
+      - name: Persist worker failure
+        if: failure()
+        run: node web/scripts/cloud-portfolio-worker.mjs --fail
