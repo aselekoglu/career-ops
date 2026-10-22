@@ -289,6 +289,7 @@ export function createPortfolioRunStore({sql,env=process.env,dispatch=dispatchPo
     const row=await find(id);if(!row)throw new PortfolioError('PORTFOLIO_RUN_NOT_FOUND',404);
     const preview=row.fact_preview;if(!preview||preview.previewId!==body.previewId||preview.expectedDraftSha256!==body.expectedDraftSha256)throw new PortfolioError('PORTFOLIO_FACTS_PREVIEW_STALE',409);
     if(preview.confirmed&&preview.appliedOperationId===body.operationId&&preview.appliedPayloadHash===payloadHash)return preview.appliedResponse||{run:publicRun(row),factsReview:{...preview.factsReview,status:'applied'}};
+    if(row.state!=='awaiting_review'||row.draft_sha256!==body.expectedDraftSha256)throw new PortfolioError('PORTFOLIO_FACTS_PREVIEW_STALE',409);
     if(preview.profileProposalId){
       if(body.profileProposalId!==preview.profileProposalId||body.expectedProfileSha256!==preview.profileSha256||!UUID.test(String(body.sourceOperationId||'')))throw new PortfolioError('PORTFOLIO_PROFILE_CONFIRMATION_REQUIRED',409);
       const manager=sourceManager||createCloudSourceManagementFromEnv();

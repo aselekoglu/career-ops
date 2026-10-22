@@ -16,6 +16,7 @@ const env={DATABASE_URL:'fixture',GEMINI_API_KEY:'fixture',CAREER_OPS_SCAN_DISPA
 function fixture({aiText=JSON.stringify({document:baseDocument}),now=()=>new Date(),extraSources={},workerEnv=env}={}){
   const runs=new Map(),operations=new Map(),decisions=new Map(),versions=new Map();let dispatchCount=0,aiCount=0;
   const portfolio={id:randomUUID(),title:'Synthetic portfolio',kind:'master',tags:[],projectIds:[],revision:4,archivedAt:null};
+  let sourceApplyCount=0;
   const sql={async query(query,args=[]){
     if(/^(CREATE|ALTER)/i.test(query.trim()))return [];
     if(query.includes('SELECT payload_sha256,result FROM career_ops_portfolio_run_operations')){const op=operations.get(args[0]);return op?[{payload_sha256:op.payload_sha256,result:op.result??null}]:[]}
@@ -50,9 +51,9 @@ function fixture({aiText=JSON.stringify({document:baseDocument}),now=()=>new Dat
     async saveGeneratedVersion({portfolioId,runId,lease,bytes,expectedRevision,metadata}){const row=runs.get(runId);if(!row||row.state!=='running'||row.phase!=='render'||row.lease!==lease||row.expected_revision!==expectedRevision)throw new Error('PORTFOLIO_STALE_REVISION');const prior=versions.get(runId);if(prior)return prior;const result={portfolioId,version:(portfolio.revision===expectedRevision?2:1),documentPath:`portfolios/${portfolioId}-${runId}.pdf`,sha256:createHash('sha256').update(bytes).digest('hex'),byteSize:bytes.length};Object.assign(row,{state:'completed',pdf_path:result.documentPath,pdf_sha256:result.sha256,pdf_byte_size:result.byteSize,version:result.version,lease:null,completed_at:now()});Object.assign(portfolio,{revision:portfolio.revision+1,...metadata});versions.set(runId,result);return result;},
   };
   const aiService={status:()=>({ready:true}),async *stream(){aiCount++;yield {type:'text',text:aiText}}};
-  const sourceManager={async readSource(){return {sha256:'a'.repeat(64)}},async createProposal(_source,input){return {proposalId:input.operationId,diff:[{path:'target_roles.primary',after:['Engineer']}]};},async applyProposal(_source,input){return {ok:true,operationId:input.operationId}}};
+  const sourceManager={async readSource(){return {sha256:'a'.repeat(64)}},async createProposal(_source,input){return {proposalId:input.operationId,diff:[{path:'target_roles.primary',after:['Engineer']}]};},async applyProposal(_source,input){sourceApplyCount++;return {ok:true,operationId:input.operationId}}};
   const service=createPortfolioRunStore({sql,env:workerEnv,portfolioStore,readDocument:async path=>({...ownerSources,...extraSources})[path]||null,aiService,sourceManager,dispatch:async()=>{dispatchCount++},now});
-  return {service,portfolio,decisions,runs,versions,operations,get dispatchCount(){return dispatchCount},get aiCount(){return aiCount}};
+  return {service,portfolio,decisions,runs,versions,operations,get dispatchCount(){return dispatchCount},get aiCount(){return aiCount},get sourceApplyCount(){return sourceApplyCount}};
 }
 
 test('manual edits move through review, revision-bound render, immutable completion and exact callback replay',async()=>{
@@ -85,7 +86,9 @@ test('the UI PDF-only contract is edit+portfolio, leases an exact binary source,
   assert.equal(drafted.status,'awaiting_review');assert.equal(drafted.sourceReview.claims.length,1);assert.equal(drafted.sourceReview.claims[0].outcome,null);
   await assert.rejects(()=>f.service.apply(run.runId,{operationId:randomUUID(),expectedDraftSha256:drafted.draftSha256,confirm:true}),{message:'PORTFOLIO_FACTS_REVIEW_REQUIRED'});
   const reviewed=await f.service.factsPreview(run.runId,{operationId:randomUUID(),expectedDraftSha256:drafted.draftSha256,decisions:[{claimId:drafted.sourceReview.claims[0].claimId,outcome:'do-not-know'}]});
-  const facts=await f.service.factsApply(run.runId,{operationId:randomUUID(),previewId:reviewed.factsReview.previewId,expectedDraftSha256:reviewed.run.draftSha256,confirm:true});
+  const factsApplyBody={operationId:randomUUID(),previewId:reviewed.factsReview.previewId,expectedDraftSha256:reviewed.run.draftSha256,confirm:true};
+  const facts=await f.service.factsApply(run.runId,factsApplyBody);
+  const row=f.runs.get(run.runId);row.state='canceled';assert.deepEqual(await f.service.factsApply(run.runId,factsApplyBody),facts);row.state='awaiting_review';
   assert.equal(facts.factsReview.claims[0].outcome,'user-cannot-confirm');assert.equal(f.decisions.size,1);
   const queued=await f.service.apply(run.runId,{operationId:randomUUID(),expectedDraftSha256:facts.run.draftSha256,confirm:true});assert.equal(queued.status,'queued');
 });
@@ -124,4 +127,20 @@ test('variant generation validates selected master, projects and exact tracker c
   const draft=await f.service.draft(run.runId,claim.lease);assert.equal(draft.status,'awaiting_review');
   await assert.rejects(()=>f.service.start({operationId:randomUUID(),mode:'generate',sourceMode:'profile',kind:'variant',title:'Missing master',tags:[],projectIds:[],format:'letter'}),{message:'PORTFOLIO_MASTER_REQUIRED'});
   await assert.rejects(()=>f.service.start({operationId:randomUUID(),mode:'generate',sourceMode:'profile',kind:'master',title:'Missing tracker',tags:[],projectIds:[],applicationNumber:'99',format:'letter'}),{message:'PORTFOLIO_APPLICATION_NOT_FOUND'});
+});
+
+test('stale or canceled fact previews cannot apply a profile proposal or record claim decisions',async()=>{
+  const aiText=JSON.stringify({document:{...baseDocument,summary:'Led delivery of a platform.'},evidence:[],unverifiedClaims:[{text:'Led delivery of a platform.',kind:'scope',source:'portfolio-pdf'}]});
+  for(const invalidState of ['stale','canceled']){
+    const f=fixture({aiText});
+    const run=await f.service.start({operationId:randomUUID(),mode:'edit',sourceMode:'portfolio',kind:'master',title:f.portfolio.title,tags:[],projectIds:[],basePortfolioId:f.portfolio.id,baseVersion:1,expectedRevision:f.portfolio.revision,format:'letter'});
+    const claim=await f.service.claim(run.runId);const draft=await f.service.draft(run.runId,claim.lease,'Led delivery of a platform. Synthetic extracted source has more than forty characters.');
+    const sourceClaim=draft.sourceReview.claims[0];
+    const preview=await f.service.factsPreview(run.runId,{operationId:randomUUID(),expectedDraftSha256:draft.draftSha256,decisions:[{claimId:sourceClaim.claimId,outcome:'correct',correctedText:'Engineer'}],profilePatch:{roles:['Engineer']},profileClaimIds:{roles:sourceClaim.claimId}});
+    const row=f.runs.get(run.runId);
+    if(invalidState==='stale')row.draft_sha256='f'.repeat(64);else row.state='canceled';
+    const before=f.sourceApplyCount;
+    await assert.rejects(()=>f.service.factsApply(run.runId,{operationId:randomUUID(),previewId:preview.factsReview.previewId,expectedDraftSha256:preview.run.draftSha256,profileProposalId:preview.factsReview.profileProposalId,expectedProfileSha256:preview.factsReview.profileSha256,sourceOperationId:randomUUID(),confirm:true}),{message:'PORTFOLIO_FACTS_PREVIEW_STALE'});
+    assert.equal(f.sourceApplyCount,before);assert.equal(f.decisions.size,0);
+  }
 });
