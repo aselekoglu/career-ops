@@ -92,7 +92,7 @@ test("Gemini Search is enabled only for Explore and output is capped at 4096 tok
   assert.equal(requests[1].tools, undefined);
 });
 
-test("CV task gets a larger private context budget and an 8192-token output cap", async () => {
+test("CV task gets a larger private context and a 16384-token output budget", async () => {
   const requests = [];
   const provider = createGeminiProvider({
     interactions: {
@@ -107,7 +107,8 @@ test("CV task gets a larger private context budget and an 8192-token output cap"
   assert.deepEqual(await collect(provider.stream({ ...request, task: "cv", webSearch: false })), [
     { type: "text", text: "CV" },
   ]);
-  assert.equal(requests[0].generation_config.max_output_tokens, 8192);
+  assert.equal(requests[0].generation_config.max_output_tokens, 16384);
+  assert.equal(requests[0].generation_config.thinking_level, "low");
   assert.equal(requests[0].tools, undefined);
 
   let calls = 0;
