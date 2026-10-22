@@ -170,7 +170,7 @@ function buildPrompt(args) {
     HOSTED_CV_TEMPLATE.slice(0, MAX_TEMPLATE_CHARS),
     "</cv_template>",
     "",
-    "Apply the canonical tailoring behavior: inject relevant target keywords naturally into the summary and strongest first bullets; order experience and projects by relevance; keep the competency grid targeted; keep only the strongest 3-4 projects; preserve factual accuracy; avoid keyword stuffing; aim for 1-2 pages.",
+    "Apply the canonical tailoring behavior: inject relevant target keywords naturally into the summary and strongest first bullets; keep work experience in strict reverse-chronological order (most recent role first); prioritize relevance within each role's bullet points and in project ordering; keep the competency grid targeted; keep only the strongest 3-4 projects; preserve factual accuracy; avoid keyword stuffing; aim for 1-2 pages.",
     "Fill every template placeholder. If a section has no factual content, remove that section instead of inventing content. Do not add a profile photo.",
     CV_ENVELOPE_INSTRUCTION,
     'Use format="' + format + '" in the opening marker. Emit one complete envelope and no second envelope.',
