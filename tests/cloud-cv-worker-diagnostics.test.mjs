@@ -28,6 +28,21 @@ test("CV worker identifies workspace guard and timeout failures", { skip: !hasWe
   assert.equal(classifyRendererFailure("Timeout exceeded while printing PDF"), "CV_RENDER_TIMEOUT");
 });
 
+test("CV worker distinguishes document ordering from missing browser libraries", { skip: !hasWeb }, () => {
+  assert.equal(
+    classifyRendererFailure("PDF generation failed: CV work experience is not in reverse-chronological order"),
+    "CV_RENDER_EXPERIENCE_ORDER",
+  );
+  assert.equal(
+    classifyRendererFailure("Host system is missing dependencies to run browsers"),
+    "CV_RENDER_MISSING_SYSTEM_LIBRARIES",
+  );
+  assert.equal(
+    classifyRendererFailure("CV section order mismatch: education before projects"),
+    "CV_RENDER_SECTION_ORDER",
+  );
+});
+
 test("CV worker never exposes input stderr or CV contents in failure codes", { skip: !hasWeb }, () => {
   const secret = "PRIVATE_CV_TEXT secret_token_123";
   const classified = classifyRendererFailure("Error: " + secret);
