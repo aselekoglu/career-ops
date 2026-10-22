@@ -92,7 +92,7 @@ test("Gemini Search is enabled only for Explore and output is capped at 4096 tok
   assert.equal(requests[1].tools, undefined);
 });
 
-test("CV task gets a larger private context budget and an 8192-token output cap", async () => {
+test("CV task gets a larger private context and a 16384-token output budget", async () => {
   const requests = [];
   const provider = createGeminiProvider({
     interactions: {
@@ -107,7 +107,8 @@ test("CV task gets a larger private context budget and an 8192-token output cap"
   assert.deepEqual(await collect(provider.stream({ ...request, task: "cv", webSearch: false })), [
     { type: "text", text: "CV" },
   ]);
-  assert.equal(requests[0].generation_config.max_output_tokens, 8192);
+  assert.equal(requests[0].generation_config.max_output_tokens, 16384);
+  assert.equal(requests[0].generation_config.thinking_level, "low");
   assert.equal(requests[0].tools, undefined);
 
   let calls = 0;
@@ -126,6 +127,30 @@ test("CV task gets a larger private context budget and an 8192-token output cap"
     messages: [{ role: "user", content: "x".repeat(100_001) }],
   })), { code: "HOSTED_AI_INPUT_TOO_LARGE" });
   assert.equal(calls, 1);
+});
+
+test("CV task allocates enough output tokens with low thinking and no web tools", async () => {
+  const calls = [];
+  const provider = createGeminiProvider({
+    interactions: {
+      create: async (input) => {
+        calls.push(input);
+        return (async function* () {
+          yield { event_type: "step.delta", delta: { type: "text", text: "<!doctype html><html></html>" } };
+          yield { event_type: "interaction.completed", interaction: { status: "completed" } };
+        })();
+      },
+    },
+  });
+  const service = createHostedAiService({ env: { GEMINI_API_KEY: "test-key" }, gemini: provider });
+  assert.deepEqual(await collect(service.stream({
+    ...request,
+    task: "cv",
+    messages: [{ role: "user", content: "Use the supplied CV template." }],
+  })), [{ type: "text", text: "<!doctype html><html></html>" }]);
+  assert.equal(calls[0].generation_config.max_output_tokens, 16384);
+  assert.equal(calls[0].generation_config.thinking_level, "low");
+  assert.equal(calls[0].tools, undefined);
 });
 
 test("evaluation task accepts bounded canonical context without enabling web search", async () => {
