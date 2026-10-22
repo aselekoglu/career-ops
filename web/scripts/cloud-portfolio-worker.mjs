@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {spawn} from 'node:child_process';
 import {extractPdfTextFromFile} from '../../intake.mjs';
 import {isMainModule} from '../../lib/is-main-module.mjs';
@@ -19,10 +19,18 @@ function runProcess(command,args){return new Promise((resolve,reject)=>{
 export async function renderPortfolioClaim(claim,{run=runProcess,root=CODE_ROOT}={}){
   if(!claim||!UUID.test(claim.runId||'')||!UUID.test(claim.lease||'')||claim.phase!=='render'||typeof claim.html!=='string'||!claim.html.includes('</html>')||!['letter','a4'].includes(claim.format)||claim.maxPages!==12)throw new Error('INVALID_PORTFOLIO_WORKER_CLAIM');
   const temp=await fs.mkdtemp(path.join(os.tmpdir(),'career-ops-portfolio-'));
-  const input=path.join(temp,`${claim.runId}.html`),output=path.join(temp,`${claim.runId}.pdf`);
+  const workspace=path.join(temp,'workspace');
+  const documents=path.join(workspace,'documents');const outputDir=path.join(workspace,'output');
+  await fs.mkdir(documents,{recursive:true});await fs.mkdir(outputDir,{recursive:true});
+  const input=path.join(documents,`${claim.runId}.html`),output=path.join(outputDir,`${claim.runId}.pdf`);
+  const bootstrap=path.join(temp,'portfolio-render-bootstrap.mjs');
   try{
+    // The canonical renderer enforces containment against its resolved Career
+    // Ops workspace. Give it an isolated workspace under this run's temp root;
+    // do not broaden its guard or point it at the checkout's user data.
+    await fs.writeFile(bootstrap,`process.env.CAREER_OPS_ROOT=${JSON.stringify(workspace)};delete process.env.CAREER_OPS_DATA_DIR;delete process.env.CAREER_OPS_TRACKER;delete process.env.CAREER_OPS_PDF_INDEX;delete process.env.CAREER_OPS_TRACKER_LOCK;`,'utf8');
     await fs.writeFile(input,claim.html,'utf8');
-    await run(process.execPath,[path.join(root,'generate-pdf.mjs'),input,output,`--format=${claim.format}`,'--allow-reorder','--max-pages=12','--strict-pages']);
+    await run(process.execPath,['--import',pathToFileURL(bootstrap).href,path.join(root,'generate-pdf.mjs'),input,output,`--format=${claim.format}`,'--allow-reorder','--max-pages=12','--strict-pages']);
     const pdf=await fs.readFile(output);if(pdf.length<500||pdf.length>3_000_000||pdf.subarray(0,5).toString('ascii')!=='%PDF-'||!pdf.subarray(-2048).toString('latin1').includes('%%EOF'))throw new Error('PORTFOLIO_RENDER_INVALID_PDF');
     return {pdfBase64:pdf.toString('base64'),byteSize:pdf.length};
   }finally{await fs.rm(temp,{recursive:true,force:true}).catch(()=>{})}
