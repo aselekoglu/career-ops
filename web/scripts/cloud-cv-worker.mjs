@@ -14,11 +14,23 @@ export function classifyRendererFailure(stderr = "") {
   const message = String(stderr);
   if (/ENOSPC|no space left on device/i.test(message)) return "CV_RENDER_DISK_FULL";
   if (/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|Cannot find module/i.test(message)) return "CV_RENDER_MODULE_MISSING";
+  if (/CV work experience is not in reverse-chronological order/i.test(message)) {
+    return "CV_RENDER_EXPERIENCE_ORDER";
+  }
+  if (/CV section order|section order does not match|section order mismatch/i.test(message)) {
+    return "CV_RENDER_SECTION_ORDER";
+  }
+  if (/Host system is missing dependencies to run browsers|Missing libraries|error while loading shared libraries/i.test(message)) {
+    return "CV_RENDER_MISSING_SYSTEM_LIBRARIES";
+  }
   if (/Executable doesn't exist|browserType[.]launch|Failed to launch chromium|browser has been closed/i.test(message)) {
     return "CV_RENDER_BROWSER_LAUNCH_FAILED";
   }
   if (/escapes the tracker workspace|could not be canonicalized against the tracker workspace/i.test(message)) {
     return "CV_RENDER_WORKSPACE_GUARD";
+  }
+  if (/fact check failed|CV fact check|unverified numerical claim|unsupported metric/i.test(message)) {
+    return "CV_RENDER_FACT_VALIDATION";
   }
   if (/timed out|timeout exceeded/i.test(message)) return "CV_RENDER_TIMEOUT";
   return "CV_RENDER_FAILED";
