@@ -151,13 +151,15 @@ const SCHEMA = [
 )`,
 `CREATE TABLE IF NOT EXISTS career_ops_portfolio_runs (
  id UUID PRIMARY KEY, operation_id UUID NOT NULL UNIQUE, state TEXT NOT NULL, phase TEXT NOT NULL, request JSONB NOT NULL,
- portfolio_id UUID, expected_revision INTEGER, source_version INTEGER, source_sha256 TEXT, source_hashes JSONB NOT NULL DEFAULT '{}'::jsonb,
- document_json JSONB, draft_sha256 TEXT, source_review JSONB, fact_preview JSONB, format TEXT NOT NULL, lease UUID, lease_expires_at TIMESTAMPTZ,
+ portfolio_id UUID, expected_revision INTEGER, source_version INTEGER, source_revision INTEGER, source_sha256 TEXT, source_hashes JSONB NOT NULL DEFAULT '{}'::jsonb,
+ document_json JSONB, draft_sha256 TEXT, source_review JSONB, fact_preview JSONB, action_receipt JSONB, format TEXT NOT NULL, lease UUID, lease_expires_at TIMESTAMPTZ,
  pdf_path TEXT, pdf_sha256 TEXT, pdf_byte_size INTEGER, error_code TEXT, requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, canceled_at TIMESTAMPTZ, version INTEGER
  )`,
 `ALTER TABLE career_ops_portfolio_runs ADD COLUMN IF NOT EXISTS source_review JSONB`,
 `ALTER TABLE career_ops_portfolio_runs ADD COLUMN IF NOT EXISTS fact_preview JSONB`,
+`ALTER TABLE career_ops_portfolio_runs ADD COLUMN IF NOT EXISTS action_receipt JSONB`,
+`ALTER TABLE career_ops_portfolio_runs ADD COLUMN IF NOT EXISTS source_revision INTEGER`,
 `ALTER TABLE career_ops_portfolio_runs ADD COLUMN IF NOT EXISTS version INTEGER`
 ];
 
@@ -174,7 +176,7 @@ export function createPortfolioStore(sql) {
       sql.query("SELECT portfolio_id,version,document_path,sha256,byte_size,created_at,document_json FROM career_ops_portfolio_versions ORDER BY version DESC", []),
       sql.query(`SELECT id,name,summary,url,tags,created_at,revision,archived_at FROM career_ops_portfolio_projects ${includeArchived ? "" : "WHERE archived_at IS NULL"} ORDER BY created_at DESC`, []),
       sql.query("SELECT application_number,portfolio_id,version,created_at FROM career_ops_portfolio_applications", []),
-      sql.query("SELECT id,state,phase,request,portfolio_id,expected_revision,source_version,source_sha256,source_hashes,draft_sha256,source_review,fact_preview,format,requested_at,started_at,completed_at,error_code,version FROM career_ops_portfolio_runs ORDER BY requested_at DESC LIMIT 50", []),
+      sql.query("SELECT id,state,phase,request,portfolio_id,expected_revision,source_version,source_revision,source_sha256,source_hashes,draft_sha256,source_review,fact_preview,format,requested_at,started_at,completed_at,error_code,version FROM career_ops_portfolio_runs ORDER BY requested_at DESC LIMIT 50", []),
       sql.query("SELECT project_ids FROM career_ops_portfolios", []),
     ]);
     return {
@@ -190,7 +192,7 @@ export function createPortfolioStore(sql) {
       runs:runs.map(row=>{const request=typeof row.request==='string'?(()=>{try{return JSON.parse(row.request)}catch{return {}}})():row.request||{};return {
         runId:row.id,status:row.state,phase:row.phase,portfolioId:row.portfolio_id||null,title:request.title||null,mode:request.mode||null,sourceMode:request.sourceMode||'profile',
         tags:Array.isArray(request.tags)?request.tags.slice(0,16):[],projectIds:Array.isArray(request.projectIds)?request.projectIds.slice(0,64):[],
-        expectedRevision:Number(row.expected_revision||0),sourceVersion:row.source_version==null?null:Number(row.source_version),sourceSha256:row.source_sha256||null,
+        expectedRevision:Number(row.expected_revision||0),sourceRevision:row.source_revision==null?null:Number(row.source_revision),sourceVersion:row.source_version==null?null:Number(row.source_version),sourceSha256:row.source_sha256||null,
         sourceHashes:row.source_hashes||{},draftSha256:row.state==='awaiting_review'?row.draft_sha256:null,
         sourceReview:row.state==='awaiting_review'?{claims:Array.isArray(row.source_review)?row.source_review.slice(0,80):[],factsReview:row.fact_preview?.factsReview||null}:undefined,
         format:row.format,version:row.state==='completed'?Number(row.version||0):null,
@@ -399,7 +401,8 @@ export function createPortfolioStore(sql) {
         WHERE r.id=$3 AND r.lease=$9 AND r.state='running' AND r.phase='render' AND r.lease_expires_at>now()
           AND p.id=$1 AND p.revision=$2 AND p.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM existing)
         FOR UPDATE OF r,p),
-      parent AS (UPDATE career_ops_portfolios p SET title=COALESCE($10::jsonb->>'title',p.title),kind=COALESCE($10::jsonb->>'kind',p.kind),tags=COALESCE($10::jsonb->'tags',p.tags),project_ids=COALESCE($10::jsonb->'projectIds',p.project_ids),revision=revision+1 FROM eligible e WHERE p.id=$1 AND p.revision=$2 RETURNING p.id),
+      project_guard AS (SELECT id FROM career_ops_portfolio_projects WHERE id IN (SELECT jsonb_array_elements_text(COALESCE($10::jsonb->'projectIds','[]'::jsonb))::uuid) AND archived_at IS NULL FOR KEY SHARE),
+      parent AS (UPDATE career_ops_portfolios p SET title=COALESCE($10::jsonb->>'title',p.title),kind=COALESCE($10::jsonb->>'kind',p.kind),tags=COALESCE($10::jsonb->'tags',p.tags),project_ids=COALESCE($10::jsonb->'projectIds',p.project_ids),revision=revision+1 FROM eligible e WHERE p.id=$1 AND p.revision=$2 AND (SELECT COUNT(*) FROM project_guard)=jsonb_array_length(COALESCE($10::jsonb->'projectIds','[]'::jsonb)) RETURNING p.id),
       nextv AS (SELECT (COALESCE(MAX(v.version),0)+1)::int n FROM career_ops_portfolio_versions v,parent WHERE v.portfolio_id=parent.id),
       doc AS (INSERT INTO career_ops_documents(path,content,sha256,content_encoding,byte_size,updated_at)
         SELECT $4,$5,$6,'base64',$7,now() FROM parent WHERE NOT EXISTS(SELECT 1 FROM existing) ON CONFLICT(path) DO NOTHING RETURNING path),
