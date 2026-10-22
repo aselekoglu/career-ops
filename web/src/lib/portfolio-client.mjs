@@ -15,6 +15,10 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+export function portfolioRunMode(sourceMode) {
+  return sourceMode === "portfolio" ? "edit" : "generate";
+}
+
 /** Keep one id per logical mutation until it succeeds; retries must keep the same payload. */
 export function createPortfolioOperationKeys(makeId = () => crypto.randomUUID()) {
   const pending = new Map();

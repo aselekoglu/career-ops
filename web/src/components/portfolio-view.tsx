@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { normalizePortfolioDocument, renderPortfolioDocument } from "@/lib/portfolio-document.mjs";
 import type { PortfolioDocument } from "@/lib/portfolio-document.mjs";
-import { createPortfolioOperationKeys, portfolioRequest } from "@/lib/portfolio-client.mjs";
+import { createPortfolioOperationKeys, portfolioRequest, portfolioRunMode } from "@/lib/portfolio-client.mjs";
 
 type Project = { id: string; name: string; summary: string; url: string; tags: string[]; revision?: number; archivedAt?: string | null; usageCount?: number };
 type Version = { version: number; bytes: number; sha256: string; createdAt: string; hasEditableContent?: boolean };
@@ -180,8 +180,9 @@ export function PortfolioView() {
     event.preventDefault();
     await withBusy("generate", async () => {
       const payload = {
-        mode: "generate", sourceMode, kind, title: title.trim(), tags: words(tags), projectIds,
+        mode: portfolioRunMode(sourceMode), sourceMode, kind, title: title.trim(), tags: words(tags), projectIds,
         basePortfolioId: basePortfolioId || undefined, baseVersion: baseVersion || undefined,
+        expectedRevision: sourceMode === "portfolio" ? catalog.portfolios.find((portfolio) => portfolio.id === basePortfolioId)?.revision : undefined,
         applicationNumber: applicationNumber.trim() || undefined, instructions: instructions.trim() || undefined, format,
       };
       const opId = operationKeys.current.begin("run:create", payload);
@@ -217,7 +218,7 @@ export function PortfolioView() {
       const detail = await portfolioRequest<{ portfolio: Portfolio; version: Version; document: PortfolioDocument | null }>(`/api/portfolio/detail?portfolioId=${encodeURIComponent(portfolio.id)}&version=${version}`);
       const selectedDocument = detail.document ? normalizePortfolioDocument(detail.document) : undefined;
       const payload = {
-        mode: selectedDocument ? "edit" : "generate", sourceMode: selectedDocument ? "profile" : "portfolio", kind: detail.portfolio.kind,
+        mode: "edit", sourceMode: selectedDocument ? "profile" : "portfolio", kind: detail.portfolio.kind,
         title: detail.portfolio.title, tags: detail.portfolio.tags, projectIds: detail.portfolio.projectIds,
         basePortfolioId: detail.portfolio.id, baseVersion: detail.version.version,
         expectedRevision: revisionOf(detail.portfolio), format, ...(selectedDocument ? { document: selectedDocument } : {}),

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPortfolioOperationKeys, portfolioErrorMessage } from "../../src/lib/portfolio-client.mjs";
+import { createPortfolioOperationKeys, portfolioErrorMessage, portfolioRunMode } from "../../src/lib/portfolio-client.mjs";
 
 test("a failed mutation retry keeps its UUID, while changed input starts a new operation", () => {
   let next = 0;
@@ -20,4 +20,9 @@ test("revision/source conflicts explain the recovery step", () => {
   assert.match(portfolioErrorMessage("PORTFOLIO_REVISION_CONFLICT", 409), /Refresh it/);
   assert.match(portfolioErrorMessage("PORTFOLIO_SOURCE_REVIEW_REQUIRED", 422), /Source review/);
   assert.match(portfolioErrorMessage("PORTFOLIO_ACTIVE_RUN_EXISTS", 409), /Review or cancel that run/);
+});
+
+test("PDF intake uses edit mode, while primary-profile drafting uses generate mode", () => {
+  assert.equal(portfolioRunMode("portfolio"), "edit");
+  assert.equal(portfolioRunMode("profile"), "generate");
 });
