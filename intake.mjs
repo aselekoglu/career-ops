@@ -101,6 +101,20 @@ export function detectPdfExtractor(probe = defaultProbe) {
   return null;
 }
 
+/** Extract a text-layer PDF from a caller-controlled ephemeral path. The hosted
+ * portfolio worker uses this same Poppler implementation after validating the
+ * path and byte source; this helper writes no intake ledger or user files. */
+export function extractPdfTextFromFile(path, {probe = defaultProbe, maxChars = 120_000} = {}) {
+  if (typeof path !== 'string' || !path || !Number.isInteger(maxChars) || maxChars < 1 || maxChars > 500_000) {
+    throw new Error('INVALID_PDF_INTAKE_INPUT');
+  }
+  const extractor = detectPdfExtractor(probe);
+  if (!extractor) throw new Error('PDF_EXTRACTOR_UNAVAILABLE');
+  const text = extractor.extract(path).replace(/\u0000/g, '').slice(0, maxChars);
+  if (text.trim().length < 40) throw new Error('PDF_TEXT_LAYER_EMPTY');
+  return text;
+}
+
 function defaultProbe(candidate) {
   try {
     // Bounded like extract() below: a wedged binary must not hang every run.

@@ -9,7 +9,7 @@ function parseArray(v:FormDataEntryValue|null): string[] {
   throw new PortfolioError("PORTFOLIO_ARRAY_INVALID");
 }
 export async function GET(req:Request) {
-  try { authorizePortfolio(req); const store=await getPortfolioStore(); return Response.json(await store.list(),{headers:{"Cache-Control":"no-store"}}); }
+  try { authorizePortfolio(req); const url=new URL(req.url); if([...url.searchParams.keys()].some(k=>k!=="includeArchived"))throw new PortfolioError("PORTFOLIO_QUERY_INVALID"); const includeArchived=url.searchParams.get("includeArchived");if(includeArchived!==null&&includeArchived!=="1")throw new PortfolioError("PORTFOLIO_QUERY_INVALID"); const store=await getPortfolioStore(); return Response.json(await store.list({includeArchived:includeArchived==="1"}),{headers:{"Cache-Control":"no-store"}}); }
   catch(e) { return portfolioErrorResponse(e); }
 }
 export async function POST(req:Request) {
@@ -28,6 +28,8 @@ export async function POST(req:Request) {
     const store=await getPortfolioStore();
     const result=await store.upload({
       portfolioId: f.get("portfolioId") ? String(f.get("portfolioId")) : undefined,
+      operationId: f.get("operationId") ? String(f.get("operationId")) : undefined,
+      expectedRevision: f.get("expectedRevision") ? Number(f.get("expectedRevision")) : undefined,
       title:String(f.get("title")||""),
       kind:String(f.get("kind")||""),
       tags:parseArray(f.get("tags")),projectIds:parseArray(f.get("projectIds"))

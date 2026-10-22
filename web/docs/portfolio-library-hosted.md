@@ -1,117 +1,106 @@
-# Hosted Portfolio Library — using the existing CV PDF store
+# Private hosted portfolio workflows
 
-**Implementation base:** `codex/vercel-hobby-fix` (the code deployed to
-`career-ops-aselekoglu.vercel.app` in October 2026). This branch diverges from
-`main`, which currently lacks the hosted CV/Neon artifact implementation.
-Merge this PR into the *hosted branch*, not the older local-first `main`,
-until those histories are reconciled.
+The integration source is `main`. The release reconciliation brought hosted
+Neon/CV support and the v1.37 system into one history; changes belong on main,
+not exclusively on the historical `codex/vercel-hobby-fix` deployment branch.
+That ref remains configured for existing worker dispatches and follows the
+reviewed production commit.
 
-## Features
+## Owner workflow
 
-- Portfolio sidebar page at `/portfolio` (desktop and mobile).
-- Master or role-focused variant PDF upload; immutable PDF version history.
-- Reuses `career_ops_documents` for Base64 + SHA-256 + byte-size storage,
-  precisely as `cloud-pdf-artifacts.mjs` does for tailored CVs.
-- New normalized metadata tables for portfolios, versions, project registry
-  (title, summary, HTTPS evidence URL, tags) and explicit application links.
-- Deterministic, explainable role/tag matching using the *actual tracker
-  application number* and role; no invented match score and no auto-attachment.
-- Downloads via authenticated API as attachments; no public PDF links.
-- Existing CV workflows, routes, `career_ops_cv_runs`, PDF flags, and tracker
-  entries are untouched.
+Open `/portfolio` with the existing Career Ops Basic login. Import a master
+or tailored PDF, retaining each immutable original version. Existing PDFs
+have no editable document until an explicit conversion or new source-backed
+draft creates one.
 
-## One-time owner setup
+Generate from primary CV/profile sources, or convert an exact uploaded PDF
+through intake. Intake treats PDF text as reference data and compares it with
+primary sources. Unsupported quantified or scope claims require separate
+review: confirm as stated, correct, narrative-only, or do not know. Unknown
+claims remain unverified. Profile changes require a source preview and a
+separate explicit apply; rendering never updates the primary CV implicitly.
 
-1. Ensure `DATABASE_URL` and the existing `CAREER_OPS_WEB_AUTH_USER` / `CAREER_OPS_WEB_AUTH_PASSWORD` are configured in the hosted Career Ops deployment. No new credential is required.
-2. Sign in to Career Ops using the existing site Basic Auth login.
-3. Open `/portfolio`. The library loads using the same owner login as the existing tailored CV APIs.
-4. Import the PDF previously created for Brookfield as a `variant` and tag it
-   `business analyst, automation, system integration`. Upload a separate
-   general master once you have reviewed and removed role-specific wording.
-5. Enter Career Ops application `54`, inspect the role match, and explicitly
-   click Attach to link the selected immutable version. Linking neither
-   edits your tracker PDF flag nor submits an application.
+Edit structured content and metadata, preview, then explicitly apply the
+current draft SHA. Durable run state distinguishes draft generation, review
+and rendering. The external worker writes a new private PDF version only
+when the reviewed run, lease and target revision still match. Select older
+versions to download their unchanged bytes. Application association is a
+separate explicit action against the canonical tracker application number;
+it does not set CV flags or submit an application.
 
-The existing Brookfield PDF is *not* committed here or uploaded to Neon by
-this PR; uploading private PDF bytes into the public Git repository is unsafe.
-Use the owner-protected upload UI **after merging/deploying**.
+Delete first moves a portfolio/project to trash. Restore recovers it.
+Permanent deletion requires an archived item, its current revision and exact
+name confirmation. References and active runs must be resolved explicitly.
+Independent variants, tracker entries and primary facts are outside its scope.
 
-## Data contracts
+## Storage
 
-New tables created lazily/idempotently on first authenticated request:
+The library uses the existing `career_ops_documents` artifact store, with
+portfolio records, immutable versions, project metadata and explicit
+application associations. Compatible migrations add revisions, trash state,
+editable structured documents, operation replay records and durable runs.
 
-- `career_ops_portfolios` — ID, title, kind (`master|variant`), tags, project IDs.
-- `career_ops_portfolio_versions` — immutable version, exact document path,
-   SHA-256, bytes.
-- `career_ops_portfolio_projects` — approved project descriptions and URLs.
-- `career_ops_portfolio_applications` — 1 explicit portfolio version per
-   canonical tracker number; reassignment requires user action.
+All portfolio PDF paths begin with `portfolios/`. They must never use
+`output/` or the legacy public company-based CV resolver. Client filenames
+are display data and never database paths. Logs must omit private PDF bytes,
+raw intake text, primary source snapshots and credentials.
 
-Document paths are random, e.g. `portfolios/{id}-{uuid}.pdf`. A PDF\nnever enters the existing CV-specific `cv-` namespace, so it will not appear
-as a tailored CV or be accidentally associated with a company-slug search.
+## Authentication and limits
 
-## Security and limits
+Every owner endpoint requires the same existing site Basic credentials.
+There is no `X-Career-Ops-Portfolio-Token` credential. The private MCP Site
+forces the same Basic upstream authentication for portfolio calls; read-only
+tracker tokens cannot authorize private PDFs. Its download resource requires
+trusted Site visitor identity and exposes no Basic-authenticated backend URL.
+Cross-origin browser writes are rejected.
 
-- Owner-only existing site HTTP Basic Auth on **every** route (constant-time compare).
-- Cross-origin write rejection; requests never use ambient cookie credentials.
-- Max **4,000,000 bytes per PDF** to fit Vercel Hobby request limits.
-- PDF magic, EOF marker, exact byte length, SHA-256 and base64 canonicalization.
-- PDFs download with `Content-Disposition: attachment`, no-store and nosniff.
-- Project URLs must be HTTPS with no embedded credentials.
-- Client filename is never used as a storage key.
-- DB write CTEs prevent orphan metadata when uploads fail.
-- Simple header/EOF checks are **not malware scanning or PDF sanitization**:
-  treat imported PDFs as trusted user files, download (not inline render) them.
-- Existing site owner Basic Auth protects this single-user MVP. True per-user OAuth/sessions are recommended before multi-user access.
+Direct PDF imports retain the 4,000,000-byte limit. Generated PDF callbacks
+have a 3,000,000-byte decoded limit so their base64 request fits the platform.
+The structured document is bounded to 128 KB, 10 projects and 12 rendered
+pages. Deterministic HTML escapes text, permits credential-free HTTP(S) links
+and fetches no arbitrary remote images, fonts or scripts. Imported PDF magic,
+EOF, size and SHA checks establish file integrity, not malware sanitization.
 
-## API
+## Fixed API surface
 
-`GET /api/portfolio` — metadata and versions, projects, associations
+| Path | Purpose |
+| --- | --- |
+| `GET /api/portfolio` | Catalog; `includeArchived=1` includes trash |
+| `POST /api/portfolio` | Existing multipart import or immutable version append |
+| `GET /api/portfolio/detail` | Exact portfolio/version and optional structured document |
+| `POST /api/portfolio/projects` | Project creation |
+| `POST /api/portfolio/commands` | Revision-checked metadata/project lifecycle operations |
+| `GET /api/portfolio/recommend` | Explainable exact-application role/tag matching |
+| `POST /api/portfolio/associate` | Explicit portfolio-version association |
+| `GET /api/portfolio/pdf` | Authenticated immutable PDF attachment |
+| `POST /api/portfolio/runs` | Generate, content edit or imported-PDF intake |
+| `GET /api/portfolio/runs/{uuid}` | Durable progress and review state |
+| `POST /api/portfolio/runs/{uuid}/preview` | Validate edited content and return draft SHA |
+| `POST /api/portfolio/runs/{uuid}/apply` | Explicit exact-draft render confirmation |
+| `POST /api/portfolio/runs/{uuid}/cancel` | Cancel unfinished work |
+| `POST /api/portfolio/runs/{uuid}/facts/preview` | Review source-annotated intake claims |
+| `POST /api/portfolio/runs/{uuid}/facts/apply` | Separate confirmed profile-source update |
+| `POST /api/portfolio/worker` | Dedicated Bearer-authenticated worker callback |
 
-`POST /api/portfolio` — multipart file/title/kind/tags/projectIds, or
-file/portfolioId for new immutable version
+Mutation operation UUIDs are stable across retries. Reusing a UUID with a
+changed payload is a conflict. Stale target revisions and stale draft hashes
+must produce visible conflicts rather than overwrite newer content.
 
-`POST /api/portfolio/projects` — JSON project data
+## Deployment and verification
 
-`GET /api/portfolio/recommend?applicationNumber=54` — exact tracker lookup,
-keyword recommendation; no writes
+Reuse the existing Neon, hosted AI provider, GitHub dispatch token and worker
+secret. The portfolio workflow must be on the dispatched main/ref before
+advertising live generation; callbacks target the deployed fixed service.
+No private PDF is uploaded as a public Actions artifact. Vercel request work
+must finish within its lifecycle; durable external workers handle rendering.
 
-`POST /api/portfolio/associate` — JSON applicationNumber/portfolioId/version
+Run focused lifecycle, source, worker, private-resource and client tests;
+then hosted tests, typecheck, production build and the repository gate.
+Exercise the rendered UI with synthetic fixtures. After deployment verify
+the exact production SHA, native MCP discovery and a reversible synthetic
+worker canary. Preserve every pre-existing portfolio and its PDF hashes.
+AI drafts containing real career facts remain awaiting owner review.
 
-`GET /api/portfolio/pdf?portfolioId=<uuid>&version=N` — authenticated bytes
-
-All routes require `X-Career-Ops-Portfolio-Token <owner-secret>`.
-
-## Verification
-
-```bash
-cd web
-npm ci
-npm test
-npm run typecheck
-npm run build
-```
-
-Additional migration rehearsal should be performed against a **non-production**
-Neon branch prior to merge. Do not change the current CV records.
-
-## Deferred
-
-AI-based selection, PDF layout generation, project screenshot acquisition,
-multi-user accounts / JWT auth, screenshot image storage, and bulk historical
-import. The current feature reuses completed PDFs rather than claiming to
-regenerate them.
-
-## Operational notes
-
-Production is currently deployed from `codex/vercel-hobby-fix`. Its hosted
-artifact store is distinct from the local-first `main` branch, which was
-rebased/diverged. This PR intentionally targets the actual deployed code.
-
-## CV endpoint isolation
-
-Portfolio documents deliberately use the `portfolios/` path prefix, **outside** `output/`. The existing, unauthenticated `/api/cv-pdf?company=` legacy scanner enumerates `output/` PDFs. Using `output/portfolio-` would leak private portfolio PDFs through that route, so that prefix is forbidden. The only portfolio PDF reader is the owner-authorized `/api/portfolio/pdf` endpoint.
-
-### Existing hosted Basic Auth integration
-
-The Next.js `proxy.ts` verifies the site's HTTP Basic authentication before invoking route handlers. Portfolio routes verify those same credentials as defense in depth and reject cross-origin writes. The UI uses the browser's existing login, and the MCP Site bridge can use the exact same Basic Auth connection as other Career Ops endpoints; extending the plugin tool registry remains a separate integration step.
+See the [workflow design](../../docs/superpowers/specs/2026-10-22-portfolio-workflows-design.md)
+and [implementation acceptance plan](../../docs/superpowers/plans/2026-10-22-portfolio-workflows.md)
+for the full contracts and remaining verification checklist.

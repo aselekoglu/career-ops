@@ -57,7 +57,7 @@ export function proxy(request: NextRequest) {
 
   // This bearer credential is scoped to the worker callback only. It cannot
   // reach browser routes, CVs, general mutations or application assistance.
-  if (request.nextUrl.pathname === '/api/scan-worker' || request.nextUrl.pathname === '/api/cv-worker' || request.nextUrl.pathname === '/api/evaluation-worker') {
+  if (request.nextUrl.pathname === '/api/scan-worker' || request.nextUrl.pathname === '/api/cv-worker' || request.nextUrl.pathname === '/api/evaluation-worker' || request.nextUrl.pathname === '/api/portfolio/worker') {
     if (request.method === 'POST' && workerAuthorized(request.headers.get('authorization'))) return NextResponse.next();
     return NextResponse.json({ code: 'WORKER_UNAUTHORIZED' }, { status: 401 });
   }
@@ -84,10 +84,16 @@ export function proxy(request: NextRequest) {
   // Portfolio API uses the existing site Basic Auth gate above PLUS a separate,
   // in-memory owner token checked by each route. Do not put Bearer in
   // Authorization: that would collide with this site's Basic challenge.
-  if (((pathname === "/api/portfolio" || pathname === "/api/portfolio/recommend" ||
-        pathname === "/api/portfolio/pdf") && request.method === "GET") ||
-      ((pathname === "/api/portfolio" || pathname === "/api/portfolio/projects" ||
-        pathname === "/api/portfolio/associate") && request.method === "POST")) {
+  const portfolioRead = request.method === "GET" && (
+    pathname === "/api/portfolio" || pathname === "/api/portfolio/recommend" || pathname === "/api/portfolio/pdf" ||
+    pathname === "/api/portfolio/detail" || /^\/api\/portfolio\/runs\/[0-9a-f-]{36}$/i.test(pathname)
+  );
+  const portfolioWrite = request.method === "POST" && (
+    pathname === "/api/portfolio" || pathname === "/api/portfolio/projects" || pathname === "/api/portfolio/associate" ||
+    pathname === "/api/portfolio/commands" || pathname === "/api/portfolio/runs" ||
+    /^\/api\/portfolio\/runs\/[0-9a-f-]{36}\/(?:preview|apply|cancel|facts\/preview|facts\/apply)$/i.test(pathname)
+  );
+  if (portfolioRead || portfolioWrite) {
     return NextResponse.next();
   }
   if ((pathname === '/api/job-import' && request.method === 'POST') ||

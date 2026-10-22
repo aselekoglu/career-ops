@@ -36,6 +36,15 @@ export function cloudHealth(env: NodeJS.ProcessEnv = process.env) {
     env.CAREER_OPS_SCAN_WORKER_SECRET &&
     (env.CAREER_OPS_CV_REF || env.VERCEL_GIT_COMMIT_REF || env.CAREER_OPS_SCAN_REF)
   );
+  const portfolioGeneration = Boolean(
+    env.DATABASE_URL &&
+    hostedAi.ready &&
+    env.CAREER_OPS_WEB_AUTH_USER &&
+    env.CAREER_OPS_WEB_AUTH_PASSWORD &&
+    env.CAREER_OPS_SCAN_DISPATCH_TOKEN &&
+    env.CAREER_OPS_SCAN_WORKER_SECRET &&
+    (env.CAREER_OPS_PORTFOLIO_REF || env.VERCEL_GIT_COMMIT_REF || env.CAREER_OPS_SCAN_REF)
+  );
   const evaluations = Boolean(
     env.DATABASE_URL &&
     hostedAi.ready &&
@@ -50,6 +59,7 @@ export function cloudHealth(env: NodeJS.ProcessEnv = process.env) {
     scheduler: cloud ? "external-worker-required" : "local-task-scheduler",
     scans: { available: cloud && liveScans, modes: cloud && liveScans ? ['portals'] : [], worker: cloud && liveScans ? 'github-actions' : null },
     cvGeneration: { available: cloud && cvGeneration, ai: cloud && cvGeneration ? `${hostedAi.provider}-hosted` : null, renderer: cloud && cvGeneration ? 'github-actions' : null },
+    portfolioGeneration: { available: cloud && portfolioGeneration, ai: cloud && portfolioGeneration ? `${hostedAi.provider}-hosted` : null, renderer: cloud && portfolioGeneration ? 'github-actions' : null, privateStorage: cloud && portfolioGeneration ? 'neon-portfolios' : null },
     evaluations: { available: cloud && evaluations, ai: cloud && evaluations ? `${hostedAi.provider}-hosted` : null, worker: cloud && evaluations ? 'github-actions' : null },
     scheduledExecution: !cloud,
   };
