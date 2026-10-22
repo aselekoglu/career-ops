@@ -12,6 +12,23 @@ permissions:
   contents: read
 
 jobs:
+
+  renderer-smoke:
+    name: Headless Chromium runtime smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install lightweight renderer
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npx playwright install chromium --only-shell
+      - name: Render disposable sample page
+        run: node --input-type=module -e "import { chromium } from 'playwright'; const browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); await page.setContent('<h1>Runtime smoke</h1>'); const pdf = await page.pdf(); if (pdf.length < 500) throw Error('PDF_TOO_SMALL'); await browser.close();"
   verify:
     runs-on: ubuntu-latest
     defaults:
