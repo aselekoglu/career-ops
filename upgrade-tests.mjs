@@ -91,7 +91,7 @@ function writeGitConfig(work, mirror) {
     'try { sha = execFileSync("git", ["--git-dir", mirror, "rev-parse", "--verify", ref], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { process.exit(22); }',
     'if (!/^[0-9a-f]{40}$/.test(sha)) process.exit(22);',
     'process.stdout.write(JSON.stringify({ ref, object: { sha } }));',
-  ].join('\\n') + '\\n';
+  ].join('\n') + '\n';
   const curlPath = join(shimDir, 'curl');
   writeFileSync(curlPath, shim);
   chmodSync(curlPath, 0o755);
