@@ -13,6 +13,9 @@ import { normalizeTextKey } from "./core/normalize-text-key.mjs";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RISK_ENUMS = { legitimacy:["high_confidence","proceed_with_caution","suspicious"], classification:["clear","flagged","not_evaluated"], culture:["pass","caution","fail","not_evaluated"], interview_redflags:["none","caution","warning","not_evaluated"], ai_infra:["consistent","mismatch","not_evaluated"] };
 const VALID_REPORT_DIAGNOSTICS = new Set(["not_text","report_too_short","report_too_long","missing_or_malformed_score","score_out_of_range","missing_url","missing_legitimacy","missing_machine_summary","missing_a_role_summary","missing_b_match_with_cv","missing_c_level_strategy","missing_d_comp_demand","missing_e_customization","missing_f_interview","missing_g_legitimacy","missing_risk_summary","missing_risk_summary_rows","missing_job_archive","archive_too_short","archive_mismatch","machine_summary_yaml_missing","machine_summary_yaml_invalid","machine_summary_not_object","machine_summary_missing_fields","machine_summary_score_mismatch","machine_summary_risk_summary_invalid","company_mismatch","role_mismatch","url_mismatch"]);
+const DISPATCH_DIAGNOSTICS = new Set(["GITHUB_ACTIONS_DISABLED"]);
+const GITHUB_ACTIONS_DISABLED_MESSAGE = "GitHub Actions are disabled for this repository. Check the repository's Actions page and enable workflows if appropriate. Contact GitHub Support only if GitHub directs you to do so.";
+const MAX_DISPATCH_ERROR_BYTES = 8192;
 const TABLE = `CREATE TABLE IF NOT EXISTS career_ops_evaluation_runs (
  id UUID PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('queued','running','committing','completed','failed')),
  request JSONB NOT NULL, target_key TEXT NOT NULL UNIQUE, idempotency_key TEXT UNIQUE,
@@ -27,17 +30,19 @@ const cleanCell = value => String(value ?? "").replace(/[|\r\n]/g, " ").trim();
 
 function publicRun(row) {
  if (!row) return null;
- const message = row.error_code ? safeErrorMessage(row.error_code) : null;
- const diagnostic = row.error_code === "EVALUATION_INVALID_RESULT" && VALID_REPORT_DIAGNOSTICS.has(row.diagnostic_code) ? row.diagnostic_code : null;
+ const diagnostic = (row.error_code === "EVALUATION_INVALID_RESULT" && VALID_REPORT_DIAGNOSTICS.has(row.diagnostic_code)) ||
+  (row.error_code === "EVALUATION_WORKER_DISPATCH_FAILED" && DISPATCH_DIAGNOSTICS.has(row.diagnostic_code)) ? row.diagnostic_code : null;
+ const message = row.error_code ? safeErrorMessage(row.error_code, diagnostic) : null;
  return { runId: row.id, status: row.state, company: row.company ?? null, role: row.role ?? null,
   applicationNumber: row.application_number ?? null, reportPath: row.report_path ?? null,
   score: row.score == null ? null : Number(row.score), requestedAt: new Date(row.requested_at).toISOString(),
   startedAt: row.started_at ? new Date(row.started_at).toISOString() : null,
   completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null,
   errorCode: row.error_code ?? null, errorMessage: message && diagnostic ? `${message} [${diagnostic}]` : message,
-  diagnosticCode: row.diagnostic_code ?? null };
+  diagnosticCode: diagnostic };
 }
-function safeErrorMessage(code) {
+function safeErrorMessage(code, diagnosticCode = null) {
+ if (code === "EVALUATION_WORKER_DISPATCH_FAILED" && diagnosticCode === "GITHUB_ACTIONS_DISABLED") return GITHUB_ACTIONS_DISABLED_MESSAGE;
   const messages = { URL_NOT_IN_INBOX: "That exact URL is not in the inbox.", CV_NOT_FOUND: "A source CV is required before evaluation.",
   PROFILE_NOT_FOUND: "The candidate profile is not available.", POSTING_FETCH_FAILED: "The job posting could not be fetched.",
   POSTING_FETCH_EMPTY: "The job posting did not contain readable job details.", HOSTED_AI_UNAVAILABLE: "The hosted evaluator is unavailable.",
@@ -196,12 +201,28 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
   }
   return parseTrackerApplications(String(content ?? ""), "", trackerAliases);
  }
+ async function dispatchQueued(id) {
+  try { await dispatch(id,env); }
+  catch(error) {
+   const status=Number.isInteger(error?.httpStatus)&&error.httpStatus>=400&&error.httpStatus<=599?error.httpStatus:null;
+   const safeErrorClass=["Error","TypeError","RangeError","SyntaxError","AbortError"].includes(error?.name)?error.name:"Error";
+   console.error(JSON.stringify({event:"career_ops_evaluation_worker_dispatch_failed",httpStatus:status,errorClass:safeErrorClass}));
+   const diagnosticCode=DISPATCH_DIAGNOSTICS.has(error?.diagnosticCode)?error.diagnosticCode:null;
+   await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED',diagnostic_code=$2,completed_at=now() WHERE id=$1 AND state='queued'",[id,diagnosticCode]);
+  }
+  return publicRun(await find(id));
+ }
  return {
   async start(raw) {
    if(!workerConfigured(env)) throw new Error("EVALUATION_WORKER_NOT_CONFIGURED");
    const request=normalizeInput(raw); await ready();
    const targetKey=request.url?`url:${request.url}:${request.idempotencyKey||"default"}`:`application:${request.applicationNumber}:${request.idempotencyKey||"default"}`;
-   const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1",[targetKey]))[0]; if(existing) return publicRun(existing);
+   const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1",[targetKey]))[0];
+   if(existing) {
+    if(existing.state!=="failed"||existing.error_code!=="EVALUATION_WORKER_DISPATCH_FAILED") return publicRun(existing);
+    const reopened=(await sql.query("UPDATE career_ops_evaluation_runs SET state='queued',error_code=NULL,diagnostic_code=NULL,completed_at=NULL,started_at=NULL,lease=NULL,requested_at=now() WHERE id=$1 AND state='failed' AND error_code='EVALUATION_WORKER_DISPATCH_FAILED' RETURNING *",[existing.id]))[0];
+    return reopened?dispatchQueued(existing.id):publicRun(await find(existing.id));
+   }
    if(request.idempotencyKey){const reused=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=$1 LIMIT 1",[request.idempotencyKey]))[0];if(reused)throw new Error("IDEMPOTENCY_KEY_CONFLICT");}
    const [inboxDoc,trackerDoc,cv,profile,profileRules,custom]=await Promise.all(["data/pipeline.md","data/applications.md","cv.md","config/profile.yml","modes/_profile.md","modes/_custom.md"].map(readDoc));
    if(!cv) throw new Error("CV_NOT_FOUND"); if(!profile) throw new Error("PROFILE_NOT_FOUND");
@@ -220,9 +241,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
    let inserted;
    try { inserted=await sql.query("INSERT INTO career_ops_evaluation_runs(id,state,request,target_key,idempotency_key,company,role,application_number) VALUES($1,'queued',$2::jsonb,$3,$4,$5,$6,$7) RETURNING *",[id,JSON.stringify(request),targetKey,request.idempotencyKey??null,company,role,applicationNumber]); }
    catch(error) { if(error.code!=="23505") throw error; const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1 OR ($2::text IS NOT NULL AND idempotency_key=$2) ORDER BY requested_at LIMIT 1",[targetKey,request.idempotencyKey??null]))[0]; if(existing && existing.target_key!==targetKey && request.idempotencyKey) throw new Error("IDEMPOTENCY_KEY_CONFLICT"); return publicRun(existing); }
-   try { await dispatch(id,env); }
-   catch { await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED',completed_at=now() WHERE id=$1 AND state='queued'",[id]); }
-   return publicRun(await find(id));
+   return dispatchQueued(id);
   },
   async get(id) { if(!UUID_RE.test(id)) throw new Error("INVALID_EVALUATION_ID"); await ready(); const row=await find(id); const result=publicRun(row); if(result?.status==="failed"&&row.failed_draft) result.failedDraft=row.failed_draft; return result; },
   async getReport(id) { if(!UUID_RE.test(id)) throw new Error("INVALID_EVALUATION_ID"); await ready(); const row=await find(id); if(!row) return null; if(row.state!=="completed" || !row.report_path) throw new Error("REPORT_NOT_READY"); const doc=await readDoc(row.report_path); return doc ? {runId:id,reportPath:row.report_path,contentType:"text/markdown",report:doc.content}:null; },
@@ -287,9 +306,27 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
  };
 }
 
+async function githubDispatchDiagnostic(response) {
+ if(response.status!==422||!response.headers.get("content-type")?.toLowerCase().includes("application/json"))return null;
+ const declaredLength=response.headers.get("content-length");
+ if(declaredLength&&(!/^\d+$/.test(declaredLength)||Number(declaredLength)>MAX_DISPATCH_ERROR_BYTES))return null;
+ if(!response.body)return null;
+ const reader=response.body.getReader(),decoder=new TextDecoder();let bytes=0,text="";
+ try {
+  for(;;){
+   const {value,done}=await reader.read();
+   if(done){text+=decoder.decode();break;}
+   bytes+=value.byteLength;
+   if(bytes>MAX_DISPATCH_ERROR_BYTES){try{reader.cancel().catch(()=>{});}catch{}return null;}
+   text+=decoder.decode(value,{stream:true});
+  }
+ }catch{return null;}finally{try{reader.releaseLock();}catch{}}
+ try {const body=JSON.parse(text);return body&&typeof body==="object"&&!Array.isArray(body)&&body.message==="Actions has been disabled for this repository."?"GITHUB_ACTIONS_DISABLED":null;}catch{return null;}
+}
+
 async function dispatchEvaluation(id,env,fetchFn=fetch){
  const response=await fetchFn("https://api.github.com/repos/aselekoglu/career-ops/actions/workflows/career-ops-live-eval.yml/dispatches",{method:"POST",redirect:"error",signal:AbortSignal.timeout(15000),headers:{Authorization:"Bearer "+env.CAREER_OPS_SCAN_DISPATCH_TOKEN,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","Content-Type":"application/json"},body:JSON.stringify({ref:env.CAREER_OPS_SCAN_REF,inputs:{evaluation_id:id}})});
- if(!response.ok) throw new Error("WORKER_DISPATCH_FAILED");
+ if(!response.ok) { const error=new Error("WORKER_DISPATCH_FAILED"); error.httpStatus=response.status; error.diagnosticCode=await githubDispatchDiagnostic(response); throw error; }
 }
 async function generateEvaluation(args){
  const service=createHostedAiService(); if(!service.status().ready) throw new Error("HOSTED_AI_UNAVAILABLE");
@@ -314,4 +351,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,isBlacklisted,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,isBlacklisted,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,dispatchEvaluation,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};

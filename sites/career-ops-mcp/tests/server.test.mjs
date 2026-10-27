@@ -188,6 +188,21 @@ test('job import preserves known backend errors and excludes unrelated failure f
   assert.ok(!JSON.stringify(body).includes('db.internal'));
 });
 
+test('LinkedIn import reports the public-page access limitation with a safe fallback', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    status: 'failed', originalUrl: 'https://www.linkedin.com/jobs/view/4463061039',
+    error: { code: 'LINKEDIN_PAGE_UNAVAILABLE', message: 'private backend detail' },
+  }, { status: 422 }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_job_import', arguments: { url: 'https://www.linkedin.com/jobs/view/4463061039' },
+  }), env)).json();
+  assert.deepEqual(body.result.structuredContent.error, {
+    code: 'LINKEDIN_PAGE_UNAVAILABLE',
+    message: 'Career Ops could not read this LinkedIn job page; LinkedIn may require sign-in or block automated access. Try the employer public careers or ATS URL.',
+  });
+  assert.ok(!JSON.stringify(body).includes('private backend detail'));
+});
+
 test('source schemas reject unknown sources, nested keys, invalid annotations, incomplete profile fields and unconfirmed apply', async t => {
   const listed = await (await worker.fetch(rpc('tools/list', {}, false), env)).json();
   const byName = name => listed.result.tools.find(tool => tool.name === name);
@@ -947,6 +962,33 @@ test('evaluation start enforces exclusive selectors and fixed endpoint with safe
   const body = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_evaluation_start', arguments: { url: 'https://jobs.example/role?ref=inbox', idempotencyKey: 'client:abc-123' } }), env)).json();
   assert.equal(body.result.structuredContent.status, 'queued');
   assert.ok(!JSON.stringify(body).includes('privateField'));
+});
+
+test('evaluation start preserves the safe worker dispatch failure code', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    runId: '55555555-5555-4555-8555-555555555555', status: 'failed',
+    errorCode: 'EVALUATION_WORKER_DISPATCH_FAILED', diagnosticCode: 'UNRECOGNIZED_DIAGNOSTIC', errorMessage: 'The evaluation worker could not be started.',
+  }, { status: 502 }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_evaluation_start', arguments: { url: 'https://jobs.example/role' },
+  }), env)).json();
+  assert.equal(body.result.content[0].text, 'EVALUATION_WORKER_DISPATCH_FAILED: Career Ops could not start the evaluation.');
+  assert.ok(!JSON.stringify(body).includes('runId'));
+});
+
+test('evaluation start exposes only the allowlisted Actions-disabled diagnostic', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    runId: '55555555-5555-4555-8555-555555555555', status: 'failed',
+    errorCode: 'EVALUATION_WORKER_DISPATCH_FAILED', diagnosticCode: 'GITHUB_ACTIONS_DISABLED',
+    errorMessage: 'raw backend text with private token=secret',
+  }, { status: 502 }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_evaluation_start', arguments: { url: 'https://jobs.example/role' },
+  }), env)).json();
+  assert.equal(body.result.content[0].text, "GITHUB_ACTIONS_DISABLED: GitHub Actions are disabled for this repository. Check the repository's Actions page and enable workflows if appropriate. Contact GitHub Support only if GitHub directs you to do so.");
+  assert.ok(!JSON.stringify(body).includes('raw backend text'));
+  assert.ok(!JSON.stringify(body).includes('secret'));
+  assert.ok(!JSON.stringify(body).includes('runId'));
 });
 
 test('evaluation status preserves exact allowlisted fields and completed state without inference', async t => {

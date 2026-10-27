@@ -145,6 +145,58 @@ test("worker credential accepts only its configured bearer value", () => {
   assert.equal(__test.workerAuthorized("Bearer wrong", env), false);
 });
 
+test("GitHub dispatch failures retain only the upstream HTTP status for redacted diagnostics", async () => {
+  const id = "33333333-3333-4333-8333-333333333333";
+  await assert.rejects(__test.dispatchEvaluation(id, env, async (target, options) => {
+    assert.equal(target, "https://api.github.com/repos/aselekoglu/career-ops/actions/workflows/career-ops-live-eval.yml/dispatches");
+    assert.equal(options.method, "POST");
+    assert.deepEqual(JSON.parse(options.body), { ref: env.CAREER_OPS_SCAN_REF, inputs: { evaluation_id: id } });
+    return new Response("private github token or repository details", { status: 403 });
+  }), error => {
+    assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+    assert.equal(error.httpStatus, 403);
+    assert.doesNotMatch(error.message, /private github/i);
+    return true;
+  });
+});
+
+test("only the exact bounded GitHub Actions-disabled 422 response receives its diagnostic", async () => {
+  const id = "33333333-3333-4333-8333-333333333333";
+  await assert.rejects(__test.dispatchEvaluation(id, env, async () => Response.json({ message: "Actions has been disabled for this repository." }, { status: 422 })), error => {
+    assert.equal(error.httpStatus, 422);
+    assert.equal(error.diagnosticCode, "GITHUB_ACTIONS_DISABLED");
+    assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+    return true;
+  });
+
+  for (const response of [
+    Response.json({ message: "Actions has been disabled for this repository. Contact attacker.example" }, { status: 422 }),
+    Response.json({ message: "Actions has been disabled for this repository." }, { status: 403 }),
+    new Response(JSON.stringify({ message: "Actions has been disabled for this repository." }) + " ".repeat(9000), { status: 422, headers: { "content-type": "application/json" } }),
+    new Response("not-json", { status: 422, headers: { "content-type": "application/json" } }),
+  ]) {
+    await assert.rejects(__test.dispatchEvaluation(id, env, async () => response), error => {
+      assert.equal(error.diagnosticCode, null);
+      assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+      return true;
+    });
+  }
+});
+
+test("oversized dispatch response does not await a stalled stream cancellation", { timeout: 1000 }, async () => {
+  const body = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(9000)); },
+    cancel() { return new Promise(() => {}); },
+  });
+  await assert.rejects(__test.dispatchEvaluation("33333333-3333-4333-8333-333333333333", env, async () => new Response(body, {
+    status: 422, headers: { "content-type": "application/json" },
+  })), error => {
+    assert.equal(error.diagnosticCode, null);
+    assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+    return true;
+  });
+});
+
 test("evaluation callback rejects unauthorized callers before accessing Neon", async () => {
   const response = await __test.handleEvaluationWorker(new Request("https://career-ops.example/api/evaluation-worker", {
     method: "POST",
@@ -190,6 +242,142 @@ test("duplicate exact URL returns durable run before inspecting the checked inbo
   assert.equal(result.runId, run.id);
   assert.equal(result.status, "completed");
   assert.equal(dispatches, 0);
+});
+
+test("dispatch rejection is persisted and logged with bounded redacted diagnostics", async () => {
+  const files = new Map([
+    ["data/pipeline.md", `# Pipeline\n\n- [ ] ${url} | Kinaxis | Co-op Intern, Forward Deployed Engineer\n`],
+    ["data/applications.md", "# Applications Tracker\n\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n"],
+    ["cv.md", "# CV\nSource-backed candidate facts.\n"],
+    ["config/profile.yml", "language:\n  output: en\n"],
+    ["modes/_profile.md", "Target software engineering roles."],
+  ]);
+  const row = { state: "queued", requested_at: new Date(Date.now() - 46 * 60 * 1000) };
+  const sql = { async query(statement, params = []) {
+    if (/^(CREATE |ALTER TABLE |CREATE UNIQUE INDEX)/.test(statement)) return [];
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT'")) {
+      if (row.id && ["queued", "running", "committing"].includes(row.state) && Date.now() - new Date(row.requested_at).valueOf() > 45 * 60 * 1000) {
+        Object.assign(row, { state: "failed", error_code: "WORKER_TIMEOUT" });
+      }
+      return [];
+    }
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return params[0] === row.target_key ? [row] : [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=")) return params[0] === row.idempotency_key ? [row] : [];
+    if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
+      const content = files.get(params[0]);
+      return content == null ? [] : [{ path: params[0], content, sha256: `sha:${params[0]}`, content_encoding: "utf8" }];
+    }
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_runs")) {
+      Object.assign(row, { id: params[0], request: JSON.parse(params[1]), target_key: params[2], idempotency_key: params[3], company: params[4], role: params[5], application_number: params[6] });
+      return [row];
+    }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED'")) {
+      Object.assign(row, { state: "failed", error_code: "EVALUATION_WORKER_DISPATCH_FAILED", diagnostic_code: params[1], completed_at: new Date("2026-10-02T00:01:00Z") });
+      return [];
+    }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='queued',error_code=NULL")) {
+      if (row.state !== "failed" || row.error_code !== "EVALUATION_WORKER_DISPATCH_FAILED" || params[0] !== row.id) return [];
+      Object.assign(row, { state: "queued", error_code: null, diagnostic_code: null, completed_at: null, started_at: null, lease: null, requested_at: new Date() });
+      return [row];
+    }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='running'")) {
+      if (row.id !== params[0] || row.state !== "queued") return [];
+      Object.assign(row, { state: "running", lease: params[1], started_at: new Date() });
+      return [row];
+    }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed',error_code=$3")) {
+      Object.assign(row, { state: "failed", error_code: params[2] });
+      return [];
+    }
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [row];
+    throw new Error(`Unexpected SQL: ${statement}`);
+  } };
+  const hostileError = Object.assign(new Error("secret=private-value candidate@example.com"), { name: "Bearer_private-token", httpStatus: 422, diagnosticCode: "GITHUB_ACTIONS_DISABLED" });
+  let dispatchCalls = 0;
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => { if (dispatchCalls++ === 0) throw hostileError; } });
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...args) => logs.push(args);
+  let result;
+  try { result = await store.start({ url, idempotencyKey: "retry-safe-dispatch" }); }
+  finally { console.error = originalError; }
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorCode, "EVALUATION_WORKER_DISPATCH_FAILED");
+  assert.equal(result.diagnosticCode, "GITHUB_ACTIONS_DISABLED");
+  assert.match(result.errorMessage, /Check the repository's Actions page.*enable workflows if appropriate.*Support only if GitHub directs you/i);
+  assert.equal(row.state, "failed", "the dispatch failure must remain durable");
+  assert.equal(row.error_code, "EVALUATION_WORKER_DISPATCH_FAILED");
+  assert.equal(row.diagnostic_code, "GITHUB_ACTIONS_DISABLED");
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].length, 1);
+  const diagnostic = JSON.parse(logs[0][0]);
+  assert.deepEqual(diagnostic, {
+    event: "career_ops_evaluation_worker_dispatch_failed", httpStatus: 422, errorClass: "Error",
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostic), /private-token|private-value|candidate@example\.com|Bearer/);
+
+  const [replay, simultaneousReplay] = await Promise.all([
+    store.start({ url, idempotencyKey: "retry-safe-dispatch" }),
+    store.start({ url, idempotencyKey: "retry-safe-dispatch" }),
+  ]);
+  assert.equal(replay.runId, result.runId, "retry reuses the durable run and its exact target binding");
+  assert.equal(simultaneousReplay.runId, replay.runId);
+  assert.equal(replay.status, "queued", "a dispatch retry reopens only the failed dispatch state");
+  assert.equal(simultaneousReplay.status, "queued");
+  assert.equal(row.error_code, null);
+  assert.equal(row.diagnostic_code, null, "retry clears a stale dispatch diagnosis");
+  assert.equal(dispatchCalls, 2);
+  assert.ok(Date.now() - row.requested_at.valueOf() < 45 * 60 * 1000, "retry starts a fresh timeout window");
+  const duplicate = await store.start({ url, idempotencyKey: "retry-safe-dispatch" });
+  assert.equal(duplicate.runId, replay.runId);
+  assert.equal(duplicate.status, "queued");
+  assert.equal(dispatchCalls, 2, "replaying an active run does not dispatch or charge again");
+  assert.equal((await store.get(result.runId)).status, "queued", "polling does not expire the old run based on its first attempt");
+  files.delete("config/profile.yml");
+  const workerResult = await store.process(result.runId);
+  assert.equal(workerResult.status, "failed");
+  assert.equal(workerResult.errorCode, "EVALUATION_INPUTS_NOT_IMPORTED", "worker callback claimed the retried queue before this deliberate input failure");
+  assert.notEqual(row.error_code, "WORKER_TIMEOUT");
+
+  await assert.rejects(store.start({ url: "https://jobs.example/other", idempotencyKey: "retry-safe-dispatch" }), { message: "IDEMPOTENCY_KEY_CONFLICT" });
+  assert.equal(dispatchCalls, 2, "a reused key cannot dispatch a different target");
+});
+
+test("application-number dispatch retry reuses its run binding and rejects the same key for another application", async () => {
+  const row = {
+    id: "88888888-8888-4888-8888-888888888888", state: "failed", error_code: "EVALUATION_WORKER_DISPATCH_FAILED",
+    request: { applicationNumber: "52", idempotencyKey: "app-retry-key" }, target_key: "application:52:app-retry-key",
+    idempotency_key: "app-retry-key", application_number: "52", company: "Kinaxis", role: "Engineer",
+    requested_at: new Date(Date.now() - 90 * 60 * 1000), completed_at: new Date(Date.now() - 89 * 60 * 1000),
+  };
+  const sql = { async query(statement, params = []) {
+    if (/^(CREATE |ALTER TABLE |CREATE UNIQUE INDEX)/.test(statement)) return [];
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT'")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return params[0] === row.target_key ? [row] : [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=")) return params[0] === row.idempotency_key ? [row] : [];
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='queued',error_code=NULL")) {
+      if (row.state !== "failed" || row.error_code !== "EVALUATION_WORKER_DISPATCH_FAILED" || params[0] !== row.id) return [];
+      Object.assign(row, { state: "queued", error_code: null, completed_at: null, started_at: null, lease: null, requested_at: new Date() });
+      return [row];
+    }
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [row];
+    throw new Error(`Unexpected SQL: ${statement}`);
+  } };
+  let dispatches = 0;
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => { dispatches++; } });
+  const retried = await store.start({ applicationNumber: "52", idempotencyKey: "app-retry-key" });
+  assert.equal(retried.runId, row.id);
+  assert.equal(retried.status, "queued");
+  assert.deepEqual(row.request, { applicationNumber: "52", idempotencyKey: "app-retry-key" });
+  assert.equal(row.application_number, "52");
+  assert.equal(row.target_key, "application:52:app-retry-key");
+  assert.equal(dispatches, 1);
+
+  await assert.rejects(store.start({ applicationNumber: "53", idempotencyKey: "app-retry-key" }), { message: "IDEMPOTENCY_KEY_CONFLICT" });
+  assert.equal(dispatches, 1, "the retry key remains bound to application 52");
 });
 
 test("completed commit keeps tracker number unpadded and fences report, tracker, and inbox writes", async () => {

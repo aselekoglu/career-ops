@@ -17,6 +17,42 @@ test("Lever apply URLs normalize to one posting URL while retaining the original
   assert.equal(normalizeJobUrl("http://boards.greenhouse.io/acme/jobs/12345/"), "https://boards.greenhouse.io/acme/jobs/12345");
 });
 
+test("LinkedIn job pages retain supported public-page parsing and import", async () => {
+  let requests = 0;
+  const description = "Build and maintain reliable product software with cross-functional engineering teams. ".repeat(2);
+  const html = `<script type="application/ld+json">${JSON.stringify({
+    "@type": "JobPosting", title: "Software Developer", description,
+    hiringOrganization: { name: "Example Corp" },
+  })}</script>`;
+  const result = await importPosting("https://www.linkedin.com/jobs/view/4463061039", {
+    resolve: async () => { requests++; return [{ address: "93.184.216.34", family: 4 }]; },
+    request: async () => { requests++; return { status: 200, headers: { "content-type": "text/html" }, body: html }; },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.posting.company, "Example Corp");
+  assert.equal(result.posting.role, "Software Developer");
+  assert.equal(requests, 2, "a public LinkedIn page follows the normal DNS and HTTP import path");
+});
+
+test("LinkedIn fetch and parse failures get an actionable public-page fallback while safety failures stay distinct", async () => {
+  const resolve = async () => [{ address: "93.184.216.34", family: 4 }];
+  const failedFetch = await importPosting("https://www.linkedin.com/jobs/view/4463061039", {
+    resolve, request: async () => ({ status: 403, headers: {}, body: "" }),
+  });
+  assert.equal(failedFetch.error, "LINKEDIN_PAGE_UNAVAILABLE");
+
+  const failedParse = await importPosting("https://www.linkedin.com/jobs/view/4463061039", {
+    resolve, request: async () => ({ status: 200, headers: {}, body: "Sign in to LinkedIn" }),
+  });
+  assert.equal(failedParse.error, "LINKEDIN_PAGE_UNAVAILABLE");
+
+  const privateHost = await importPosting("https://www.linkedin.com/jobs/view/4463061039", {
+    resolve: async () => [{ address: "127.0.0.1", family: 4 }],
+    request: async () => { throw new Error("must not connect to a private address"); },
+  });
+  assert.equal(privateHost.error, "PRIVATE_NETWORK_BLOCKED");
+});
+
 test("normalization keeps non-tracking query parameters that may identify a job", () => {
   assert.equal(
     normalizeJobUrl("https://jobs.example.org/opening?jobId=42&utm_source=feed&locale=fr"),
