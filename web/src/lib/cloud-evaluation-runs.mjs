@@ -196,12 +196,27 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
   }
   return parseTrackerApplications(String(content ?? ""), "", trackerAliases);
  }
+ async function dispatchQueued(id) {
+  try { await dispatch(id,env); }
+  catch(error) {
+   const status=Number.isInteger(error?.httpStatus)&&error.httpStatus>=400&&error.httpStatus<=599?error.httpStatus:null;
+   const safeErrorClass=["Error","TypeError","RangeError","SyntaxError","AbortError"].includes(error?.name)?error.name:"Error";
+   console.error(JSON.stringify({event:"career_ops_evaluation_worker_dispatch_failed",httpStatus:status,errorClass:safeErrorClass}));
+   await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED',completed_at=now() WHERE id=$1 AND state='queued'",[id]);
+  }
+  return publicRun(await find(id));
+ }
  return {
   async start(raw) {
    if(!workerConfigured(env)) throw new Error("EVALUATION_WORKER_NOT_CONFIGURED");
    const request=normalizeInput(raw); await ready();
    const targetKey=request.url?`url:${request.url}:${request.idempotencyKey||"default"}`:`application:${request.applicationNumber}:${request.idempotencyKey||"default"}`;
-   const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1",[targetKey]))[0]; if(existing) return publicRun(existing);
+   const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1",[targetKey]))[0];
+   if(existing) {
+    if(existing.state!=="failed"||existing.error_code!=="EVALUATION_WORKER_DISPATCH_FAILED") return publicRun(existing);
+    const reopened=(await sql.query("UPDATE career_ops_evaluation_runs SET state='queued',error_code=NULL,completed_at=NULL,started_at=NULL,lease=NULL,requested_at=now() WHERE id=$1 AND state='failed' AND error_code='EVALUATION_WORKER_DISPATCH_FAILED' RETURNING *",[existing.id]))[0];
+    return reopened?dispatchQueued(existing.id):publicRun(await find(existing.id));
+   }
    if(request.idempotencyKey){const reused=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=$1 LIMIT 1",[request.idempotencyKey]))[0];if(reused)throw new Error("IDEMPOTENCY_KEY_CONFLICT");}
    const [inboxDoc,trackerDoc,cv,profile,profileRules,custom]=await Promise.all(["data/pipeline.md","data/applications.md","cv.md","config/profile.yml","modes/_profile.md","modes/_custom.md"].map(readDoc));
    if(!cv) throw new Error("CV_NOT_FOUND"); if(!profile) throw new Error("PROFILE_NOT_FOUND");
@@ -220,14 +235,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
    let inserted;
    try { inserted=await sql.query("INSERT INTO career_ops_evaluation_runs(id,state,request,target_key,idempotency_key,company,role,application_number) VALUES($1,'queued',$2::jsonb,$3,$4,$5,$6,$7) RETURNING *",[id,JSON.stringify(request),targetKey,request.idempotencyKey??null,company,role,applicationNumber]); }
    catch(error) { if(error.code!=="23505") throw error; const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1 OR ($2::text IS NOT NULL AND idempotency_key=$2) ORDER BY requested_at LIMIT 1",[targetKey,request.idempotencyKey??null]))[0]; if(existing && existing.target_key!==targetKey && request.idempotencyKey) throw new Error("IDEMPOTENCY_KEY_CONFLICT"); return publicRun(existing); }
-   try { await dispatch(id,env); }
-   catch(error) {
-    const status=Number.isInteger(error?.httpStatus)&&error.httpStatus>=400&&error.httpStatus<=599?error.httpStatus:null;
-    const safeErrorClass=["Error","TypeError","RangeError","SyntaxError","AbortError"].includes(error?.name)?error.name:"Error";
-    console.error(JSON.stringify({event:"career_ops_evaluation_worker_dispatch_failed",httpStatus:status,errorClass:safeErrorClass}));
-    await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED',completed_at=now() WHERE id=$1 AND state='queued'",[id]);
-   }
-   return publicRun(await find(id));
+   return dispatchQueued(id);
   },
   async get(id) { if(!UUID_RE.test(id)) throw new Error("INVALID_EVALUATION_ID"); await ready(); const row=await find(id); const result=publicRun(row); if(result?.status==="failed"&&row.failed_draft) result.failedDraft=row.failed_draft; return result; },
   async getReport(id) { if(!UUID_RE.test(id)) throw new Error("INVALID_EVALUATION_ID"); await ready(); const row=await find(id); if(!row) return null; if(row.state!=="completed" || !row.report_path) throw new Error("REPORT_NOT_READY"); const doc=await readDoc(row.report_path); return doc ? {runId:id,reportPath:row.report_path,contentType:"text/markdown",report:doc.content}:null; },
