@@ -967,12 +967,27 @@ test('evaluation start enforces exclusive selectors and fixed endpoint with safe
 test('evaluation start preserves the safe worker dispatch failure code', async t => {
   t.mock.method(globalThis, 'fetch', async () => Response.json({
     runId: '55555555-5555-4555-8555-555555555555', status: 'failed',
-    errorCode: 'EVALUATION_WORKER_DISPATCH_FAILED', errorMessage: 'The evaluation worker could not be started.',
+    errorCode: 'EVALUATION_WORKER_DISPATCH_FAILED', diagnosticCode: 'UNRECOGNIZED_DIAGNOSTIC', errorMessage: 'The evaluation worker could not be started.',
   }, { status: 502 }));
   const body = await (await worker.fetch(rpc('tools/call', {
     name: 'career_ops_evaluation_start', arguments: { url: 'https://jobs.example/role' },
   }), env)).json();
   assert.equal(body.result.content[0].text, 'EVALUATION_WORKER_DISPATCH_FAILED: Career Ops could not start the evaluation.');
+  assert.ok(!JSON.stringify(body).includes('runId'));
+});
+
+test('evaluation start exposes only the allowlisted Actions-disabled diagnostic', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    runId: '55555555-5555-4555-8555-555555555555', status: 'failed',
+    errorCode: 'EVALUATION_WORKER_DISPATCH_FAILED', diagnosticCode: 'GITHUB_ACTIONS_DISABLED',
+    errorMessage: 'raw backend text with private token=secret',
+  }, { status: 502 }));
+  const body = await (await worker.fetch(rpc('tools/call', {
+    name: 'career_ops_evaluation_start', arguments: { url: 'https://jobs.example/role' },
+  }), env)).json();
+  assert.equal(body.result.content[0].text, "GITHUB_ACTIONS_DISABLED: GitHub Actions are disabled for this repository. Check the repository's Actions page and enable workflows if appropriate. Contact GitHub Support only if GitHub directs you to do so.");
+  assert.ok(!JSON.stringify(body).includes('raw backend text'));
+  assert.ok(!JSON.stringify(body).includes('secret'));
   assert.ok(!JSON.stringify(body).includes('runId'));
 });
 

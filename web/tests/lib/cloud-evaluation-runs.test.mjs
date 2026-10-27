@@ -160,6 +160,43 @@ test("GitHub dispatch failures retain only the upstream HTTP status for redacted
   });
 });
 
+test("only the exact bounded GitHub Actions-disabled 422 response receives its diagnostic", async () => {
+  const id = "33333333-3333-4333-8333-333333333333";
+  await assert.rejects(__test.dispatchEvaluation(id, env, async () => Response.json({ message: "Actions has been disabled for this repository." }, { status: 422 })), error => {
+    assert.equal(error.httpStatus, 422);
+    assert.equal(error.diagnosticCode, "GITHUB_ACTIONS_DISABLED");
+    assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+    return true;
+  });
+
+  for (const response of [
+    Response.json({ message: "Actions has been disabled for this repository. Contact attacker.example" }, { status: 422 }),
+    Response.json({ message: "Actions has been disabled for this repository." }, { status: 403 }),
+    new Response(JSON.stringify({ message: "Actions has been disabled for this repository." }) + " ".repeat(9000), { status: 422, headers: { "content-type": "application/json" } }),
+    new Response("not-json", { status: 422, headers: { "content-type": "application/json" } }),
+  ]) {
+    await assert.rejects(__test.dispatchEvaluation(id, env, async () => response), error => {
+      assert.equal(error.diagnosticCode, null);
+      assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+      return true;
+    });
+  }
+});
+
+test("oversized dispatch response does not await a stalled stream cancellation", { timeout: 1000 }, async () => {
+  const body = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(9000)); },
+    cancel() { return new Promise(() => {}); },
+  });
+  await assert.rejects(__test.dispatchEvaluation("33333333-3333-4333-8333-333333333333", env, async () => new Response(body, {
+    status: 422, headers: { "content-type": "application/json" },
+  })), error => {
+    assert.equal(error.diagnosticCode, null);
+    assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+    return true;
+  });
+});
+
 test("evaluation callback rejects unauthorized callers before accessing Neon", async () => {
   const response = await __test.handleEvaluationWorker(new Request("https://career-ops.example/api/evaluation-worker", {
     method: "POST",
@@ -236,12 +273,12 @@ test("dispatch rejection is persisted and logged with bounded redacted diagnosti
       return [row];
     }
     if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED'")) {
-      Object.assign(row, { state: "failed", error_code: "EVALUATION_WORKER_DISPATCH_FAILED", completed_at: new Date("2026-10-02T00:01:00Z") });
+      Object.assign(row, { state: "failed", error_code: "EVALUATION_WORKER_DISPATCH_FAILED", diagnostic_code: params[1], completed_at: new Date("2026-10-02T00:01:00Z") });
       return [];
     }
     if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='queued',error_code=NULL")) {
       if (row.state !== "failed" || row.error_code !== "EVALUATION_WORKER_DISPATCH_FAILED" || params[0] !== row.id) return [];
-      Object.assign(row, { state: "queued", error_code: null, completed_at: null, started_at: null, lease: null, requested_at: new Date() });
+      Object.assign(row, { state: "queued", error_code: null, diagnostic_code: null, completed_at: null, started_at: null, lease: null, requested_at: new Date() });
       return [row];
     }
     if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='running'")) {
@@ -256,7 +293,7 @@ test("dispatch rejection is persisted and logged with bounded redacted diagnosti
     if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [row];
     throw new Error(`Unexpected SQL: ${statement}`);
   } };
-  const hostileError = Object.assign(new Error("secret=private-value candidate@example.com"), { name: "Bearer_private-token", httpStatus: 403 });
+  const hostileError = Object.assign(new Error("secret=private-value candidate@example.com"), { name: "Bearer_private-token", httpStatus: 422, diagnosticCode: "GITHUB_ACTIONS_DISABLED" });
   let dispatchCalls = 0;
   const store = createCloudEvaluationStore({ sql, env, dispatch: async () => { if (dispatchCalls++ === 0) throw hostileError; } });
   const logs = [];
@@ -268,13 +305,16 @@ test("dispatch rejection is persisted and logged with bounded redacted diagnosti
 
   assert.equal(result.status, "failed");
   assert.equal(result.errorCode, "EVALUATION_WORKER_DISPATCH_FAILED");
+  assert.equal(result.diagnosticCode, "GITHUB_ACTIONS_DISABLED");
+  assert.match(result.errorMessage, /Check the repository's Actions page.*enable workflows if appropriate.*Support only if GitHub directs you/i);
   assert.equal(row.state, "failed", "the dispatch failure must remain durable");
   assert.equal(row.error_code, "EVALUATION_WORKER_DISPATCH_FAILED");
+  assert.equal(row.diagnostic_code, "GITHUB_ACTIONS_DISABLED");
   assert.equal(logs.length, 1);
   assert.equal(logs[0].length, 1);
   const diagnostic = JSON.parse(logs[0][0]);
   assert.deepEqual(diagnostic, {
-    event: "career_ops_evaluation_worker_dispatch_failed", httpStatus: 403, errorClass: "Error",
+    event: "career_ops_evaluation_worker_dispatch_failed", httpStatus: 422, errorClass: "Error",
   });
   assert.doesNotMatch(JSON.stringify(diagnostic), /private-token|private-value|candidate@example\.com|Bearer/);
 
@@ -287,6 +327,7 @@ test("dispatch rejection is persisted and logged with bounded redacted diagnosti
   assert.equal(replay.status, "queued", "a dispatch retry reopens only the failed dispatch state");
   assert.equal(simultaneousReplay.status, "queued");
   assert.equal(row.error_code, null);
+  assert.equal(row.diagnostic_code, null, "retry clears a stale dispatch diagnosis");
   assert.equal(dispatchCalls, 2);
   assert.ok(Date.now() - row.requested_at.valueOf() < 45 * 60 * 1000, "retry starts a fresh timeout window");
   const duplicate = await store.start({ url, idempotencyKey: "retry-safe-dispatch" });

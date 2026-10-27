@@ -324,7 +324,7 @@ const EVALUATION_START_ERROR_CODES = new Set([
   'ONE_TARGET_REQUIRED', 'INVALID_EVALUATION_REQUEST', 'INVALID_APPLICATION_NUMBER', 'INVALID_IDEMPOTENCY_KEY', 'INVALID_JOB_URL',
   'APPLICATION_NOT_FOUND', 'APPLICATION_REPORT_NOT_FOUND', 'URL_NOT_IN_INBOX', 'CV_NOT_FOUND', 'PROFILE_NOT_FOUND',
   'EVALUATION_INPUTS_NOT_IMPORTED', 'EVALUATION_INVALID_RESULT', 'TRACKER_FORMAT_INVALID', 'BLACKLIST_GATE_BLOCKED',
-  'IDEMPOTENCY_KEY_CONFLICT', 'EVALUATION_WORKER_NOT_CONFIGURED', 'EVALUATION_WORKER_DISPATCH_FAILED', 'HOSTED_AI_UNAVAILABLE', 'EVALUATION_WRITE_CONFLICT',
+  'IDEMPOTENCY_KEY_CONFLICT', 'EVALUATION_WORKER_NOT_CONFIGURED', 'EVALUATION_WORKER_DISPATCH_FAILED', 'GITHUB_ACTIONS_DISABLED', 'HOSTED_AI_UNAVAILABLE', 'EVALUATION_WRITE_CONFLICT',
   'EVALUATION_API_FAILED', 'REPORT_NOT_READY', ...TRACKER_TARGET_ERROR_CODES,
 ]);
 const CV_RUN_ERROR_CODES = new Set([
@@ -354,10 +354,11 @@ const CV_ARTIFACT_ERROR_CODES = new Set([
   'CV_ARTIFACT_REQUEST_TOO_LARGE', 'CV_ARTIFACT_REQUEST_FAILED', 'CV_ARTIFACTS_UNAVAILABLE', ...TRACKER_TARGET_ERROR_CODES,
 ]);
 
-async function safeBackendErrorCode(response, allowedCodes, fallback) {
+async function safeBackendErrorCode(response, allowedCodes, fallback, { preferDiagnostic = false } = {}) {
   try {
     if (!response.headers.get('content-type')?.includes('application/json')) return fallback;
     const body = JSON.parse(await boundedText(response.body, 64000));
+    if (preferDiagnostic && body?.diagnosticCode === 'GITHUB_ACTIONS_DISABLED' && allowedCodes.has(body.diagnosticCode)) return body.diagnosticCode;
     const candidate = body?.error?.code ?? body?.code ?? body?.errorCode;
     return allowedCodes.has(candidate) ? candidate : fallback;
   } catch { return fallback; }
@@ -424,8 +425,11 @@ async function upstream(env, pathname, body, { requireBasic = false, responseTyp
       throw new BridgeError(errorCode, 'Career Ops could not complete the CV request.', { ...metadata, errorCode });
     }
     if (!response.ok && pathname === '/api/evaluation-runs' && body !== undefined) {
-      const code = await safeBackendErrorCode(response, EVALUATION_START_ERROR_CODES, 'EVALUATION_API_FAILED');
-      throw new BridgeError(code, 'Career Ops could not start the evaluation.');
+      const code = await safeBackendErrorCode(response, EVALUATION_START_ERROR_CODES, 'EVALUATION_API_FAILED', { preferDiagnostic: true });
+      const message = code === 'GITHUB_ACTIONS_DISABLED'
+        ? "GitHub Actions are disabled for this repository. Check the repository's Actions page and enable workflows if appropriate. Contact GitHub Support only if GitHub directs you to do so."
+        : 'Career Ops could not start the evaluation.';
+      throw new BridgeError(code, message);
     }
     if (!response.ok && (pathname === '/api/tracker/commands' || pathname === '/api/inbox/commands' || /^\/api\/tracker\/[1-9][0-9]{0,7}$/.test(pathname))) {
       const fallback = response.status === 404 ? 'APPLICATION_NOT_FOUND' : 'TRACKER_REQUEST_FAILED';
