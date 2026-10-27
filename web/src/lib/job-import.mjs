@@ -421,6 +421,10 @@ export async function importPosting(value, { source = null, resolve, request } =
   try { normalizedUrl = normalizeJobUrl(originalUrl); }
   catch (error) { return { ok: false, originalUrl, error: error?.message === "UNSUPPORTED_SCHEME" ? "UNSUPPORTED_SCHEME" : error?.message === "PRIVATE_NETWORK_BLOCKED" ? "PRIVATE_NETWORK_BLOCKED" : "INVALID_URL" }; }
   const requestedNormalizedUrl = normalizedUrl;
+  const hostname = new URL(normalizedUrl).hostname.toLowerCase();
+  const isLinkedIn = hostname === "linkedin.com" || hostname.endsWith(".linkedin.com");
+  const linkedInFallback = error => isLinkedIn && ["FETCH_FAILED", "FETCH_TIMEOUT", "PARSE_FAILED"].includes(error)
+    ? "LINKEDIN_PAGE_UNAVAILABLE" : error;
   let fields = null;
   const identity = resolveAtsPosting(normalizedUrl);
   if (identity) {
@@ -434,11 +438,11 @@ export async function importPosting(value, { source = null, resolve, request } =
   if (Date.now() >= deadline) return { ok: false, originalUrl, normalizedUrl, error: "FETCH_TIMEOUT" };
   const page = await fetchPublicPosting(normalizedUrl, networkOptions());
   if (!page.ok) {
-    if (!fields || page.error === "PRIVATE_NETWORK_BLOCKED") return { ok: false, originalUrl, normalizedUrl, error: page.error };
+    if (!fields || page.error === "PRIVATE_NETWORK_BLOCKED") return { ok: false, originalUrl, normalizedUrl, error: linkedInFallback(page.error) };
   }
   const pageFields = page.ok ? extractJobPosting(page.body, page.finalUrl) : {};
   if (pageFields.expired) return { ok: false, originalUrl, normalizedUrl, error: "POSTING_NOT_FOUND" };
-  if (pageFields.ambiguousPosting) return { ok: false, originalUrl, normalizedUrl, error: "PARSE_FAILED" };
+  if (pageFields.ambiguousPosting) return { ok: false, originalUrl, normalizedUrl, error: linkedInFallback("PARSE_FAILED") };
   if (page.ok && page.finalUrl) {
     let destination;
     try { destination = normalizeJobUrl(page.finalUrl); } catch { return { ok: false, originalUrl, normalizedUrl, error: "INVALID_URL" }; }
@@ -452,7 +456,7 @@ export async function importPosting(value, { source = null, resolve, request } =
   }
   fields = { ...(fields ?? {}), ...Object.fromEntries(Object.entries(pageFields).map(([key, val]) => [key, val ?? fields?.[key] ?? null])) };
   if (!fields.company || !fields.role || !fields.jobDescription || fields.jobDescription.length < 80) {
-    return { ok: false, originalUrl, normalizedUrl, error: "PARSE_FAILED" };
+    return { ok: false, originalUrl, normalizedUrl, error: linkedInFallback("PARSE_FAILED") };
   }
   if (fields.jobDescription.length > 24_000) return { ok: false, originalUrl, normalizedUrl, error: "FETCH_TOO_LARGE" };
   return {

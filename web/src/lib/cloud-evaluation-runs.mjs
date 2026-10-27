@@ -221,7 +221,12 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
    try { inserted=await sql.query("INSERT INTO career_ops_evaluation_runs(id,state,request,target_key,idempotency_key,company,role,application_number) VALUES($1,'queued',$2::jsonb,$3,$4,$5,$6,$7) RETURNING *",[id,JSON.stringify(request),targetKey,request.idempotencyKey??null,company,role,applicationNumber]); }
    catch(error) { if(error.code!=="23505") throw error; const existing=(await sql.query("SELECT * FROM career_ops_evaluation_runs WHERE target_key=$1 OR ($2::text IS NOT NULL AND idempotency_key=$2) ORDER BY requested_at LIMIT 1",[targetKey,request.idempotencyKey??null]))[0]; if(existing && existing.target_key!==targetKey && request.idempotencyKey) throw new Error("IDEMPOTENCY_KEY_CONFLICT"); return publicRun(existing); }
    try { await dispatch(id,env); }
-   catch { await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED',completed_at=now() WHERE id=$1 AND state='queued'",[id]); }
+   catch(error) {
+    const status=Number.isInteger(error?.httpStatus)&&error.httpStatus>=400&&error.httpStatus<=599?error.httpStatus:null;
+    const safeErrorClass=["Error","TypeError","RangeError","SyntaxError","AbortError"].includes(error?.name)?error.name:"Error";
+    console.error(JSON.stringify({event:"career_ops_evaluation_worker_dispatch_failed",httpStatus:status,errorClass:safeErrorClass}));
+    await sql.query("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED',completed_at=now() WHERE id=$1 AND state='queued'",[id]);
+   }
    return publicRun(await find(id));
   },
   async get(id) { if(!UUID_RE.test(id)) throw new Error("INVALID_EVALUATION_ID"); await ready(); const row=await find(id); const result=publicRun(row); if(result?.status==="failed"&&row.failed_draft) result.failedDraft=row.failed_draft; return result; },
@@ -289,7 +294,7 @@ export function createCloudEvaluationStore({ sql, env = process.env, dispatch = 
 
 async function dispatchEvaluation(id,env,fetchFn=fetch){
  const response=await fetchFn("https://api.github.com/repos/aselekoglu/career-ops/actions/workflows/career-ops-live-eval.yml/dispatches",{method:"POST",redirect:"error",signal:AbortSignal.timeout(15000),headers:{Authorization:"Bearer "+env.CAREER_OPS_SCAN_DISPATCH_TOKEN,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","Content-Type":"application/json"},body:JSON.stringify({ref:env.CAREER_OPS_SCAN_REF,inputs:{evaluation_id:id}})});
- if(!response.ok) throw new Error("WORKER_DISPATCH_FAILED");
+ if(!response.ok) { const error=new Error("WORKER_DISPATCH_FAILED"); error.httpStatus=response.status; throw error; }
 }
 async function generateEvaluation(args){
  const service=createHostedAiService(); if(!service.status().ready) throw new Error("HOSTED_AI_UNAVAILABLE");
@@ -314,4 +319,4 @@ export async function handleEvaluationWorker(request){
  if(Number(request.headers.get("content-length")||0)>4000)return json({code:"REQUEST_TOO_LARGE"},413);
  try{const body=await request.json();const id=body.evaluationId||body.runId;if(!UUID_RE.test(id||"")||Object.keys(body).some(key=>!["evaluationId","runId"].includes(key))||Boolean(body.evaluationId&&body.runId))return json({code:"INVALID_WORKER_REQUEST"},400);const run=await getStore().process(id);return json(run,run?200:409);}catch(error){return json({code:error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?"EVALUATION_WORKER_NOT_CONFIGURED":"WORKER_API_FAILED"},error?.message==="EVALUATION_WORKER_NOT_CONFIGURED"?503:500);}
 }
-export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,isBlacklisted,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};
+export const __test={normalizeInput,parseInbox,parseApplications:parseTrackerApplications,reportUrl,fetchPosting,isBlacklisted,validateEvaluationReport,addHostedVerification,normalizeGeneratedReport,riskSummaryTable,buildEvaluationPrompt,publicRun,safePublicHost,htmlToText,workerAuthorized,handleEvaluationWorker,dispatchEvaluation,maxStoredReportNumberSql:MAX_STORED_REPORT_NUMBER_SQL,hostedEvaluationErrorCode,safeErrorMessage};

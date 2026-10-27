@@ -5,7 +5,7 @@ const MAX_REQUEST_BYTES = 4096;
 const MAX_URL_CHARS = 2048;
 const MAX_SOURCE_CHARS = 500;
 const SAFE_ERRORS = new Set([
-  "INVALID_URL", "UNSUPPORTED_SCHEME", "PRIVATE_NETWORK_BLOCKED", "DNS_FAILED", "FETCH_FAILED",
+  "INVALID_URL", "UNSUPPORTED_SCHEME", "PRIVATE_NETWORK_BLOCKED", "LINKEDIN_PAGE_UNAVAILABLE", "DNS_FAILED", "FETCH_FAILED",
   "FETCH_TIMEOUT", "FETCH_TOO_LARGE", "TOO_MANY_REDIRECTS", "POSTING_NOT_FOUND", "PARSE_FAILED",
   "DATABASE_WRITE_FAILED", "UPSTREAM_UNAVAILABLE",
 ]);
@@ -13,6 +13,7 @@ const ERROR_MESSAGES = {
   INVALID_URL: "Enter a valid public job posting URL.",
   UNSUPPORTED_SCHEME: "Use an HTTP or HTTPS job posting URL.",
   PRIVATE_NETWORK_BLOCKED: "The job posting URL must point to a public host.",
+  LINKEDIN_PAGE_UNAVAILABLE: "Career Ops could not read this LinkedIn job page; LinkedIn may require sign-in or block automated access. Try the employer's public careers or ATS URL.",
   DNS_FAILED: "The job posting host could not be resolved.",
   FETCH_FAILED: "The job posting could not be fetched.",
   FETCH_TIMEOUT: "The job posting request timed out.",
@@ -25,6 +26,7 @@ const ERROR_MESSAGES = {
 };
 const ERROR_STATUS = {
   INVALID_URL: 400, UNSUPPORTED_SCHEME: 400, PRIVATE_NETWORK_BLOCKED: 400,
+  LINKEDIN_PAGE_UNAVAILABLE: 422,
   FETCH_TIMEOUT: 504, FETCH_TOO_LARGE: 413, TOO_MANY_REDIRECTS: 502,
   POSTING_NOT_FOUND: 404, PARSE_FAILED: 422,
   DATABASE_WRITE_FAILED: 503, UPSTREAM_UNAVAILABLE: 503,

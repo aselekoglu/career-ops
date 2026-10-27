@@ -145,6 +145,21 @@ test("worker credential accepts only its configured bearer value", () => {
   assert.equal(__test.workerAuthorized("Bearer wrong", env), false);
 });
 
+test("GitHub dispatch failures retain only the upstream HTTP status for redacted diagnostics", async () => {
+  const id = "33333333-3333-4333-8333-333333333333";
+  await assert.rejects(__test.dispatchEvaluation(id, env, async (target, options) => {
+    assert.equal(target, "https://api.github.com/repos/aselekoglu/career-ops/actions/workflows/career-ops-live-eval.yml/dispatches");
+    assert.equal(options.method, "POST");
+    assert.deepEqual(JSON.parse(options.body), { ref: env.CAREER_OPS_SCAN_REF, inputs: { evaluation_id: id } });
+    return new Response("private github token or repository details", { status: 403 });
+  }), error => {
+    assert.equal(error.message, "WORKER_DISPATCH_FAILED");
+    assert.equal(error.httpStatus, 403);
+    assert.doesNotMatch(error.message, /private github/i);
+    return true;
+  });
+});
+
 test("evaluation callback rejects unauthorized callers before accessing Neon", async () => {
   const response = await __test.handleEvaluationWorker(new Request("https://career-ops.example/api/evaluation-worker", {
     method: "POST",
@@ -190,6 +205,57 @@ test("duplicate exact URL returns durable run before inspecting the checked inbo
   assert.equal(result.runId, run.id);
   assert.equal(result.status, "completed");
   assert.equal(dispatches, 0);
+});
+
+test("dispatch rejection is persisted and logged with bounded redacted diagnostics", async () => {
+  const files = new Map([
+    ["data/pipeline.md", `# Pipeline\n\n- [ ] ${url} | Kinaxis | Co-op Intern, Forward Deployed Engineer\n`],
+    ["data/applications.md", "# Applications Tracker\n\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|---|---|---|---|---|---|---|---|\n"],
+    ["cv.md", "# CV\nSource-backed candidate facts.\n"],
+    ["config/profile.yml", "language:\n  output: en\n"],
+    ["modes/_profile.md", "Target software engineering roles."],
+  ]);
+  const row = { state: "queued", requested_at: new Date("2026-10-02T00:00:00Z") };
+  const sql = { async query(statement, params = []) {
+    if (/^(CREATE |ALTER TABLE |CREATE UNIQUE INDEX|UPDATE career_ops_evaluation_runs SET state='failed',error_code='WORKER_TIMEOUT')/.test(statement)) return [];
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_report_counter")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE target_key=")) return [];
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE idempotency_key=")) return [];
+    if (statement.startsWith("SELECT path,content,sha256,content_encoding FROM career_ops_documents")) {
+      const content = files.get(params[0]);
+      return content == null ? [] : [{ path: params[0], content, sha256: `sha:${params[0]}`, content_encoding: "utf8" }];
+    }
+    if (statement.startsWith("INSERT INTO career_ops_evaluation_runs")) {
+      Object.assign(row, { id: params[0], request: JSON.parse(params[1]), target_key: params[2], idempotency_key: params[3], company: params[4], role: params[5], application_number: params[6] });
+      return [row];
+    }
+    if (statement.startsWith("UPDATE career_ops_evaluation_runs SET state='failed',error_code='EVALUATION_WORKER_DISPATCH_FAILED'")) {
+      Object.assign(row, { state: "failed", error_code: "EVALUATION_WORKER_DISPATCH_FAILED", completed_at: new Date("2026-10-02T00:01:00Z") });
+      return [];
+    }
+    if (statement.startsWith("SELECT * FROM career_ops_evaluation_runs WHERE id=")) return [row];
+    throw new Error(`Unexpected SQL: ${statement}`);
+  } };
+  const hostileError = Object.assign(new Error("secret=private-value candidate@example.com"), { name: "Bearer_private-token" , httpStatus: 403 });
+  const store = createCloudEvaluationStore({ sql, env, dispatch: async () => { throw hostileError; } });
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...args) => logs.push(args);
+  let result;
+  try { result = await store.start({ url }); }
+  finally { console.error = originalError; }
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorCode, "EVALUATION_WORKER_DISPATCH_FAILED");
+  assert.equal(row.state, "failed", "the dispatch failure must remain durable");
+  assert.equal(row.error_code, "EVALUATION_WORKER_DISPATCH_FAILED");
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].length, 1);
+  const diagnostic = JSON.parse(logs[0][0]);
+  assert.deepEqual(diagnostic, {
+    event: "career_ops_evaluation_worker_dispatch_failed", httpStatus: 403, errorClass: "Error",
+  });
+  assert.doesNotMatch(JSON.stringify(diagnostic), /private-token|private-value|candidate@example\.com|Bearer/);
 });
 
 test("completed commit keeps tracker number unpadded and fences report, tracker, and inbox writes", async () => {
