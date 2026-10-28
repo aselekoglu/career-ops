@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Undo2 } from "lucide-react";
 import { useJobs } from "@/components/jobs/job-store";
+import { getJobAvailability } from "@/lib/job-execution.mjs";
+import { advanceShortlistBatch, createShortlistBatch, persistShortlistBatch, readShortlistBatch, resolveShortlistBatchActiveJob } from "@/lib/shortlist-batch.mjs";
 import type { InboxJob } from "@/lib/career-ops";
 import type { AtsSource } from "@/lib/explore";
 import { ATS_SOURCES } from "@/lib/explore";
@@ -14,15 +16,17 @@ import { cn } from "@/lib/cn";
 
 const SHORTLIST_KEY = "career-ops:shortlist";
 const HIDDEN_KEY = "career-ops:hidden";
-const CONFIG_KEY = "career-ops:config";
 const BATCH = 20;
+type HostedBatch = { batchId: string; items: ShortItem[]; nextIndex: number; activeJobId: string | null };
 
 // The inbox as a TRIAGE surface: Abundance → Triage → Shortlist → Opt-in Score.
 // Default is a small fresh batch (never the full wall); free facets + Save/Skip narrow
 // it; only "Score shortlist" spends tokens. 🔴 The shell is agnostic to what makes a
 // role relevant — order is freshness with a single documented plug point.
 export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
-  const { jobs, startJob } = useJobs();
+  const { jobs, jobsReady, startJob, execution } = useJobs();
+  const scoreAvailability = getJobAvailability("evaluate", execution, execution.localCliConfigured);
+  const canScore = !execution.loading && scoreAvailability.available;
 
   // facets
   const [within, setWithin] = useState<number | null>(null);
@@ -37,8 +41,10 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
   const [hidden, setHidden] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [undo, setUndo] = useState<{ label: string; fn: () => void } | null>(null);
-  const [hasCli, setHasCli] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [hostedBatch, setHostedBatch] = useState<HostedBatch | null>(null);
+  const [batchLoaded, setBatchLoaded] = useState(false);
+  const [batchNotice, setBatchNotice] = useState("");
 
   useEffect(() => {
     try {
@@ -46,10 +52,11 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
       if (s) setShortlist(JSON.parse(s));
       const h = localStorage.getItem(HIDDEN_KEY);
       if (h) setHidden(JSON.parse(h));
-      const c = localStorage.getItem(CONFIG_KEY);
-      setHasCli(!!(c && JSON.parse(c).cliId));
+      setHostedBatch(readShortlistBatch(localStorage));
     } catch {
       /* ignore */
+    } finally {
+      setBatchLoaded(true);
     }
     setLoaded(true);
   }, []);
@@ -59,6 +66,57 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
   useEffect(() => {
     if (loaded) try { localStorage.setItem(HIDDEN_KEY, JSON.stringify(hidden)); } catch { /* quota */ }
   }, [hidden, loaded]);
+
+  useEffect(() => {
+    if (!loaded || !batchLoaded || !jobsReady || execution.mode !== "hosted") return;
+    if (!hostedBatch) {
+      persistShortlistBatch(localStorage, null);
+      return;
+    }
+    const item = hostedBatch.items[hostedBatch.nextIndex];
+    if (!item) {
+      setHostedBatch(null);
+      return;
+    }
+    const activeState = resolveShortlistBatchActiveJob(hostedBatch, jobs, jobsReady);
+    if (activeState.state === "missing") {
+      persistShortlistBatch(localStorage, null);
+      setHostedBatch(null);
+      setBatchNotice("The saved active batch job is missing from job history. No retry was started; all roles remain in your shortlist.");
+      return;
+    }
+    const active = activeState.state === "found" ? activeState.job : null;
+    const matching = active || jobs.find((job) => job.backend === "hosted" && job.kind === "evaluate" && (job.requestInput === item.url || job.input === item.url));
+    if (matching?.status === "running") {
+      if (hostedBatch.activeJobId !== matching.id) {
+        const resumed = { ...hostedBatch, activeJobId: matching.id };
+        if (persistShortlistBatch(localStorage, resumed)) setHostedBatch(resumed);
+      }
+      return;
+    }
+    if (matching?.status === "done") {
+      const next = advanceShortlistBatch(hostedBatch);
+      if (!persistShortlistBatch(localStorage, next)) {
+        setBatchNotice("Could not save batch progress. Remaining roles are still in your shortlist; no next evaluation was started.");
+        return;
+      }
+      setShortlist((items) => items.filter((saved) => saved.url !== item.url));
+      setHostedBatch(next);
+      if (!next) setBatchNotice("Hosted shortlist scoring is complete.");
+      return;
+    }
+    if (matching) {
+      persistShortlistBatch(localStorage, null);
+      setHostedBatch(null);
+      setBatchNotice("Shortlist scoring paused after a failed or uncertain item. No later roles were started; all roles remain saved in your shortlist. Remove the problem role before confirming the remaining batch.");
+      return;
+    }
+    const id = startJob({ title: `Score · ${item.company}`, subtitle: item.role, kind: "evaluate", input: item.url, page: "/pipeline", batchId: hostedBatch.batchId });
+    if (!id) return;
+    const started = { ...hostedBatch, activeJobId: id };
+    if (persistShortlistBatch(localStorage, started)) setHostedBatch(started);
+    else setBatchNotice("Could not save batch progress. The current role may be running; remaining roles stay in your shortlist.");
+  }, [batchLoaded, execution.mode, hostedBatch, jobs, jobsReady, loaded, startJob]);
   // auto-dismiss the undo toast
   useEffect(() => {
     if (!undo) return;
@@ -168,6 +226,16 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
   }, [jobs, shortlist.length]);
 
   const scoreShortlist = () => {
+    setBatchNotice("");
+    if (execution.mode === "hosted") {
+      const batch = createShortlistBatch(shortlist, `shortlist-${Date.now()}`);
+      if (!batch || !persistShortlistBatch(localStorage, batch)) {
+        setBatchNotice("Could not save the confirmed shortlist batch. No hosted evaluation was started.");
+        return;
+      }
+      setHostedBatch(batch);
+      return;
+    }
     const batchId = `shortlist-${Date.now()}`;
     for (const it of shortlist) {
       startJob({ title: `Score · ${it.company}`, subtitle: it.role, kind: "evaluate", input: it.url, page: "/pipeline", batchId });
@@ -277,10 +345,14 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
         </div>
       )}
 
+      {batchNotice && <p role="status" className="mx-3 mt-2 text-center text-xs text-muted">{batchNotice}</p>}
       <ShortlistTray
         items={shortlist}
         estimate={estimate}
-        hasCli={hasCli}
+        canScore={canScore}
+        disabledReason={execution.loading ? "Checking hosted evaluation readiness…" : scoreAvailability.reason || undefined}
+        showLocalSetup={execution.mode === "local" && !execution.localCliConfigured}
+        batchBusy={execution.mode === "hosted" && hostedBatch !== null}
         onRemove={(url) => setShortlist((s) => s.filter((x) => x.url !== url))}
         onClear={() => setShortlist([])}
         onScore={scoreShortlist}

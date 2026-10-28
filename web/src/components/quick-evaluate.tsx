@@ -3,23 +3,30 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import { useJobs } from "@/components/jobs/job-store";
+import { getJobAvailability } from "@/lib/job-execution.mjs";
 import { CostBadge } from "@/components/cost/cost-badge";
 
 // Auto-pipeline, one click: paste a job URL → fire a real evaluation worker
 // (the same kind:"evaluate" that runs modes/oferta.md + writes the A–F report +
 // tracker row). The worker pills + assistant cards show progress.
 export function QuickEvaluate() {
-  const { startJob } = useJobs();
+  const { startJob, execution } = useJobs();
+  const availability = getJobAvailability("evaluate", execution, execution.localCliConfigured);
+  const canEvaluate = !execution.loading && availability.available;
   const [url, setUrl] = useState("");
   const [hint, setHint] = useState("");
 
   function run() {
+    if (!canEvaluate) {
+      setHint(execution.loading ? "Checking hosted evaluation readiness…" : availability.reason || "Evaluation is unavailable.");
+      return;
+    }
     const u = url.trim();
     if (!/^https?:\/\//i.test(u)) {
       setHint("Paste a full job-posting URL (https://…).");
       return;
     }
-    startJob({ title: "Evaluate · pasted URL", subtitle: u, kind: "evaluate", input: u, page: "/" });
+    startJob({ title: "Evaluate · pasted URL", subtitle: u, kind: "evaluate", input: u, page: "/", importFirst: execution.mode === "hosted" });
     setUrl("");
     setHint("Evaluating — watch it in the Workers tray.");
   }
@@ -30,6 +37,7 @@ export function QuickEvaluate() {
         <Sparkles className="size-4 shrink-0 text-brand/70" />
         <input
           value={url}
+          disabled={!canEvaluate}
           onChange={(e) => {
             setUrl(e.target.value);
             if (hint) setHint("");
@@ -38,19 +46,22 @@ export function QuickEvaluate() {
             if (e.key === "Enter") run();
           }}
           placeholder="Paste a job URL to evaluate…"
-          className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none placeholder:text-faint"
+          className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-60"
         />
         <button
           onClick={run}
-          className="shrink-0 rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200"
+          disabled={!canEvaluate}
+          title={!canEvaluate ? availability.reason : undefined}
+          className="shrink-0 rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Evaluate
         </button>
       </div>
       <div className="mt-2 flex items-center gap-2">
         <CostBadge kind="spend" size="xs" />
-        <span className="text-xs text-faint">Evaluation runs on your own AI — your key, your machine.</span>
+        <span className="text-xs text-faint">{execution.mode === "hosted" ? "Import the posting into the Inbox, then run it on hosted AI." : "Evaluation runs on your own AI — your key, your machine."}</span>
       </div>
+      {!canEvaluate && !hint && <p className="mt-1 text-xs text-muted">{execution.loading ? "Checking hosted evaluation readiness…" : availability.reason}</p>}
       {hint && <p className="mt-1 text-xs text-faint">{hint}</p>}
     </div>
   );

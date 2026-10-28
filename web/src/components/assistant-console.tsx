@@ -160,7 +160,7 @@ export function AssistantConsole() {
     return () => controller.abort();
   }, []);
 
-  const { jobs, startJob } = useJobs();
+  const { jobs, startJob, execution } = useJobs();
   const pipeline = usePipeline();
   const apply = useApply();
 
@@ -260,6 +260,7 @@ export function AssistantConsole() {
       push: (p) => router.push(p),
       replace: (p) => router.replace(p),
       startJob,
+      execution,
       inbox: pipelineRef.current.inbox,
       applications: pipelineRef.current.applications,
       jobForUrl: (url) => {

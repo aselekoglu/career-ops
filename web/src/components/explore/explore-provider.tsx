@@ -351,6 +351,31 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     if (fresh.length === 0) return 0;
     setAdding((s) => new Set([...s, ...fresh.map((o) => o.url)]));
     try {
+      if (executionMode === "hosted") {
+        let addedCount = 0;
+        const successful: string[] = [];
+        for (const offer of fresh) {
+          const operationId = globalThis.crypto?.randomUUID?.();
+          if (!operationId) continue;
+          try {
+            const response = await fetch("/api/inbox/commands", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ operationId, operation: "add", url: offer.url, company: offer.company, role: offer.title, location: offer.location || undefined }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (response.ok || response.status === 409 && result.code === "INBOX_DUPLICATE_URL") {
+              successful.push(offer.url);
+              addedCount++;
+            }
+          } catch { /* Do not treat an uncertain Inbox write as evaluable. */ }
+        }
+        if (successful.length) {
+          setAdded((s) => new Set([...s, ...successful]));
+          router.refresh();
+          window.dispatchEvent(new CustomEvent("co-job-done", { detail: { kind: "explore-add" } }));
+        }
+        return addedCount;
+      }
       const r = await fetch("/api/explore/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

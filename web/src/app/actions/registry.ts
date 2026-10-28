@@ -9,7 +9,8 @@
 // client pipeline snapshot — the model never sees or invents URLs.
 
 import type { Application, InboxJob } from "@/lib/career-ops";
-import type { Job } from "@/components/jobs/job-store";
+import type { Job, JobExecution } from "@/components/jobs/job-store";
+import { getJobAvailability } from "@/lib/job-execution.mjs";
 import { normalizeTextKey } from "@/lib/core/normalize-text-key.mjs";
 
 export const AUTO_FIRE_MAX = 3; // fire ≤3 evaluations silently; confirm above that
@@ -36,6 +37,7 @@ export type ActionCtx = {
   push: (path: string) => void; // router.push — section/detail change
   replace: (path: string) => void; // router.replace — incremental filter tweak
   startJob: (opts: StartJobInput) => string | null;
+  execution: JobExecution;
   inbox: InboxJob[];
   applications: Application[]; // tracker snapshot — resolve #n → company/role for confirms
   jobForUrl: (url: string) => Job | undefined; // skip-if-done / retry logic
@@ -144,6 +146,10 @@ const ACTIONS: Record<string, ActionDef> = {
     run: (raw, ctx) => {
       const url = raw.url;
       if (!isStr(url) || !/^https?:\/\//i.test(url)) return { status: "ignored", note: "invalid url" };
+      if (ctx.execution.mode === "hosted" && !ctx.inbox.some((item) => item.url === url)) return { status: "ignored", note: "Hosted evaluations only accept the exact URL stored in your Inbox. Add this posting first." };
+      if (ctx.execution.mode === "unknown") return { status: "ignored", note: "Execution readiness is unknown; refresh the app before starting an evaluation." };
+      const available = getJobAvailability("evaluate", ctx.execution, ctx.execution.localCliConfigured);
+      if (!available.available) return { status: "ignored", note: available.reason || "Evaluation is unavailable." };
       const ex = ctx.jobForUrl(url);
       if (ex && ex.status !== "error" && !raw.rerun) return { status: "ignored", note: "already evaluated" };
       const id = ctx.startJob({
@@ -186,6 +192,8 @@ const ACTIONS: Record<string, ActionDef> = {
           note: matches.length > 0 ? `Already evaluated every ${company} posting.` : `No pending ${company} postings in your inbox.`,
         };
       }
+      const availability = getJobAvailability("evaluate", ctx.execution, ctx.execution.localCliConfigured);
+      if (!availability.available) return { status: "ignored", note: availability.reason || "Evaluation is unavailable." };
 
       const fire = (): DoneInfo => {
         const batchId = pending.length > 1 ? genBatchId() : undefined;
@@ -230,6 +238,7 @@ const ACTIONS: Record<string, ActionDef> = {
   research: {
     sideEffect: "spend",
     run: (raw, ctx) => {
+      if (ctx.execution.mode === "hosted" || ctx.execution.mode === "unknown") return { status: "ignored", note: getJobAvailability("research", ctx.execution, ctx.execution.localCliConfigured).reason || "Research is unavailable." };
       const target = raw.target;
       if (!isStr(target)) return { status: "ignored", note: "missing target" };
       const id = ctx.startJob({
@@ -247,6 +256,8 @@ const ACTIONS: Record<string, ActionDef> = {
     run: (raw, ctx) => {
       const n = String(raw.n ?? "").trim();
       if (!n) return { status: "ignored", note: "need an application #" };
+      const available = getJobAvailability("pdf", ctx.execution, ctx.execution.localCliConfigured);
+      if (!available.available) return { status: "ignored", note: available.reason || "CV generation is unavailable." };
       const app = ctx.applications.find((a) => a.n === n);
       const id = ctx.startJob({ title: `CV PDF · ${app?.company ?? `#${n}`}`, subtitle: "tailored CV", kind: "pdf", input: n, page: `/pipeline/${n}` });
       return { status: "done", jobIds: id ? [id] : [] };
@@ -276,6 +287,7 @@ const ACTIONS: Record<string, ActionDef> = {
   apply: {
     sideEffect: "none",
     run: (raw, ctx) => {
+      if (ctx.execution.mode === "hosted" || ctx.execution.mode === "unknown") return { status: "ignored", note: "Application assistance requires the local CLI and is unavailable in the hosted app." };
       const url = raw.url;
       if (!isStr(url) || !/^https?:\/\//i.test(url)) return { status: "ignored", note: "need an application form URL" };
       ctx.startApply(url);

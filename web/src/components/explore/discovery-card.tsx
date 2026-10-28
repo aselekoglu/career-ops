@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import { instrumentSerif } from "@/lib/fonts";
 import { ATS_LABEL, type AtsSource, type DiscoveredOffer } from "@/lib/explore";
 import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
+import { getJobAvailability } from "@/lib/job-execution.mjs";
 import { useJobs } from "@/components/jobs/job-store";
 import { useExplore } from "./explore-provider";
 
@@ -42,7 +43,10 @@ const WORKER_LABEL: Record<string, string> = { evaluate: "Evaluating…", pdf: "
 export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: DiscoveredOffer; inPipeline: boolean; evaluatedN?: string }) {
   const { added, adding, addToPipeline, mode, executionMode } = useExplore();
   const hostedReadOnly = isHostedExploreReadOnly(executionMode, mode, offer.source);
-  const { jobs, startJob } = useJobs();
+  const { jobs, startJob, execution } = useJobs();
+  const evaluationAvailability = getJobAvailability("evaluate", execution, execution.localCliConfigured);
+  const evaluateDisabled = execution.loading || !evaluationAvailability.available;
+  const [actionMessage, setActionMessage] = useState("");
 
   // GLOBAL worker awareness: any worker acting on this URL drives the CTA, here
   // and on every other surface that renders this offer (the jobs store is global).
@@ -59,8 +63,17 @@ export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: Discov
   const unverified = offer.verification === "unconfirmed";
   const fresh = freshness(offer.postedAt) || offer.postedHint || "";
 
-  const evaluate = () => {
-    addToPipeline([offer]); // evaluating implies it's in the pipeline — record it
+  const evaluate = async () => {
+    setActionMessage("");
+    if (execution.mode === "hosted" && !inPipeline && !added.has(offer.url)) {
+      const imported = await addToPipeline([offer]);
+      if (imported < 1) {
+        setActionMessage("Could not confirm this exact posting in the Inbox, so evaluation was not started.");
+        return;
+      }
+    } else if (execution.mode !== "hosted") {
+      void addToPipeline([offer]);
+    }
     startJob({ title: `Evaluate · ${offer.company}`, subtitle: offer.title, kind: "evaluate", input: offer.url, page: "/explore" });
   };
 
@@ -154,14 +167,16 @@ export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: Discov
             </button>
             <button
               type="button"
-              onClick={evaluate}
-              title={unverified ? "Runs a real evaluation — and verifies the posting is live. Uses tokens." : "Runs a real A–F evaluation. Uses tokens."}
-              className="inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-brand/30 px-2.5 py-2 text-xs font-medium text-brand transition-colors hover:bg-brand-soft max-sm:min-h-[44px]"
+              disabled={evaluateDisabled || isAdding}
+              onClick={() => { void evaluate(); }}
+              title={evaluateDisabled ? evaluationAvailability.reason : unverified ? "Runs a real evaluation — and verifies the posting is live. Uses tokens." : "Runs a real A–F evaluation. Uses tokens."}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-brand/30 px-2.5 py-2 text-xs font-medium text-brand transition-colors hover:bg-brand-soft disabled:cursor-not-allowed disabled:opacity-50 max-sm:min-h-[44px]"
             >
               Evaluate <Coins className="size-3.5 opacity-80" />
             </button>
           </div>
         )}
+        {actionMessage && <p className="mt-1 text-[11px] text-muted">{actionMessage}</p>}
       </div>
     </div>
   );

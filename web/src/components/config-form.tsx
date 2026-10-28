@@ -103,6 +103,7 @@ export function ConfigForm() {
     // key/manual panel is unwired) and a secret must never sit in clear-text
     // localStorage. Keys belong in the user's own CLI/provider config.
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ mode, cliId, provider, logos }));
+    window.dispatchEvent(new CustomEvent("co-config-updated"));
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }

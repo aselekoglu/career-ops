@@ -21,14 +21,20 @@ function fmtTokens(t: number): string {
 export function ShortlistTray({
   items,
   estimate,
-  hasCli,
+  canScore,
+  disabledReason,
+  showLocalSetup = false,
+  batchBusy = false,
   onRemove,
   onClear,
   onScore,
 }: {
   items: ShortItem[];
   estimate: { tokens?: number; usd?: number };
-  hasCli: boolean;
+  canScore: boolean;
+  disabledReason?: string;
+  showLocalSetup?: boolean;
+  batchBusy?: boolean;
   onRemove: (url: string) => void;
   onClear: () => void;
   onScore: () => void;
@@ -57,6 +63,7 @@ export function ShortlistTray({
                   </span>
                   <button
                     type="button"
+                    disabled={batchBusy}
                     onClick={() => onRemove(it.url)}
                     aria-label={`Remove ${it.company}`}
                     className="inline-flex items-center justify-center rounded-md p-1 text-faint transition-colors hover:text-foreground max-sm:min-h-[44px] max-sm:min-w-[44px]"
@@ -80,7 +87,7 @@ export function ShortlistTray({
             </button>
 
             {open && (
-              <button type="button" onClick={onClear} className="text-xs text-faint transition-colors hover:text-foreground max-sm:min-h-[44px]">
+              <button type="button" disabled={batchBusy} onClick={onClear} className="text-xs text-faint transition-colors hover:text-foreground disabled:opacity-50 max-sm:min-h-[44px]">
                 Clear
               </button>
             )}
@@ -89,18 +96,22 @@ export function ShortlistTray({
               {!confirming ? (
                 <button
                   type="button"
+                  disabled={!canScore || batchBusy}
                   onClick={() => setConfirming(true)}
-                  className="inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200 max-sm:min-h-[44px]"
+                  title={!canScore ? disabledReason : undefined}
+                  className="inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200 disabled:cursor-not-allowed disabled:opacity-50 max-sm:min-h-[44px]"
                 >
                   <Sparkles className="size-4" />
-                  <span>Score {n}</span>
+                  <span>{batchBusy ? "Scoring…" : `Score ${n}`}</span>
                   <span className="hidden text-xs font-normal text-brand-foreground/80 sm:inline">· {costText}</span>
                 </button>
               ) : (
-                <ConfirmScore n={n} costText={costText} hasCli={hasCli} onCancel={() => setConfirming(false)} onConfirm={() => { setConfirming(false); onScore(); }} />
+                <ConfirmScore n={n} costText={costText} canScore={canScore} disabledReason={disabledReason} showLocalSetup={showLocalSetup} onCancel={() => setConfirming(false)} onConfirm={() => { setConfirming(false); onScore(); }} />
               )}
             </div>
           </div>
+
+          {!canScore && disabledReason && <p className="px-3 pb-2 text-right text-[11px] text-muted sm:px-4">{disabledReason}</p>}
 
           {/* cost line — always visible on mobile (where it doesn't fit in the button) */}
           <div className="flex items-center gap-2 border-t border-border/60 px-3 py-1.5 text-[11px] text-muted sm:hidden">
@@ -116,23 +127,25 @@ export function ShortlistTray({
 function ConfirmScore({
   n,
   costText,
-  hasCli,
+  canScore,
+  disabledReason,
+  showLocalSetup,
   onCancel,
   onConfirm,
 }: {
   n: number;
   costText: string;
-  hasCli: boolean;
+  canScore: boolean;
+  disabledReason?: string;
+  showLocalSetup: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  if (!hasCli) {
+  if (!canScore) {
     return (
       <div className="flex items-center gap-2 text-xs">
-        <span className="text-muted">No AI configured.</span>
-        <Link href="/config" className="inline-flex items-center gap-1 rounded-full border border-brand/40 bg-brand-soft px-3 py-1.5 font-medium text-brand max-sm:min-h-[44px]">
-          <Settings className="size-3.5" /> Set up
-        </Link>
+        <span className="text-muted">{disabledReason || "Evaluation is unavailable."}</span>
+        {showLocalSetup && <Link href="/config" className="inline-flex items-center gap-1 rounded-full border border-brand/40 bg-brand-soft px-3 py-1.5 font-medium text-brand max-sm:min-h-[44px]"><Settings className="size-3.5" /> Set up</Link>}
         <button type="button" onClick={onCancel} className="text-faint hover:text-foreground max-sm:min-h-[44px]">
           Cancel
         </button>

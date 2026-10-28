@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { X, History } from "lucide-react";
-import { useJobs } from "@/components/jobs/job-store";
+import { isJobClearable, useJobs } from "@/components/jobs/job-store";
 import { WorkerCard, pillTone, TONE } from "@/components/jobs/worker-card";
 import { cn } from "@/lib/cn";
 
@@ -17,7 +17,7 @@ export function WorkerPills() {
   const pathname = usePathname();
   if (jobs.length === 0) return null;
   const running = jobs.filter((j) => j.status === "running").length;
-  const finished = jobs.length - running;
+  const finished = jobs.filter(isJobClearable).length;
 
   return (
     <div className="mt-4 border-t border-border pt-3">
@@ -50,11 +50,13 @@ export function WorkerPills() {
                   variant="tray"
                   trailing={
                     <button
+                      disabled={!isJobClearable(j)}
                       onClick={(e) => {
                         e.preventDefault();
                         removeJob(j.id);
                       }}
-                      className="text-faint opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                      title={!isJobClearable(j) ? "Keep this item to avoid starting a duplicate hosted run." : "Dismiss job"}
+                      className="text-faint opacity-0 transition-opacity hover:text-foreground disabled:pointer-events-none disabled:opacity-0 group-hover:opacity-100"
                       aria-label="Dismiss job"
                     >
                       <X className="size-3" />
