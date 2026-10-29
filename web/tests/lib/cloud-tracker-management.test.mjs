@@ -166,6 +166,21 @@ test("status transition appends the canonical ledger and follow-up pin atomicall
   assert.match(docs.get("data/follow-ups.md"), /- next #1 2026-09-30 \(set 2026-10-02\)/);
 });
 
+test("cloud tracker persists Applied → Rejected status and ledger after reread", async () => {
+  const { store, docs } = fixture({ trackerText: tracker.replace("| Evaluated |", "| Applied |") });
+  const result = await store.mutate("tracker", {
+    operationId: "44444444-4444-4444-8444-444444444444",
+    operation: "set-status",
+    applicationId: "1",
+    status: "Rejected",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal((await store.getApplication("1")).status, "Rejected");
+  assert.match(docs.get("data/applications.md"), /^\\| 1 \\|.*\\| Rejected \\|/m);
+  assert.match(docs.get("data/status-log.tsv"), /1\\t2026-10-02\\tApplied\\tRejected\\tset-status\\t\\n$/);
+});
+
 test("Applied transition uses an existing Applied note date before today's fallback", async () => {
   const { store, docs } = fixture();
   await store.mutate("tracker", { operationId, operation: "set-status", applicationId: "1", status: "Applied" });
