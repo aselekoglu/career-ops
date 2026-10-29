@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { handleCloudTrackerCommand } from "@/lib/cloud-tracker-management.mjs";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { canonicalizeStatus } from "@/lib/core/states";
 import { atomicWrite } from "@/lib/core/safe-write";
@@ -29,6 +32,29 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `not a canonical status: ${status}` }, { status: 400 });
   }
 
+  // In hosted mode the pipeline reads from Neon, not the deployment filesystem.
+  // Delegate to the same atomic, ledger-backed writer used by the tracker API.
+  // Never fall back to a local file when a cloud mutation fails.
+  if (cloudDataEnabled()) {
+    const command = new Request(req.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationId: randomUUID(),
+        operation: "set-status",
+        applicationId: String(n),
+        status: canon,
+      }),
+    });
+    const result = await handleCloudTrackerCommand(command, "tracker");
+    if (!result.ok) return result;
+    return NextResponse.json(
+      { ok: true, status: canon },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  // The filesystem writer remains available for local-first installations.
   const file = path.join(careerOpsRoot(), "data", "applications.md");
   let md: string;
   try {
