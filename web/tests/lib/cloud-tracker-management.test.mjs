@@ -178,7 +178,7 @@ test("cloud tracker persists Applied → Rejected status and ledger after reread
   assert.equal(result.ok, true);
   assert.equal((await store.getApplication("1")).status, "Rejected");
   assert.match(docs.get("data/applications.md"), /^\\| 1 \\|.*\\| Rejected \\|/m);
-  assert.match(docs.get("data/status-log.tsv"), /1\\t2026-10-02\\tApplied\\tRejected\\tset-status\\t\\n$/);
+  assert.match(docs.get("data/status-log.tsv"), /1\t2026-10-02\tApplied\tRejected\tset-status\t\n$/);
 });
 
 test("Applied transition uses an existing Applied note date before today's fallback", async () => {
