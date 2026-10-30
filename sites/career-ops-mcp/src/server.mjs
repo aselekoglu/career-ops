@@ -333,6 +333,10 @@ const CV_RUN_ERROR_CODES = new Set([
   'HOSTED_AI_UNAVAILABLE', 'CV_API_FAILED', 'CV_GENERATION_UNAVAILABLE', 'CV_GENERATION_FAILED', 'GEMINI_GENERATION_FAILED',
   'CV_HTML_INVALID', 'CV_HTML_TOO_LARGE', 'CV_HTML_UNSAFE', 'CV_OUTPUT_TOO_LARGE', 'CV_ENVELOPE_INVALID',
   'CV_WORKER_DISPATCH_FAILED', 'CV_WORKER_FAILED', 'WORKER_TIMEOUT', 'CV_RUN_NOT_FOUND', ...TRACKER_TARGET_ERROR_CODES,
+  'CV_RENDER_BROWSER_LAUNCH_FAILED', 'CV_RENDER_DISK_FULL', 'CV_RENDER_EXPERIENCE_ORDER', 'CV_RENDER_FACT_VALIDATION',
+  'CV_RENDER_FAILED', 'CV_RENDER_FORBIDDEN_PHRASE', 'CV_RENDER_INVALID_PDF', 'CV_RENDER_MISSING_SYSTEM_LIBRARIES',
+  'CV_RENDER_MODULE_MISSING', 'CV_RENDER_SECTION_ORDER', 'CV_RENDER_START_FAILED', 'CV_RENDER_TIMEOUT',
+  'CV_RENDER_UNSUPPORTED_FACT', 'CV_RENDER_UNSUPPORTED_METRIC', 'CV_RENDER_WORKSPACE_GUARD',
 ]);
 const SOURCE_ERROR_CODES = new Set([
   'INVALID_SOURCE', 'DOCUMENT_UNAVAILABLE', 'SOURCE_NOT_FOUND', 'PROPOSAL_NOT_FOUND', 'REVISION_NOT_FOUND', 'INVALID_REQUEST', 'JSON_REQUIRED',
@@ -1022,6 +1026,9 @@ function safeCvResult(raw) {
   }
   const normalized = {
     ...raw,
+    errorCode: raw.errorCode === null || raw.errorCode === undefined
+      ? raw.errorCode
+      : CV_RUN_ERROR_CODES.has(raw.errorCode) ? raw.errorCode : null,
     applicationNumber: artifactField(raw, 'applicationNumber', 'application_number'),
     reportPath: artifactField(raw, 'reportPath', 'report_path'),
     associationStatus: artifactField(raw, 'associationStatus', 'association_status'),
@@ -1269,6 +1276,12 @@ function artifactBytes(raw) {
   return bytes;
 }
 
+async function sha256Hex(bytes) {
+  if (!globalThis.crypto?.subtle) throw new BridgeError('CV_ARTIFACT_SHA256_UNAVAILABLE', 'Career Ops could not verify the PDF artifact hash.');
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function safeEvaluationResult(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.runId !== 'string' || !new RegExp(UUID_PATTERN).test(raw.runId) || !EVALUATION_STATES.includes(raw.status)) {
     throw new BridgeError('INVALID_EVALUATION_RUN', 'Career Ops returned an invalid evaluation run response.');
@@ -1435,6 +1448,7 @@ async function callTool(name, args, env) {
       const artifact = await upstream(env, '/api/cv-artifacts/' + args.runId + '/download', undefined, { requireBasic: true, responseType: 'arrayBuffer' });
       const bytes = artifactBytes(artifact);
       if (bytes.byteLength !== metadata.byteSize) throw new BridgeError('CV_ARTIFACT_BYTE_SIZE_MISMATCH', 'Career Ops returned a PDF that did not match its artifact metadata.');
+      if (await sha256Hex(bytes) !== metadata.sha256.toLowerCase()) throw new BridgeError('CV_ARTIFACT_SHA256_MISMATCH', 'Career Ops returned a PDF that did not match its artifact SHA-256.');
       const privateDownloadUrl = privateSiteDownloadUrl(args.runId);
       data = { ...metadata, privateDownloadUrl, downloadVerified: true, downloadBytes: bytes.byteLength };
       content = [

@@ -15,6 +15,7 @@ import { fetchPublicPosting, normalizeJobUrl, validateJobUrl } from "./job-impor
 import { readTrackerTargets, resolveTrackerTarget } from "./cloud-tracker-targets.mjs";
 import { workerAuthorized } from "./cloud-scans.mjs";
 import { createCloudPdfArtifactStore, ensureCvArtifactSchema, persistRenderedCvArtifact, reportUrlFromContent } from "./cloud-pdf-artifacts.mjs";
+import { normalizeCvWorkerFailureCode } from "./cv-render-errors.mjs";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_POSTING_BYTES = 1_500_000;
@@ -440,7 +441,7 @@ export function createCloudCvStore(options = {}) {
       await ready();
       await sql.query(
         "UPDATE career_ops_cv_runs SET state='failed',error_code=$2,completed_at=now() WHERE id=$1 AND state IN ('queued','running') AND ($3::uuid IS NULL OR lease=$3::uuid)",
-        [id, String(code || "CV_WORKER_FAILED").slice(0, 180), lease],
+        [id, normalizeCvWorkerFailureCode(code), lease],
       );
       return publicRun(await find(id));
     },
@@ -502,7 +503,7 @@ export async function handleCvWorker(request) {
       ? await service.claim(body.runId)
       : body.action === "complete"
         ? await service.complete(body.runId, body.lease, body.receipt)
-        : await service.fail(body.runId, body.lease || null, "CV_WORKER_FAILED");
+        : await service.fail(body.runId, body.lease || null, normalizeCvWorkerFailureCode(body.errorCode));
     return json(result || { code: "CV_RUN_NOT_CLAIMABLE" }, result ? 200 : 409);
   } catch {
     return json({ code: "CV_WORKER_API_FAILED" }, 500);
