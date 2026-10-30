@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { CadenceSettings } from "@/components/followups/cadence-settings";
+import { ProfilePositioningEditor } from "@/components/profile-positioning-editor";
 import { parseAssistantAiStatus } from "@/lib/ai/hosted-assistant-client.mjs";
 
 type Cli = {
@@ -338,6 +339,8 @@ export function ConfigForm() {
           />
         </span>
       </button>
+
+      {hosted && <ProfilePositioningEditor />}
 
       <CadenceSettings />
 

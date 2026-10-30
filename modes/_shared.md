@@ -32,6 +32,10 @@ See "Untrusted External Content" in `AGENTS.md` / `CLAUDE.md` / `CODEX.md` for t
 **RULE: NEVER claim the user authored a project, repo, library, tool, framework, or open-source artefact unless explicitly attributed to them in cv.md or article-digest.md.** Tool-of-trade conflation (user uses X → user built X) is the most common fabrication pattern and is forbidden.
 **RULE: Keywords get reformulated, never fabricated.** Reorder, reframe, emphasise — but never invent. If a claim isn't backed by an in-scope file, ask the user. If no answer, omit. Silence on a topic beats manufactured detail.
 
+## Applying Profile Narrative to Job-Facing Writing
+
+When `config/profile.yml` contains `narrative.headline` or `narrative.superpowers`, treat those values as persistent positioning guidance, not as evidence that a skill, achievement, technology, or responsibility is true. For each role, select only the relevant ideas, adapt their wording to the job, and show them through claims supported by `cv.md`, `article-digest.md`, or another allowed primary source. Do not repeat the same headline or strengths list mechanically across a CV, cover letter, or application answer, and do not add technologies simply because they appear in the job description.
+
 ## Data Root & Path Resolution (CRITICAL)
 
 All User Layer files (such as `cv.md`, `config/profile.yml`, `modes/_profile.md`, `data/applications.md` or `applications.md`, `reports/`, `output/`, `interview-prep/`, `portals.yml`, etc.) must be resolved relative to the dynamically resolved **Data Root** (`{DATA_ROOT}`).
