@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { canonicalSourceBytes } from './canonical-source-bytes.mjs';
 
 const PACKAGE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/lib/canonical-fact-gate');
 const EXPECTED = new Set(['verify-cv-facts.mjs', 'lib/is-main-module.mjs', 'path-resolver.mjs']);
@@ -18,7 +19,7 @@ for (const entry of Object.values(manifest.files)) {
   let bytes;
   try { bytes = readFileSync(filePath); }
   catch { fail(`packaged file missing: ${entry.path}`); }
-  const actual = createHash('sha256').update(bytes).digest('hex');
+  const actual = createHash('sha256').update(canonicalSourceBytes(bytes.toString('utf8'))).digest('hex');
   if (actual !== entry.sha256) fail(`packaged file hash mismatch: ${entry.path}`);
 }
 for (const required of EXPECTED) {

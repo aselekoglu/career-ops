@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { canonicalSourceBytes } from '../web/scripts/canonical-source-bytes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGE = path.join(ROOT, 'web/src/lib/canonical-fact-gate');
@@ -14,7 +15,7 @@ const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 test('web fact gate package is the exact canonical gate and its runtime helpers', () => {
   const manifest = JSON.parse(readFileSync(path.join(PACKAGE, 'manifest.json'), 'utf8'));
   for (const [source, packaged] of Object.entries(manifest.files)) {
-    const canonical = readFileSync(path.join(ROOT, source));
+    const canonical = canonicalSourceBytes(readFileSync(path.join(ROOT, source), 'utf8'));
     const bundled = readFileSync(path.join(PACKAGE, packaged.path));
     assert.equal(sha256(bundled), packaged.sha256, `${packaged.path} package hash`);
     assert.deepEqual(bundled, canonical, `${packaged.path} must exactly match ${source}`);
@@ -23,16 +24,30 @@ test('web fact gate package is the exact canonical gate and its runtime helpers'
   assert.match(live, /from ['"]\.\/canonical-fact-gate\/verify-cv-facts\.mjs['"]/);
 });
 
+test('CRLF canonical source produces the same LF package bytes and digest', () => {
+  const source = 'export const gate = true;\nexport function check() {}\n';
+  const crlf = source.replace(/\n/g, '\r\n');
+  const expected = Buffer.from(source, 'utf8');
+  const normalized = canonicalSourceBytes(crlf);
+  assert.deepEqual(normalized, expected);
+  assert.equal(sha256(normalized), sha256(expected));
+});
+
 test('web-only prebuild rejects a missing or modified packaged gate', () => {
   const temp = mkdtempSync(path.join(tmpdir(), 'career-ops-fact-gate-'));
   try {
     const web = path.join(temp, 'web');
     cpSync(path.join(ROOT, 'web/scripts/check-fact-gate-package.mjs'), path.join(web, 'scripts/check-fact-gate-package.mjs'), { recursive: true });
+    cpSync(path.join(ROOT, 'web/scripts/canonical-source-bytes.mjs'), path.join(web, 'scripts/canonical-source-bytes.mjs'));
     cpSync(PACKAGE, path.join(web, 'src/lib/canonical-fact-gate'), { recursive: true });
     const checker = path.join(web, 'scripts/check-fact-gate-package.mjs');
     const run = () => spawnSync(process.execPath, [checker], { encoding: 'utf8' });
     assert.equal(run().status, 0);
     const gatePath = path.join(web, 'src/lib/canonical-fact-gate/verify-cv-facts.mjs');
+    const lf = readFileSync(gatePath, 'utf8');
+    writeFileSync(gatePath, lf.replace(/\n/g, '\r\n'), 'utf8');
+    assert.equal(run().status, 0, 'Windows checkout line endings retain the LF package digest');
+    writeFileSync(gatePath, lf, 'utf8');
     writeFileSync(gatePath, `${readFileSync(gatePath, 'utf8')}\n// stale`, 'utf8');
     const stale = run();
     assert.notEqual(stale.status, 0);

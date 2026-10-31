@@ -3,7 +3,7 @@
   "files": {
     "verify-cv-facts.mjs": {
       "path": "verify-cv-facts.mjs",
-      "sha256": "e1a0edcd04e415074e08befcf3f645ec162c32abbaf203c43180c972f9ae2838"
+      "sha256": "acbe89407bc68f4e0bd93a42cb5b07ebf7e373fce83e12357c8d9db5bd04e17e"
     },
     "lib/is-main-module.mjs": {
       "path": "lib/is-main-module.mjs",

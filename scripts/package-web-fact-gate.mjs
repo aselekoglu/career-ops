@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { canonicalSourceBytes } from '../web/scripts/canonical-source-bytes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUTPUT = path.join(ROOT, 'web/src/lib/canonical-fact-gate');
@@ -17,10 +18,11 @@ for (const [source, filename] of Object.entries(FILES)) {
   const sourcePath = path.join(ROOT, source);
   const outputPath = path.join(OUTPUT, filename);
   mkdirSync(path.dirname(outputPath), { recursive: true });
-  copyFileSync(sourcePath, outputPath);
+  const packaged = canonicalSourceBytes(readFileSync(sourcePath, 'utf8'));
+  writeFileSync(outputPath, packaged);
   manifest.files[source] = {
     path: filename,
-    sha256: createHash('sha256').update(readFileSync(outputPath)).digest('hex'),
+    sha256: createHash('sha256').update(packaged).digest('hex'),
   };
 }
 writeFileSync(path.join(OUTPUT, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
