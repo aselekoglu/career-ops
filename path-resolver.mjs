@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * Returns the resolved career-ops data directory root.
  * Priority: process.env.CAREER_OPS_ROOT or process.env.CAREER_OPS_DATA_DIR >
  * .career-ops-data marker file > codebase root (__dirname).
- * 
+ *
  * @returns {string} Absolute path to the data root
  */
 export function getCareerOpsRoot() {
@@ -83,7 +83,7 @@ export function rawTrackerPath(rootDir) {
  * Returns the resolved path to the tracker applications.md file for writing.
  * Priority: process.env.CAREER_OPS_TRACKER > root/data/applications.md.
  * Does not check for file existence, providing a deterministic write target.
- * 
+ *
  * @param {string} root The career-ops data root directory
  * @returns {string} Absolute path to the tracker file for writing
  */
@@ -97,4 +97,3 @@ export function resolveTrackerPathForWrite(root) {
   }
   return join(root, 'data/applications.md');
 }
-

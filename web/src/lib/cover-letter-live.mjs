@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { authorizePortfolio } from './portfolio-cloud.mjs';
 import { createCoverLetterRuntime } from './cover-letter-runtime.mjs';
 import { allowCoverLetterCloudPost } from './cover-letter-cloud-gate.mjs';
-import { assertFacts } from '../../../verify-cv-facts.mjs';
+import { assertFacts } from './canonical-fact-gate/verify-cv-facts.mjs';
 
 const MAX_CV_BYTES = 250_000;
 const MAX_PROFILE_BYTES = 200_000;
