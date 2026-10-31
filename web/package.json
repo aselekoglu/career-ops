@@ -5,7 +5,7 @@
   "description": "Official web experience for career-ops — local-first.",
   "scripts": {
     "dev": "next dev",
-    "prebuild": "node scripts/generate-tracker-aliases.mjs",
+    "prebuild": "node scripts/generate-tracker-aliases.mjs && node scripts/check-fact-gate-package.mjs",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",

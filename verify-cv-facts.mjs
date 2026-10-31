@@ -13,6 +13,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
+import { Buffer } from 'node:buffer';
 import { isAbsolute, join, basename } from 'path';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
@@ -39,6 +40,10 @@ import { getCareerOpsRoot } from './path-resolver.mjs';
 const DATA_ROOT = getCareerOpsRoot();
 const DEFAULT_SOURCES = [join(DATA_ROOT, 'cv.md'), join(DATA_ROOT, 'article-digest.md')];
 const DEFAULT_CONFIG = join(DATA_ROOT, 'config', 'cv-facts.json');
+const MAX_SOURCE_TEXT_BYTES = 500_000;
+const MAX_SOURCE_TEXT_TOTAL_BYTES = 1_000_000;
+const MAX_SOURCE_TEXT_COUNT = 8;
+const MAX_CONFIG_TEXT_BYTES = 100_000;
 const TOOL_PROSE_WORDS = new Set([
   'a', 'an', 'and', 'at', 'built', 'by', 'containerized', 'deployment',
   'deployments', 'delivery', 'diagnosing', 'efficiency', 'feedback', 'for', 'from', 'improve',
@@ -1733,6 +1738,17 @@ export function auditClaims(targetText, sourceText, config = {}) {
   return { invented, forbidden };
 }
 
+/** Validate a parsed file or in-memory fact-gate configuration. */
+function validateFactConfig(config, path) {
+  const keys = ['allow_metrics', 'allow_facts', 'forbidden_phrases', 'warn_phrases'];
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error(`config must be an object in ${path}`);
+  for (const key of keys) {
+    if (config[key] == null) config[key] = [];
+    else if (!Array.isArray(config[key])) throw new Error(`${key} must be an array in ${path}`);
+  }
+  return config;
+}
+
 /**
  * Load and validate the optional fact-gate configuration file.
  *
@@ -1753,11 +1769,7 @@ export function auditClaims(targetText, sourceText, config = {}) {
 export function loadFactConfig(path) {
   const keys = ['allow_metrics', 'allow_facts', 'forbidden_phrases', 'warn_phrases'];
   if (!existsSync(path)) return { missing: true, config: Object.fromEntries(keys.map(key => [key, []])) };
-  const config = JSON.parse(readFileSync(path, 'utf-8'));
-  for (const key of keys) {
-    if (config[key] == null) config[key] = [];
-    else if (!Array.isArray(config[key])) throw new Error(`${key} must be an array in ${path}`);
-  }
+  const config = validateFactConfig(JSON.parse(readFileSync(path, 'utf-8')), path);
   return { missing: false, config };
 }
 
@@ -1849,17 +1861,62 @@ function sourceContainsFact(sourceText, value) {
 
 /**
  * @param {string} targetText generated candidate-facing HTML/Markdown/text
- * @param {{ sourcePaths?: string[], configPath?: string, cwd?: string }} options
+ * @param {{ sourcePaths?: string[], sourceTexts?: string[], configPath?: string, configText?: string, cwd?: string }} options
  * @returns {{ verdict: 'pass'|'warn'|'block', invented: string[], unsupportedFacts: object[], advisoryFacts: object[], forbidden: string[], warnings: string[] }}
- * @throws when the config is invalid
+ * @throws when the config or source input is invalid
  */
-export function verifyFacts(targetText, {
-  sourcePaths = DEFAULT_SOURCES,
-  configPath = DEFAULT_CONFIG,
-  cwd = process.cwd(),
-} = {}) {
-  const sourceText = sourcePaths.map(path => readIfExists(resolveInputPath(path, cwd))).join('\n');
-  const { missing: configMissing, config } = loadFactConfig(resolveInputPath(configPath, cwd));
+export function verifyFacts(targetText, options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('fact gate options must be an object');
+  const hasSourcePaths = Object.hasOwn(options, 'sourcePaths') && options.sourcePaths !== undefined;
+  const hasSourceTexts = Object.hasOwn(options, 'sourceTexts') && options.sourceTexts !== undefined;
+  const hasConfigPath = Object.hasOwn(options, 'configPath') && options.configPath !== undefined;
+  const hasConfigText = Object.hasOwn(options, 'configText') && options.configText !== undefined;
+  if (hasSourcePaths && hasSourceTexts) throw new TypeError('sourcePaths and sourceTexts are mutually exclusive');
+  if (hasConfigPath && hasConfigText) throw new TypeError('configPath and configText are mutually exclusive');
+
+  const cwd = options.cwd === undefined ? process.cwd() : options.cwd;
+  let sourceText;
+  if (hasSourceTexts) {
+    const { sourceTexts } = options;
+    if (!Array.isArray(sourceTexts) || sourceTexts.length < 1 || sourceTexts.length > MAX_SOURCE_TEXT_COUNT) {
+      throw new TypeError(`sourceTexts must contain 1-${MAX_SOURCE_TEXT_COUNT} nonempty UTF-8 strings`);
+    }
+    let totalBytes = 0;
+    for (let i = 0; i < sourceTexts.length; i++) {
+      const text = sourceTexts[i];
+      if (typeof text !== 'string' || !text.trim()) throw new TypeError('sourceTexts must contain only nonempty strings');
+      const bytes = Buffer.byteLength(text, 'utf8');
+      if (bytes > MAX_SOURCE_TEXT_BYTES || Buffer.from(text, 'utf8').toString('utf8') !== text) {
+        throw new TypeError(`sourceTexts[${i}] must be valid UTF-8 and at most ${MAX_SOURCE_TEXT_BYTES} bytes`);
+      }
+      totalBytes += bytes;
+      if (totalBytes > MAX_SOURCE_TEXT_TOTAL_BYTES) throw new TypeError(`sourceTexts total must not exceed ${MAX_SOURCE_TEXT_TOTAL_BYTES} bytes`);
+    }
+    sourceText = sourceTexts.join('\n');
+  } else {
+    const sourcePaths = hasSourcePaths ? options.sourcePaths : DEFAULT_SOURCES;
+    if (!Array.isArray(sourcePaths) || sourcePaths.some(path => typeof path !== 'string' || !path)) {
+      throw new TypeError('sourcePaths must be an array of nonempty paths');
+    }
+    sourceText = sourcePaths.map(path => readIfExists(resolveInputPath(path, cwd))).join('\n');
+  }
+  let configMissing;
+  let config;
+  if (hasConfigText) {
+    const { configText } = options;
+    if (typeof configText !== 'string' || !configText.trim()) throw new TypeError('configText must be nonempty JSON text');
+    const configBytes = Buffer.byteLength(configText, 'utf8');
+    if (configBytes > MAX_CONFIG_TEXT_BYTES || Buffer.from(configText, 'utf8').toString('utf8') !== configText) {
+      throw new TypeError(`configText must be valid UTF-8 and at most ${MAX_CONFIG_TEXT_BYTES} bytes`);
+    }
+    config = validateFactConfig(JSON.parse(configText), 'configText');
+    configMissing = false;
+  } else {
+    const configPath = options.configPath === undefined ? DEFAULT_CONFIG : options.configPath;
+    const loaded = loadFactConfig(resolveInputPath(configPath, cwd));
+    configMissing = loaded.missing;
+    config = loaded.config;
+  }
   const allowed = allowedMetricSet(sourceText, config.allow_metrics);
   const targetClaims = metricClaims(targetText);
   const invented = [...targetClaims].filter(claim => !allowed.has(claim));

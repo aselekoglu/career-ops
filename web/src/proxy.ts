@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { CLOUD_EXECUTION_MESSAGE, isCloudRuntime } from "@/lib/deployment";
 import { isAllowedCloudAiRequest } from "@/lib/ai/cloud-ai-gate.mjs";
 import { workerAuthorized } from "@/lib/cloud-scans.mjs";
+import { allowCoverLetterCloudPost } from "@/lib/cover-letter-cloud-gate.mjs";
 
 const SAFE_CLOUD_API_PATHS = new Set([
   "/api/health",
@@ -81,6 +82,9 @@ export function proxy(request: NextRequest) {
   }
 
   const pathname = request.nextUrl.pathname;
+  // Keep cover-letter generation opt-in and POST-only. This runs only after
+  // the existing cloud Basic-auth challenge above; the route also rechecks it.
+  if (allowCoverLetterCloudPost(pathname, request.method, process.env)) return NextResponse.next();
   // Portfolio API uses the existing site Basic Auth gate above PLUS a separate,
   // in-memory owner token checked by each route. Do not put Bearer in
   // Authorization: that would collide with this site's Basic challenge.
