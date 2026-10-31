@@ -666,6 +666,7 @@ test('CV artifact failures preserve safe backend codes without forwarding messag
 test('artifact export returns a private Site resource link and its download route checks owner auth before fixed PDF fetch', async t => {
   const runId = '99999999-9999-4999-8999-999999999999';
   const pdf = Buffer.from('%PDF-1.7\n' + 'x'.repeat(600));
+  const pdfSha256 = createHash('sha256').update(pdf).digest('hex');
   const siteOrigin = 'https://career-ops-chatgpt.aselekoglu.chatgpt.site';
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
@@ -675,7 +676,7 @@ test('artifact export returns a private Site resource link and its download rout
     assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
     if (calls === 1) {
       assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId);
-      return Response.json(testArtifact({ runId, byteSize: pdf.length }));
+      return Response.json(testArtifact({ runId, byteSize: pdf.length, sha256: pdfSha256 }));
     }
     if (calls === 2) {
       assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId + '/download');
@@ -691,11 +692,17 @@ test('artifact export returns a private Site resource link and its download rout
   assert.ok(exported.result, JSON.stringify(exported));
   assert.ok(exported.result.structuredContent, JSON.stringify(exported));
   const privateUrl = siteOrigin + '/artifacts/' + runId + '/download';
+  const appPageUrl = env.CAREER_OPS_API_ORIGIN + '/cv-artifacts/' + runId;
   assert.equal(exported.result.structuredContent.privateDownloadUrl, privateUrl);
+  assert.equal(exported.result.structuredContent.authenticatedAppPageUrl, appPageUrl);
   assert.equal(exported.result.structuredContent.downloadVerified, true);
   assert.equal(exported.result.structuredContent.downloadBytes, pdf.length);
   assert.ok(exported.result.content.some(item => item.type === 'resource_link' && item.uri === privateUrl && item.mimeType === 'application/pdf'));
-  assert.ok(!JSON.stringify(exported).includes('career-ops-aselekoglu.vercel.app'));
+  assert.ok(exported.result.content.some(item => item.type === 'text' && /authenticated application/i.test(item.text) && /may require sign-in/i.test(item.text) && item.text.includes(appPageUrl)));
+  assert.ok(JSON.stringify(exported).includes(env.CAREER_OPS_API_ORIGIN + '/cv-artifacts/' + runId));
+  assert.ok(!JSON.stringify(exported).includes('test-password'));
+  assert.ok(!JSON.stringify(exported).includes('Authorization'));
+  assert.ok(!JSON.stringify(exported).includes('token='));
   assert.ok(!JSON.stringify(exported).includes('privateToken'));
   assert.equal(calls, 2);
 
@@ -713,6 +720,49 @@ test('artifact export returns a private Site resource link and its download rout
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), pdf);
   assert.equal(calls, 3);
+});
+
+test('artifact export rejects malicious run IDs before network access and does not return auth material', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  for (const runId of ['../download', 'https://attacker.example/x', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?token=secret']) {
+    const response = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_export', arguments: { runId } }), env)).json();
+    assert.equal(response.error.code, -32602);
+    assert.ok(!JSON.stringify(response).includes('secret'));
+  }
+  assert.equal(calls, 0);
+});
+
+test('artifact export rejects same-size PDF bytes that do not match metadata SHA-256', async t => {
+  const runId = '99999999-9999-4999-8999-999999999999';
+  const expectedPdf = Buffer.from('%PDF-1.7\n' + 'x'.repeat(600));
+  const returnedPdf = Buffer.from('%PDF-1.7\n' + 'y'.repeat(600));
+  assert.equal(returnedPdf.length, expectedPdf.length);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.equal(options.method, 'GET');
+    assert.equal(options.headers.Authorization, 'Basic ' + btoa('test-user:test-password'));
+    if (calls === 1) {
+      assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId);
+      return Response.json(testArtifact({
+        runId,
+        byteSize: expectedPdf.length,
+        sha256: createHash('sha256').update(expectedPdf).digest('hex'),
+      }));
+    }
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-artifacts/' + runId + '/download');
+    assert.equal(options.headers.Accept, 'application/pdf');
+    return new Response(returnedPdf, { headers: { 'content-type': 'application/pdf', 'content-length': String(returnedPdf.length) } });
+  });
+
+  const response = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_export', arguments: { runId } }), env)).json();
+
+  assert.equal(response.result.isError, true);
+  assert.equal(response.result.content[0].text, 'CV_ARTIFACT_SHA256_MISMATCH: Career Ops returned a PDF that did not match its artifact SHA-256.');
+  assert.ok(!JSON.stringify(response).includes('/artifacts/' + runId + '/download'));
+  assert.ok(!JSON.stringify(response).includes('test-password'));
+  assert.equal(calls, 2);
 });
 
 test('rejects redirects without forwarding credentials to another destination', async t => {
@@ -823,6 +873,31 @@ test('CV status rejects malformed UUID and completed status preserves exact down
   assert.equal(body.result.structuredContent.applicationNumber, '39');
   assert.equal(body.result.structuredContent.reportPath, 'reports/039-example-2026-10-02.md');
   assert.ok(!JSON.stringify(body).includes('sourceCV'));
+});
+
+test('CV status retains allowlisted renderer codes and omits unrecognized error text', async t => {
+  const runId = '44444444-4444-4444-8444-444444444444';
+  let errorCode = 'CV_RENDER_TIMEOUT';
+  t.mock.method(globalThis, 'fetch', async url => {
+    assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/cv-runs/' + runId);
+    return Response.json({
+      runId,
+      status: 'failed',
+      errorCode,
+      message: 'secret raw renderer detail',
+      sourceCV: 'private',
+    });
+  });
+
+  const allowed = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId } }), env)).json();
+  assert.equal(allowed.result.structuredContent.errorCode, 'CV_RENDER_TIMEOUT');
+  assert.ok(!JSON.stringify(allowed).includes('secret raw renderer detail'));
+  assert.ok(!JSON.stringify(allowed).includes('sourceCV'));
+
+  errorCode = 'CV_RENDER_TIMEOUT private CV claim';
+  const untrusted = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_generate_status', arguments: { runId } }), env)).json();
+  assert.equal(untrusted.result.structuredContent.errorCode, null);
+  assert.ok(!JSON.stringify(untrusted).includes('private CV claim'));
 });
 
 test('CV status can verify the exact completed download URL with Basic auth and return only PDF metadata', async t => {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { isMainModule } from "../../lib/is-main-module.mjs";
+import { isSafeCvRenderErrorCode } from "../src/lib/cv-render-errors.mjs";
 
 const CODE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const API = "https://career-ops-aselekoglu.vercel.app/api/cv-worker";
@@ -43,6 +44,13 @@ export function classifyRendererFailure(stderr = "") {
 function safeWorkerErrorCode(error) {
   const value = String(error?.message || "");
   return /^CV_[A-Z0-9_]{3,80}$/.test(value) ? value : "CV_WORKER_UNEXPECTED_ERROR";
+}
+
+function safeRendererErrorCode(error) {
+  const value = String(error?.message || "");
+  if (isSafeCvRenderErrorCode(value)) return value;
+  const classified = classifyRendererFailure(value);
+  return isSafeCvRenderErrorCode(classified) ? classified : "CV_RENDER_FAILED";
 }
 
 function runProcess(command, args, options = {}) {
@@ -127,6 +135,7 @@ export async function runCloudCvWorker({
   secret = process.env.CAREER_OPS_SCAN_WORKER_SECRET,
   failOnly = false,
   fetchFn = fetch,
+  renderFn = renderClaim,
 } = {}) {
   if (!UUID_RE.test(id || "") || !secret) throw new Error("CV_WORKER_CONFIGURATION_INVALID");
 
@@ -159,7 +168,7 @@ export async function runCloudCvWorker({
     const claim = await callback("claim");
     lease = claim.lease;
     stage = "render";
-    const receipt = await renderClaim(claim);
+    const receipt = await renderFn(claim);
     stage = "complete";
     const result = await callback("complete", { lease, receipt });
     console.log(JSON.stringify({
@@ -176,7 +185,8 @@ export async function runCloudCvWorker({
       code: safeWorkerErrorCode(error),
     }));
     if (error.message !== "CV_RUN_NOT_CLAIMABLE") {
-      try { await callback("fail", { lease }); } catch {}
+      const failure = stage === "render" ? { errorCode: safeRendererErrorCode(error) } : {};
+      try { await callback("fail", { lease, ...failure }); } catch {}
     }
     throw error;
   }
