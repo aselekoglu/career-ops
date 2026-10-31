@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { load as parseYaml } from "js-yaml";
 import {
   createCloudSourceManagement,
   handleCloudSourceHistory,
@@ -214,12 +215,94 @@ test("empty profile proposal applies as an auditable no-op without changing sour
   assert.ok(db.docs.has(`data/source-receipts/profile/${uuid(23)}.json`));
 });
 
+test("narrative profile preview, exact diff, explicit apply, replay, and reread preserve other fields", async () => {
+  const original = [
+    "candidate:",
+    "  full_name: Alex Example",
+    "narrative:",
+    "  headline: Legacy headline",
+    "  superpowers:",
+    "    - Existing strength",
+    "  proof_points:",
+    "    - name: Verified project",
+    "      hero_metric: Supported result",
+    "custom_section:",
+    "  keep: true",
+    "",
+  ].join("\n");
+  const db = fakeSql({ "config/profile.yml": original });
+  const service = createCloudSourceManagement({ sql: db, now: () => new Date("2026-10-30T12:00:00.000Z") });
+  const patch = {
+    headline: "Creative, technology-agnostic problem-solver",
+    superpowers: ["Root-cause analysis", "Practical solution design", "Fit-for-problem technology choices"],
+  };
+  const sourceAnnotations = {
+    headline: statement,
+    superpowers: statement,
+  };
+  const partialPreview = await service.createProposal("profile", {
+    source: "profile", expectedSha256: sha(original), operationId: uuid(36),
+    patch: { headline: "Legacy headline", superpowers: ["Updated strength"] }, sourceAnnotations,
+  });
+  assert.deepEqual(partialPreview.diff.map(entry => entry.path), ["narrative.superpowers"], "the exact diff must omit unchanged fields");
+  assert.equal(db.docs.get("config/profile.yml"), original);
+
+  const preview = await service.createProposal("profile", {
+    source: "profile", expectedSha256: sha(original), operationId: uuid(31), patch, sourceAnnotations,
+  });
+
+  assert.equal(preview.status, "preview");
+  assert.deepEqual(preview.diff, [
+    { path: "narrative.headline", before: "Legacy headline", after: patch.headline, fields: ["headline"], sourceAnnotations: [statement] },
+    { path: "narrative.superpowers", before: ["Existing strength"], after: patch.superpowers, fields: ["superpowers"], sourceAnnotations: [statement] },
+  ]);
+  assert.equal(db.docs.get("config/profile.yml"), original, "preview must not change the source profile");
+  assert.equal((await service.getProposal("profile", preview.proposalId)).diff.length, 2);
+
+  const apply = { proposalId: preview.proposalId, expectedSha256: sha(original), operationId: uuid(32), confirm: true };
+  const receipt = await service.applyProposal("profile", apply);
+  assert.equal(receipt.status, "applied");
+  assert.equal((await service.applyProposal("profile", apply)).replayed, true);
+  assert.ok(db.docs.has(`data/source-receipts/profile/${uuid(32)}.json`));
+
+  const reread = parseYaml((await service.readSource("profile")).content);
+  assert.equal(reread.narrative.headline, patch.headline);
+  assert.deepEqual(reread.narrative.superpowers, patch.superpowers);
+  assert.deepEqual(reread.narrative.proof_points, [{ name: "Verified project", hero_metric: "Supported result" }]);
+  assert.deepEqual(reread.custom_section, { keep: true });
+});
+
+test("narrative profile apply refuses a concurrent profile edit", async () => {
+  const original = "narrative:\n  headline: Initial headline\n  superpowers:\n    - Initial strength\n";
+  const db = fakeSql({ "config/profile.yml": original });
+  const service = createCloudSourceManagement({ sql: db });
+  const preview = await service.createProposal("profile", {
+    source: "profile", expectedSha256: sha(original), operationId: uuid(37),
+    patch: { headline: "Reviewed headline" }, sourceAnnotations: { headline: statement },
+  });
+  const concurrent = original.replace("Initial headline", "Concurrent headline");
+  db.set("config/profile.yml", concurrent);
+
+  await assert.rejects(service.applyProposal("profile", {
+    proposalId: preview.proposalId, expectedSha256: sha(original), operationId: uuid(38), confirm: true,
+  }), { message: "SOURCE_STALE" });
+  assert.equal(db.docs.get("config/profile.yml"), concurrent);
+  assert.equal(db.docs.has(`data/source-receipts/profile/${uuid(38)}.json`), false);
+});
+
 test("profile patch rejects unknown keys and malformed YAML without replacing the source", async () => {
   const db = fakeSql({ "config/profile.yml": profile, "config/profile.yml": "candidate: [broken\n" });
   const service = createCloudSourceManagement({ sql: db });
   const body = { source: "profile", expectedSha256: sha(db.docs.get("config/profile.yml")), operationId: uuid(7), patch: { name: "Alex" }, sourceAnnotations: { name: statement } };
   await assert.rejects(service.createProposal("profile", { ...body, patch: { name: "Alex", injected: "no" }, sourceAnnotations: { name: statement, injected: statement } }), { message: "INVALID_PROFILE_PATCH" });
   await assert.rejects(service.createProposal("profile", body), { message: "PROFILE_FORMAT_INVALID" });
+
+  const validDb = fakeSql({ "config/profile.yml": profile });
+  const validService = createCloudSourceManagement({ sql: validDb });
+  const validBase = { source: "profile", expectedSha256: sha(profile), operationId: uuid(33) };
+  await assert.rejects(validService.createProposal("profile", { ...validBase, patch: { headline: " " }, sourceAnnotations: { headline: statement } }), { message: "INVALID_PROFILE_PATCH" });
+  await assert.rejects(validService.createProposal("profile", { ...validBase, operationId: uuid(34), patch: { superpowers: [] }, sourceAnnotations: { superpowers: statement } }), { message: "INVALID_PROFILE_PATCH" });
+  await assert.rejects(validService.createProposal("profile", { ...validBase, operationId: uuid(35), patch: { superpowers: ["Root cause", " "] }, sourceAnnotations: { superpowers: statement } }), { message: "INVALID_PROFILE_PATCH" });
 });
 
 test("profile patch refuses to replace malformed existing mapping parents", async () => {
@@ -231,6 +314,15 @@ test("profile patch refuses to replace malformed existing mapping parents", asyn
     patch: { name: "Alex Example" }, sourceAnnotations: { name: statement },
   }), { message: "PROFILE_FORMAT_INVALID" });
   assert.equal(db.docs.get("config/profile.yml"), malformedParent);
+
+  const malformedNarrative = "narrative: legacy scalar\n";
+  const narrativeDb = fakeSql({ "config/profile.yml": malformedNarrative });
+  const narrativeService = createCloudSourceManagement({ sql: narrativeDb });
+  await assert.rejects(narrativeService.createProposal("profile", {
+    source: "profile", expectedSha256: sha(malformedNarrative), operationId: uuid(39),
+    patch: { headline: "New headline" }, sourceAnnotations: { headline: statement },
+  }), { message: "PROFILE_FORMAT_INVALID" });
+  assert.equal(narrativeDb.docs.get("config/profile.yml"), malformedNarrative);
 });
 
 test("source reads and resulting profile content are bounded at 200 KB", async () => {
