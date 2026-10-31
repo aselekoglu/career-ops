@@ -275,7 +275,7 @@ export const TOOLS = [
   tool('career_ops_cv_artifacts', 'List CV artifacts', 'List persisted CV artifact metadata, optionally limited to one application number. Does not expose private download URLs or PDF bytes.', ARTIFACT_LIST_SCHEMA),
   tool('career_ops_cv_artifact', 'Read CV artifact metadata', 'Read allowlisted metadata for one persisted CV artifact by its run UUID. Does not expose private download URLs or PDF bytes.', ARTIFACT_RUN_SCHEMA),
   { ...tool('career_ops_cv_artifact_associate', 'Associate a CV artifact', 'Associate a completed CV artifact with the explicitly selected application number only when the exact report URL/path matches the evaluated application or the immutable target URL matches a reportless manual application. Reuse the same idempotencyKey on retries; company-name matching is never used.', ARTIFACT_ASSOCIATE_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-  tool('career_ops_cv_artifact_export', 'Get private CV download link', 'For a completed CV artifact, return a private Site-authenticated link to download its PDF. The Site verifies owner identity before fetching the fixed Basic-authenticated backend path; no public or Vercel Basic-auth URL is returned.', ARTIFACT_RUN_SCHEMA),
+  tool('career_ops_cv_artifact_export', 'Get private CV download link', 'For a completed CV artifact, return a private Site-authenticated link to download its PDF and an authenticated application page fallback. The Site verifies owner identity before fetching the fixed Basic-authenticated backend path; no credentials, tokens or PDF bytes are returned.', ARTIFACT_RUN_SCHEMA),
   tool('career_ops_source_get', 'Read a primary source document', 'Read the private CV or profile source document and its SHA-256. This does not edit either source.', { type: 'object', properties: { source: SOURCE_NAME }, required: ['source'], additionalProperties: false }),
   { ...tool('career_ops_cv_edit_preview', 'Preview CV edits', 'Create a review-only CV change proposal. This saves a proposal but does not change cv.md. Every exact replacement needs a user-statement or verified primary-source annotation. Apply the returned proposal only after the user reviews and explicitly approves its exact diff.', CV_EDIT_PREVIEW_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
   { ...tool('career_ops_profile_edit_preview', 'Preview profile edits', 'Create a review-only typed profile proposal. This saves a proposal but does not change config/profile.yml. Provide an annotation for every changed field. Apply the returned proposal only after the user reviews and explicitly approves its exact diff.', PROFILE_EDIT_PREVIEW_SCHEMA), annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
@@ -1268,6 +1268,11 @@ function privateSiteDownloadUrl(runId) {
   return new URL('/artifacts/' + runId + '/download', SITE_ORIGIN).toString();
 }
 
+function authenticatedCvArtifactPageUrl(runId) {
+  if (!new RegExp(UUID_PATTERN, 'i').test(runId)) throw new BridgeError('INVALID_CV_ARTIFACT', 'Career Ops returned invalid CV artifact metadata.');
+  return new URL('/cv-artifacts/' + runId, API_ORIGIN).toString();
+}
+
 function artifactBytes(raw) {
   const bytes = raw?.bytes instanceof Uint8Array ? raw.bytes : null;
   if (!bytes || raw.contentType !== 'application/pdf' || bytes.byteLength < 500 || bytes.byteLength > 16 * 1024 * 1024 || new TextDecoder().decode(bytes.subarray(0, 5)) !== '%PDF-') {
@@ -1450,10 +1455,12 @@ async function callTool(name, args, env) {
       if (bytes.byteLength !== metadata.byteSize) throw new BridgeError('CV_ARTIFACT_BYTE_SIZE_MISMATCH', 'Career Ops returned a PDF that did not match its artifact metadata.');
       if (await sha256Hex(bytes) !== metadata.sha256.toLowerCase()) throw new BridgeError('CV_ARTIFACT_SHA256_MISMATCH', 'Career Ops returned a PDF that did not match its artifact SHA-256.');
       const privateDownloadUrl = privateSiteDownloadUrl(args.runId);
-      data = { ...metadata, privateDownloadUrl, downloadVerified: true, downloadBytes: bytes.byteLength };
+      const authenticatedAppPageUrl = authenticatedCvArtifactPageUrl(args.runId);
+      data = { ...metadata, privateDownloadUrl, authenticatedAppPageUrl, downloadVerified: true, downloadBytes: bytes.byteLength };
       content = [
         { type: 'text', text: 'The completed Career Ops CV PDF is available through this private Site link.' },
         { type: 'resource_link', uri: privateDownloadUrl, name: 'Career Ops CV PDF', title: 'Download completed CV', description: 'Private owner-authenticated PDF download.', mimeType: 'application/pdf' },
+        { type: 'text', text: 'Authenticated application page fallback (may require sign-in): ' + authenticatedAppPageUrl + '. This opens the Career Ops application; it is not a PDF byte export.' },
       ];
       break;
     }

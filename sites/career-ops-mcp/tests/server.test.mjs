@@ -692,11 +692,17 @@ test('artifact export returns a private Site resource link and its download rout
   assert.ok(exported.result, JSON.stringify(exported));
   assert.ok(exported.result.structuredContent, JSON.stringify(exported));
   const privateUrl = siteOrigin + '/artifacts/' + runId + '/download';
+  const appPageUrl = env.CAREER_OPS_API_ORIGIN + '/cv-artifacts/' + runId;
   assert.equal(exported.result.structuredContent.privateDownloadUrl, privateUrl);
+  assert.equal(exported.result.structuredContent.authenticatedAppPageUrl, appPageUrl);
   assert.equal(exported.result.structuredContent.downloadVerified, true);
   assert.equal(exported.result.structuredContent.downloadBytes, pdf.length);
   assert.ok(exported.result.content.some(item => item.type === 'resource_link' && item.uri === privateUrl && item.mimeType === 'application/pdf'));
-  assert.ok(!JSON.stringify(exported).includes('career-ops-aselekoglu.vercel.app'));
+  assert.ok(exported.result.content.some(item => item.type === 'text' && /authenticated application/i.test(item.text) && /may require sign-in/i.test(item.text) && item.text.includes(appPageUrl)));
+  assert.ok(JSON.stringify(exported).includes(env.CAREER_OPS_API_ORIGIN + '/cv-artifacts/' + runId));
+  assert.ok(!JSON.stringify(exported).includes('test-password'));
+  assert.ok(!JSON.stringify(exported).includes('Authorization'));
+  assert.ok(!JSON.stringify(exported).includes('token='));
   assert.ok(!JSON.stringify(exported).includes('privateToken'));
   assert.equal(calls, 2);
 
@@ -714,6 +720,17 @@ test('artifact export returns a private Site resource link and its download rout
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), pdf);
   assert.equal(calls, 3);
+});
+
+test('artifact export rejects malicious run IDs before network access and does not return auth material', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
+  for (const runId of ['../download', 'https://attacker.example/x', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?token=secret']) {
+    const response = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_artifact_export', arguments: { runId } }), env)).json();
+    assert.equal(response.error.code, -32602);
+    assert.ok(!JSON.stringify(response).includes('secret'));
+  }
+  assert.equal(calls, 0);
 });
 
 test('artifact export rejects same-size PDF bytes that do not match metadata SHA-256', async t => {
