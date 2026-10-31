@@ -12,6 +12,7 @@ export function StatusSelect({ n, current }: { n: string; current: string }) {
   const [status, setStatus] = useState(current);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
   const router = useRouter();
 
   async function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -19,6 +20,8 @@ export function StatusSelect({ n, current }: { n: string; current: string }) {
     const prev = status;
     setStatus(next);
     setBusy(true);
+    setSaved(false);
+    setError(false);
     try {
       const res = await fetch("/api/status", {
         method: "POST",
@@ -31,6 +34,7 @@ export function StatusSelect({ n, current }: { n: string; current: string }) {
       router.refresh();
     } catch {
       setStatus(prev); // revert on failure
+      setError(true); // make failures visible instead of silently resetting
     } finally {
       setBusy(false);
     }
@@ -56,6 +60,11 @@ export function StatusSelect({ n, current }: { n: string; current: string }) {
       {saved && (
         <span className="animate-terminal-popup inline-flex items-center gap-1 text-xs font-medium text-brand">
           <Check className="size-3" /> saved
+        </span>
+      )}
+      {error && (
+        <span role="alert" className="text-xs font-medium text-red-500">
+          Could not save. Try again.
         </span>
       )}
     </span>
