@@ -7,9 +7,9 @@ import { ROOT } from "./helpers.mjs";
 // The root test suite also runs in installations without the optional web/ tree.
 // Import the hosted worker only after checking web/ is actually present.
 const hasWeb = existsSync(join(ROOT, "web", "src"));
-const { classifyRendererFailure } = hasWeb
+const { classifyRendererFailure, runCloudCvWorker } = hasWeb
   ? await import("../web/scripts/cloud-cv-worker.mjs")
-  : { classifyRendererFailure: () => "CV_RENDER_FAILED" };
+  : { classifyRendererFailure: () => "CV_RENDER_FAILED", runCloudCvWorker: async () => null };
 
 test("CV worker classifies missing browser separately", { skip: !hasWeb }, () => {
   assert.equal(
@@ -55,4 +55,28 @@ test("CV worker never exposes input stderr or CV contents in failure codes", { s
   const classified = classifyRendererFailure("Error: " + secret);
   assert.equal(classified, "CV_RENDER_FAILED");
   assert.ok(!classified.includes(secret));
+});
+
+test("CV worker sends a classified render failure code without renderer text", { skip: !hasWeb }, async () => {
+  const runId = "55555555-5555-4555-8555-555555555555";
+  const lease = "66666666-6666-4666-8666-666666666666";
+  const requests = [];
+  const fetchFn = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push(body);
+    return body.action === "claim"
+      ? Response.json({ runId, lease, html: "invalid renderer fixture", format: "letter" })
+      : Response.json({ runId, status: "failed", errorCode: body.errorCode || "CV_WORKER_FAILED" });
+  };
+
+  await assert.rejects(runCloudCvWorker({
+    id: runId,
+    secret: "worker-secret",
+    fetchFn,
+    renderFn: async () => { throw new Error("Timeout exceeded while printing PDF: private CV claim"); },
+  }));
+
+  assert.equal(requests[1].action, "fail");
+  assert.equal(requests[1].errorCode, "CV_RENDER_TIMEOUT");
+  assert.ok(!JSON.stringify(requests).includes("private CV claim"));
 });

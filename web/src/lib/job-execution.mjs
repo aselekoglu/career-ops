@@ -1,3 +1,5 @@
+import { isSafeCvRenderErrorCode } from "./cv-render-errors.mjs";
+
 const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const APP_NUMBER = /^[1-9]\d{0,7}$/;
 const EVAL_STATES = new Set(["queued", "running", "committing", "completed", "failed"]);
@@ -22,6 +24,21 @@ const ERROR_MESSAGES = {
   GITHUB_ACTIONS_DISABLED: "GitHub Actions are disabled for this repository. Check the repository's Actions page and enable workflows if appropriate. Contact GitHub Support only if GitHub directs you to do so.",
   CV_WORKER_NOT_CONFIGURED: "The hosted CV worker is not configured.",
   CV_WORKER_DISPATCH_FAILED: "The hosted CV renderer could not be started.",
+  CV_RENDER_BROWSER_LAUNCH_FAILED: "The hosted CV renderer could not start its browser.",
+  CV_RENDER_DISK_FULL: "The hosted CV renderer ran out of disk space. Try again later.",
+  CV_RENDER_EXPERIENCE_ORDER: "The CV experience entries must be in reverse-chronological order.",
+  CV_RENDER_FACT_VALIDATION: "The CV did not pass the fact check. Review it against the source files.",
+  CV_RENDER_FAILED: "The hosted CV renderer failed.",
+  CV_RENDER_FORBIDDEN_PHRASE: "The generated CV contains a phrase blocked by the fact check. Review it against the source files.",
+  CV_RENDER_INVALID_PDF: "The hosted CV renderer produced an invalid PDF.",
+  CV_RENDER_MISSING_SYSTEM_LIBRARIES: "The hosted CV renderer is missing required browser system libraries.",
+  CV_RENDER_MODULE_MISSING: "The hosted CV renderer is missing a required module.",
+  CV_RENDER_SECTION_ORDER: "The CV sections do not follow the expected order.",
+  CV_RENDER_START_FAILED: "The hosted CV renderer process could not start.",
+  CV_RENDER_TIMEOUT: "The hosted CV renderer timed out.",
+  CV_RENDER_UNSUPPORTED_FACT: "The CV fact check found an unsupported claim. Review it against the source files.",
+  CV_RENDER_UNSUPPORTED_METRIC: "The CV fact check found an unsupported metric. Review quantified claims against the source files.",
+  CV_RENDER_WORKSPACE_GUARD: "The PDF output path failed a workspace safety check.",
   HOSTED_AI_UNAVAILABLE: "Hosted AI is unavailable on this deployment.",
   EVALUATION_WRITE_CONFLICT: "The evaluation could not safely commit because the Inbox or tracker changed.",
   POSTING_FETCH_FAILED: "The posting could not be fetched by the hosted worker.",
@@ -125,7 +142,7 @@ function projectRun(raw, kind, expectedRunId = null) {
   const reportPath = typeof raw.reportPath === "string" && /^reports\/[A-Za-z0-9._-]{1,180}\.md$/.test(raw.reportPath) ? raw.reportPath : null;
   const artifactPath = typeof raw.artifactPath === "string" && /^output\/cv-[A-Za-z0-9._-]{1,220}\.pdf$/.test(raw.artifactPath) ? raw.artifactPath : null;
   const associationStatus = ["linked", "pending", "unlinked"].includes(raw.associationStatus) ? raw.associationStatus : null;
-  const errorCode = typeof raw.errorCode === "string" && SAFE_ERRORS.has(raw.errorCode) ? raw.errorCode : null;
+  const errorCode = typeof raw.errorCode === "string" && (SAFE_ERRORS.has(raw.errorCode) || isSafeCvRenderErrorCode(raw.errorCode)) ? raw.errorCode : null;
   const diagnosticCode = errorCode === "EVALUATION_WORKER_DISPATCH_FAILED" && raw.diagnosticCode === "GITHUB_ACTIONS_DISABLED"
     ? "GITHUB_ACTIONS_DISABLED" : null;
   return {

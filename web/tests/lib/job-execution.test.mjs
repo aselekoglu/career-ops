@@ -252,6 +252,23 @@ test("only the allowlisted GitHub Actions diagnostic survives and gives actionab
   assert.doesNotMatch(JSON.stringify(untrusted), /secret-private-text/);
 });
 
+test("hosted CV polling preserves an allowlisted renderer code and renders only its fixed message", async () => {
+  const id = "55555555-5555-4555-8555-555555555555";
+  const result = await pollHostedRun("pdf", id, async () => Response.json({
+    runId: id, status: "failed", errorCode: "CV_RENDER_TIMEOUT",
+  }));
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.run.errorCode, "CV_RENDER_TIMEOUT");
+  assert.equal(result.message, "The hosted CV renderer timed out.");
+
+  const untrusted = await pollHostedRun("pdf", id, async () => Response.json({
+    runId: id, status: "failed", errorCode: "CV_RENDER_TIMEOUT private CV text",
+  }));
+  assert.equal(untrusted.run.errorCode, null);
+  assert.match(untrusted.message, /hosted CV run failed/i);
+  assert.doesNotMatch(JSON.stringify(untrusted), /private CV text/);
+});
+
 test("hosted status polling keeps nonterminal state and never exposes backend text", async () => {
   const result = await pollHostedRun("evaluate", "55555555-5555-4555-8555-555555555555", async path => {
     assert.equal(path, "/api/evaluation-runs/55555555-5555-4555-8555-555555555555");
