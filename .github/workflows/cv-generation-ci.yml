@@ -1,0 +1,50 @@
+name: CV Generation CI
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/career-ops-cv-render.yml"
+      - ".github/workflows/cv-generation-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  renderer-smoke:
+    name: Headless Chromium runtime smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install lightweight renderer
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npx playwright install chromium --only-shell
+      - name: Render disposable sample page
+        run: |
+          node --input-type=module -e "import { chromium } from 'playwright'; const browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); await page.setContent('<h1>Runtime smoke</h1>'); const pdf = await page.pdf(); if (pdf.length < 500) throw Error('PDF_TOO_SMALL'); await browser.close();"
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: node --test tests/lib/hosted-ai.test.mjs
+      - run: node --check src/lib/cloud-cv-runs.mjs
+      - run: node --check scripts/cloud-cv-worker.mjs
+      - run: npx tsc --noEmit
+      - run: npm run build

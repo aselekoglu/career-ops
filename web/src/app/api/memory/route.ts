@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { readMemory, rememberFact } from "@/lib/career-ops";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudReadMemory } from "@/lib/cloud-career-ops";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ memory: readMemory() });
+  return NextResponse.json({ memory: cloudDataEnabled() ? await cloudReadMemory() : readMemory() });
 }
 
 // Append a durable fact the assistant learned about the user. Written to the

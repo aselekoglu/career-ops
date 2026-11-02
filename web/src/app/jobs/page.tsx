@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Check, AlertTriangle, Loader2, Trash2 } from "lucide-react";
-import { useJobs } from "@/components/jobs/job-store";
+import { isJobClearable, useJobs } from "@/components/jobs/job-store";
 import { pillTone } from "@/components/jobs/worker-pills";
 import { cn } from "@/lib/cn";
 
@@ -25,7 +25,7 @@ export default function JobsHistory() {
             Every evaluation you ran — a persistent log. <span className="tabular-nums">{jobs.length}</span> total.
           </p>
         </div>
-        {jobs.some((j) => j.status !== "running") && (
+        {jobs.some(isJobClearable) && (
           <button
             onClick={clearFinished}
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-muted transition-colors hover:bg-surface-hover hover:text-foreground"

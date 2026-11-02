@@ -5,10 +5,11 @@ import Link from "next/link";
 import { Loader2, Radar, Wrench } from "lucide-react";
 import { CompanyLogo } from "@/components/company-logo";
 import { useJobs, type Job } from "@/components/jobs/job-store";
+import { getJobAvailability } from "@/lib/job-execution.mjs";
 import { cn } from "@/lib/cn";
 
 type Company = { name: string; status: string; detail: string };
-type Result = { available: boolean; configured: boolean; companies: Company[] };
+type Result = { available: boolean; configured: boolean; companies: Company[]; cloud?: boolean; readOnly?: boolean; source?: string; note?: string };
 
 const TONE: Record<string, { dot: string; label: string; chip: string }> = {
   live: { dot: "bg-emerald-500", label: "live", chip: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400" },
@@ -21,7 +22,9 @@ const ORDER: Record<string, number> = { broken: 0, empty: 1, live: 2, skipped: 3
 export function PortalsView() {
   const [res, setRes] = useState<Result | null>(null);
   const [loading, setLoading] = useState(false);
-  const { jobs, startJob } = useJobs();
+  const { jobs, startJob, execution } = useJobs();
+  const fixAvailability = getJobAvailability("fix-portal", execution, execution.localCliConfigured);
+  const fixDisabledReason = execution.loading ? "Checking execution availability…" : fixAvailability.reason || undefined;
 
   // map the agentic "fix-portal" workers to the company they're repairing
   const fixByCompany = useMemo(() => {
@@ -53,7 +56,7 @@ export function PortalsView() {
       <div className="flex items-center gap-3">
         <button
           onClick={check}
-          disabled={loading}
+          disabled={loading || res?.readOnly === true}
           className="inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-200 disabled:opacity-50 max-sm:min-h-[44px]"
         >
           {loading ? <Loader2 className="size-4 animate-spin" /> : <Radar className="size-4" />}
@@ -62,7 +65,13 @@ export function PortalsView() {
         {loading && <span className="text-xs text-faint">Probing each company&apos;s ATS… (~30–60s)</span>}
       </div>
 
-      {res && !res.available && (
+      {res?.readOnly && (
+        <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-muted">
+          {res.note || "Production is showing the latest imported portal snapshot from Neon."} Live ATS checks and portal edits remain local-only.
+        </p>
+      )}
+
+      {res && !res.available && !res.cloud && (
         <p className="mt-4 rounded-xl border border-dashed border-border bg-surface/30 p-4 text-sm text-muted">
           <code className="text-foreground">verify-portals.mjs</code> not found — this needs a complete career-ops
           checkout (the web orchestrates the core&apos;s validator).
@@ -103,7 +112,7 @@ export function PortalsView() {
                   <span className="shrink-0 text-sm font-medium">{c.name}</span>
                   <span className="truncate font-mono text-xs text-faint">{c.detail}</span>
                   <div className="ml-auto flex shrink-0 items-center gap-2">
-                    {c.status === "broken" && <FixAffordance company={c.name} job={fixByCompany.get(c.name)} onFix={() => startJob({ title: `Fix · ${c.name}`, subtitle: "repair portal slug", kind: "fix-portal", input: c.name, page: "/portals" })} />}
+                    {c.status === "broken" && !res.readOnly && <FixAffordance company={c.name} job={fixByCompany.get(c.name)} disabledReason={fixAvailability.available ? undefined : fixDisabledReason} onFix={() => startJob({ title: `Fix · ${c.name}`, subtitle: "repair portal slug", kind: "fix-portal", input: c.name, page: "/portals" })} />}
                     <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold", t.chip)}>{t.label}</span>
                   </div>
                 </li>
@@ -116,7 +125,7 @@ export function PortalsView() {
   );
 }
 
-function FixAffordance({ company, job, onFix }: { company: string; job?: Job; onFix: () => void }) {
+function FixAffordance({ company, job, onFix, disabledReason }: { company: string; job?: Job; onFix: () => void; disabledReason?: string }) {
   if (job?.status === "running")
     return (
       <Link href={`/jobs/${job.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand">
@@ -131,9 +140,10 @@ function FixAffordance({ company, job, onFix }: { company: string; job?: Job; on
     );
   return (
     <button
+      disabled={!!disabledReason}
       onClick={onFix}
-      title={`Have the agent repair ${company}'s portal slug`}
-      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted transition-colors hover:border-brand/40 hover:text-brand"
+      title={disabledReason || `Have the agent repair ${company}'s portal slug`}
+      className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted transition-colors hover:border-brand/40 hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
     >
       <Wrench className="size-3" /> Fix
     </button>

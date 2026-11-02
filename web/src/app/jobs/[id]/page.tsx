@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 
 export default function JobPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { jobs } = useJobs();
+  const { jobs, refreshJobStatus } = useJobs();
   const job = jobs.find((j) => j.id === id);
 
   if (!job) {
@@ -75,6 +75,26 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
           </li>
         )}
       </ol>
+
+      {job.backend === "hosted" && job.runId && (job.status === "running" || job.startOutcome === "unknown" || job.errorCode === "CV_WORKER_DISPATCH_FAILED") && (
+        <button type="button" onClick={() => refreshJobStatus(job.id)} className="mt-5 rounded-md border border-border px-3 py-2 text-xs text-muted hover:bg-surface-hover">
+          Refresh hosted status
+        </button>
+      )}
+      {job.startOutcome === "unknown" && job.kind === "pdf" && (
+        <p className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-muted">
+          CV generation may still be running. Check the Pipeline for an existing PDF before starting another run.
+          {job.page && <Link href={job.page} className="ml-1 text-brand underline">Open Pipeline</Link>}
+        </p>
+      )}
+      {job.startOutcome === "unknown" && job.kind === "evaluate" && !job.runId && (
+        <p className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-muted">
+          Evaluation start could not be confirmed. Resuming this exact target reuses the same durable idempotency key.
+        </p>
+      )}
+      {job.associationWarning && <p className="mt-5 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-muted">{job.associationWarning}</p>}
+      {job.downloadUrl && <a href={job.downloadUrl} className="mt-5 inline-flex rounded-full bg-brand px-4 py-2 text-sm font-medium text-brand-foreground">Download tailored PDF</a>}
+      {job.reportUrl && <Link href={job.reportUrl} className="mt-5 inline-flex rounded-full bg-brand-soft px-4 py-2 text-sm font-medium text-brand">Open evaluation report and tracker row</Link>}
 
       {job.text && (
         <div className="mt-8">

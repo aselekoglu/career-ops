@@ -31,6 +31,7 @@ Read `config/profile.yml` for:
 - `cover_letter.notice_period_days` (default: omit if key absent)
 - `cover_letter.primary_domain` (default: infer from cv.md if absent)
 - `cover_letter.language_learning` (default: empty list if absent)
+- `narrative.headline` and `narrative.superpowers` as adaptive positioning guidance, never as proof of an achievement or technology
 
 Read `cv.md` for:
 - Professional summary (profile introduction source)
@@ -41,6 +42,8 @@ Read `article-digest.md` if it exists — supplementary proof points and metrics
 Read `modes/_writing.md` — the shared writing guidance (Voice DNA guardrail, Writing Style calibration, Professional Writing & ATS rules). A cover letter is candidate-facing prose, the same category that module governs, so it gets the same standard as the report and apply outputs instead of a thinner local one (#2006).
 
 Read `modes/_profile.md` if it exists — the candidate's personalization file. It captures their target roles, adaptive framing and archetypes, exit narrative, cross-cutting advantage, proof points, comp targets, negotiation scripts, location policy, and any voice or writing-style rules they have added. Its rules **govern the letter's voice and structure and override the generic defaults in this mode and in `_writing.md`**, so the candidate's personalization is never lost.
+
+Apply the shared narrative guidance in `modes/_shared.md`: adapt only the relevant profile positioning to this employer and role, then demonstrate it with verified primary-source evidence. Avoid copying the same headline into every letter.
 
 ---
 

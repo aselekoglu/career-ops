@@ -1,0 +1,10 @@
+import { mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { panelHtml } from '../src/panel.mjs';
+mkdirSync('dist/server', { recursive: true });
+mkdirSync('dist/.openai', { recursive: true });
+const server = readFileSync('src/server.mjs', 'utf8').replace("import { panelHtml } from './panel.mjs';", 'const panelHtml = ' + JSON.stringify(panelHtml) + ';');
+writeFileSync('dist/server/index.js', server);
+copyFileSync('.openai/hosting.json', 'dist/.openai/hosting.json');
+const output = await import('../dist/server/index.js');
+if (typeof output.default?.fetch !== 'function') throw new Error('Worker fetch export is missing');
+console.log('Cloudflare Worker build verified.');

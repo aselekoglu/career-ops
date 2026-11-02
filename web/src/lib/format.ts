@@ -3,7 +3,7 @@
 // core: normalize-statuses.mjs (aliases) + the Go TUI dashboard (score/status
 // colours = the current state-of-the-art).
 
-// Spanish + legacy aliases → canonical English tokens (normalize-statuses.mjs).
+// states.yml and legacy aliases → canonical English tokens for web rendering.
 const STATUS_ALIAS: Record<string, string> = {
   evaluada: "EVALUATED",
   evaluado: "EVALUATED",
@@ -11,44 +11,82 @@ const STATUS_ALIAS: Record<string, string> = {
   hold: "EVALUATED",
   evaluar: "EVALUATED",
   verificar: "EVALUATED",
+  "değerlendirildi": "EVALUATED",
+  degerlendirildi: "EVALUATED",
   aplicada: "APPLIED",
   aplicado: "APPLIED",
   enviada: "APPLIED",
   sent: "APPLIED",
+  "başvuruldu": "APPLIED",
+  basvuruldu: "APPLIED",
   respondida: "RESPONDED",
   respondido: "RESPONDED",
   contestada: "RESPONDED",
+  "yanıt verildi": "RESPONDED",
+  yanıt_verildi: "RESPONDED",
+  "yanit verildi": "RESPONDED",
+  yanit_verildi: "RESPONDED",
+  screening: "ASSESSMENT",
+  "online assessment": "ASSESSMENT",
+  online_assessment: "ASSESSMENT",
+  "online screening": "ASSESSMENT",
   entrevista: "INTERVIEW",
+  mülakat: "INTERVIEW",
+  mulakat: "INTERVIEW",
   oferta: "OFFER",
+  teklif: "OFFER",
   rechazada: "REJECTED",
   rechazado: "REJECTED",
+  reddedildi: "REJECTED",
   descartada: "DISCARDED",
   descartado: "DISCARDED",
   cerrada: "DISCARDED",
   cancelada: "DISCARDED",
+  "iptal edildi": "DISCARDED",
+  iptal_edildi: "DISCARDED",
+  "ıptal edildi": "DISCARDED",
+  ıptal_edildi: "DISCARDED",
   duplicado: "DISCARDED",
   repost: "DISCARDED",
   monitor: "SKIP",
   no_aplicar: "SKIP",
   "no aplicar": "SKIP",
-  // Hired — terminal success (offer accepted), added to states.yml in #2050.
+  "geo blocker": "SKIP",
+  geo_blocker: "SKIP",
+  "uygun değil": "SKIP",
+  uygun_değil: "SKIP",
+  "uygun degil": "SKIP",
+  uygun_degil: "SKIP",
+  // Hired — terminal success, added to states.yml in #2050.
   contratado: "HIRED",
   contratada: "HIRED",
   accepted: "HIRED",
   accept: "HIRED",
+  "kabul edildi": "HIRED",
+  kabul_edildi: "HIRED",
+  "işe alındı": "HIRED",
+  "ise alindi": "HIRED",
+  "işe alindi": "HIRED",
 };
 
 export const CANONICAL_STATES = [
   "Evaluated",
   "Applied",
   "Responded",
+  "Assessment",
   "Interview",
   "Offer",
-  "Hired",
   "Rejected",
   "Discarded",
   "SKIP",
+  "Hired",
 ] as const;
+
+export type CanonicalStatus = (typeof CANONICAL_STATES)[number];
+export type PipelineStatusTab = Uppercase<CanonicalStatus>;
+export const PIPELINE_STATUS_TABS: readonly PipelineStatusTab[] = CANONICAL_STATES.map(
+  (status) => status.toUpperCase() as PipelineStatusTab,
+);
 
 export function canonStatus(s: string): string {
   const k = s.trim().toLowerCase();
@@ -56,12 +94,13 @@ export function canonStatus(s: string): string {
   return STATUS_ALIAS[k] ?? s.toUpperCase();
 }
 
-/** Status dot colour, mirroring the Go TUI: green hired/interview/offer, sky
+/** Status dot colour: green hired/interview/offer, amber assessment, sky
  *  applied/responded, red skip/rejected, gray discarded, neutral evaluated. */
 export function statusDot(status: string): string {
   const c = canonStatus(status);
   // Hired is the terminal win — the best outcome, never a neutral gray dot.
   if (c.includes("HIRED") || c.includes("INTERVIEW") || c.includes("OFFER")) return "bg-emerald-400";
+  if (c.includes("ASSESSMENT")) return "bg-amber-400";
   if (c.includes("APPLIED") || c.includes("RESPONDED")) return "bg-sky-400";
   if (c.includes("REJECTED") || c.includes("SKIP")) return "bg-red-400";
   if (c.includes("DISCARDED")) return "bg-zinc-600";

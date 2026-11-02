@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import type { Application } from "@/lib/career-ops";
 import { Badge } from "@/components/ui/badge";
 import { scoreTone, scoreNum, legitimacyTone, parseReport } from "@/lib/format";
+import { cleanHeading, isLeadSection, isVerdictHeading, sectionPreview, splitSections } from "@/lib/report-sections.mjs";
 import { StatusSelect } from "@/components/status-select";
 import { CompanyLogo } from "@/components/company-logo";
 import { ScoreMethodology } from "@/components/score-methodology";
@@ -21,54 +22,10 @@ import { DeleteFromTracker } from "@/components/delete-from-tracker";
 // "Technical" tier — and strip the bare "F)" author-letters from headings
 // (native <details>, no client JS — this stays a server component).
 
-type Section = { heading: string; letter: string | null; content: string };
-
-function cleanHeading(h: string): string {
-  const stripped = h
-    .replace(/^\s*(?:Block\s+)?[A-G][).:]\s*/i, "")
-    .replace(/\s*\((?:lead|verdict)\)\s*$/i, "")
-    .trim();
-  return stripped || h.trim();
-}
-
 // Machine artifacts (collapsed because they're for devs, not the mainstream) vs
 // human content C–G (collapsed only for length) — ux's "honest for devs" tier.
 function isMachine(heading: string): boolean {
   return /machine summary|submitted|submit[-\s]?log/i.test(heading);
-}
-
-// A one-line teaser for a collapsed content section — drops the interaction cost
-// of "what's in here?" without defeating the collapse.
-function preview(md: string): string {
-  const text = md
-    .replace(/^#+\s.*$/gm, "")
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/[*_`>#|]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  const sentence = text.split(/(?<=[.!?])\s/)[0] ?? text;
-  return sentence.length > 96 ? sentence.slice(0, 96).trimEnd() + "…" : sentence;
-}
-
-function splitSections(body: string): { intro: string; sections: Section[] } {
-  const intro: string[] = [];
-  const sections: Section[] = [];
-  let cur: { heading: string; letter: string | null; lines: string[] } | null = null;
-  for (const line of body.split("\n")) {
-    const h = line.match(/^##\s+(.*)$/);
-    if (h) {
-      if (cur) sections.push({ heading: cur.heading, letter: cur.letter, content: cur.lines.join("\n").trim() });
-      const heading = h[1].trim();
-      const letter = heading.match(/^(?:Block\s+)?([A-G])[).:\s]/i)?.[1]?.toUpperCase() ?? null;
-      cur = { heading, letter, lines: [] };
-    } else if (cur) {
-      cur.lines.push(line);
-    } else {
-      intro.push(line);
-    }
-  }
-  if (cur) sections.push({ heading: cur.heading, letter: cur.letter, content: cur.lines.join("\n").trim() });
-  return { intro: intro.join("\n").trim(), sections };
 }
 
 export function ReportView({
@@ -163,15 +120,14 @@ export function ReportView({
                 </article>
               );
             }
-            // Verdict (F) leads as a highlighted callout with no competing heading —
+            // The explicit Verdict heading leads as a highlighted callout —
             // it's THE answer. A/B stay expanded (fit detail); C–G collapse as
             // content (with a 1-line preview); machine artifacts drop to a dimmer
             // "Technical" tier so the CLI-DNA is present-but-clearly-secondary.
-            const verdict = sections.find((s) => s.letter === "F");
+            const verdict = sections.find((s) => isVerdictHeading(s.heading));
             const rest = sections.filter((s) => s !== verdict);
             const machine = rest.filter((s) => isMachine(s.heading));
             const mainSections = rest.filter((s) => !isMachine(s.heading));
-            const anyAB = mainSections.some((s) => s.letter === "A" || s.letter === "B");
             return (
               <div className="mt-8">
                 {intro && (
@@ -190,7 +146,7 @@ export function ReportView({
                 )}
 
                 {mainSections.map((s, i) => {
-                  const expanded = s.letter === "A" || s.letter === "B" || (!anyAB && i === 0);
+                  const expanded = s.letter === "A" || isLeadSection(s) || (!mainSections.some((section) => isLeadSection(section)) && i === 0);
                   if (expanded) {
                     return (
                       <article key={i} className="report-prose mt-6">
@@ -202,7 +158,7 @@ export function ReportView({
                     <details key={i} className="group mt-3 overflow-hidden rounded-xl border border-border bg-surface/30">
                       <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 px-4 py-3 transition-colors hover:bg-surface-hover">
                         <span className="text-sm font-medium">{cleanHeading(s.heading)}</span>
-                        <span className="hidden truncate text-xs text-faint sm:inline">{preview(s.content)}</span>
+                        <span className="hidden truncate text-xs text-faint sm:inline">{sectionPreview(s.content)}</span>
                         <ChevronDown className="ml-auto size-4 shrink-0 text-faint transition-transform group-open:rotate-180" />
                       </summary>
                       <div className="report-prose border-t border-border px-4 py-3">

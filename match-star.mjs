@@ -15,11 +15,18 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { isMainModule } from './lib/is-main-module.mjs';
+import { join } from 'path';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { parseStories, splitStoryBlocks, isValidStory } from './lib/story-bank.mjs';
 
 // ── Config ──────────────────────────────────────────────────────────
 
-const STORY_BANK_PATH = 'interview-prep/story-bank.md';
+// From the data root, not the cwd. interview-prep/ is USER_PATHS in
+// update-system.mjs, and a bare relative path resolves against wherever the
+// process was started — so this read the checkout's story bank (usually absent)
+// for anyone whose data lives elsewhere.
+const STORY_BANK_PATH = join(getCareerOpsRoot(), 'interview-prep', 'story-bank.md');
 
 const args       = process.argv.slice(2);
 const LIST_MODE  = args.includes('--list');
@@ -38,54 +45,8 @@ const question = args
   .join(' ').trim();
 
 // ── Parser ───────────────────────────────────────────────────────────
-
-/**
- * Parse story-bank.md into structured story objects.
- * @param {string} content
- * @returns {Array<{title, theme, source, situation, task, action, result, reflection, tags}>}
- */
-function parseStories(content) {
-  const stories = [];
-  // Split on story headings: ### [Theme] Title
-  const blocks = content.split(/^### /m).slice(1);
-
-  for (const block of blocks) {
-    const lines  = block.trim().split('\n');
-    const header = lines[0].trim();
-
-    // Extract theme from [Theme] prefix if present
-    const themeMatch = header.match(/^\[([^\]]+)\]\s*(.+)/);
-    const theme = themeMatch ? themeMatch[1].trim() : '';
-    const title = themeMatch ? themeMatch[2].trim() : header;
-
-    const get = (label) => {
-      const re  = new RegExp(`\\*\\*${label}:\\*\\*\\s*(.+)`);
-      const hit = block.match(re);
-      return hit ? hit[1].trim() : '';
-    };
-
-    const tagsRaw = get('Best for questions about');
-    const tags    = tagsRaw
-      ? tagsRaw.split(/[,;]/).map(t => t.trim().toLowerCase()).filter(Boolean)
-      : [];
-
-    if (!title || (!get('A \\(Action\\)') && !get('Action'))) continue; // skip template/empty blocks
-
-    stories.push({
-      title,
-      theme,
-      source:     get('Source'),
-      situation:  get('S \\(Situation\\)') || get('Situation'),
-      task:       get('T \\(Task\\)') || get('Task'),
-      action:     get('A \\(Action\\)') || get('Action'),
-      result:     get('R \\(Result\\)') || get('Result'),
-      reflection: get('Reflection'),
-      tags,
-    });
-  }
-
-  return stories;
-}
+// parseStories lives in lib/story-bank.mjs so every story-bank reader shares
+// one definition of a story (#4514). Re-exported below for existing callers.
 
 // ── Scoring ──────────────────────────────────────────────────────────
 
@@ -95,7 +56,16 @@ function parseStories(content) {
  * @returns {string[]}
  */
 function tokenize(text) {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+  // Letters, marks and digits of ANY script. The previous `[^a-z0-9\s]` class
+  // deleted every non-Latin character, so a story bank written in Russian,
+  // Hindi, Greek or Ukrainian tokenized to [] and scored 0 against a question
+  // in the same language — the matcher was inert, not degraded, for anyone whose
+  // `language.output` is not English (#2847).
+  //
+  // \p{M} is included deliberately: without it Devanagari matras become spaces
+  // and shatter a word into fragments that match nothing (the mistake caught in
+  // #2781's review of the sibling role tokenizer).
+  return text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
 }
 
 const STOPWORDS = new Set([
@@ -190,7 +160,7 @@ export { parseStories, tokenize, score, STOPWORDS };
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
 if (!existsSync(STORY_BANK_PATH)) {
   console.error(`Error: ${STORY_BANK_PATH} not found.`);
   console.error('Run /career-ops interview-prep on a role first to populate your story bank.');
@@ -199,6 +169,18 @@ if (!existsSync(STORY_BANK_PATH)) {
 
 const content = readFileSync(STORY_BANK_PATH, 'utf-8');
 const stories = parseStories(content);
+
+// Say what is in the file but cannot be read, so an empty or short bank is
+// never mistaken for the whole story (#4514). Never rewrites the file: it is
+// user data, and converting it is the agent's job, with the user's say-so.
+const { blocks, tableRows } = splitStoryBlocks(content);
+const invalid = blocks.filter(b => !isValidStory(b));
+if (tableRows.length || invalid.length) {
+  console.error('⚠️  story-bank.md has entries this matcher cannot read:');
+  if (tableRows.length) console.error(`   - ${tableRows.length} table row(s) (lines ${tableRows.map(r => r.line).join(', ')})`);
+  for (const b of invalid) console.error(`   - "${b.title || '(untitled)'}" (line ${b.line}): no **A (Action):** line`);
+  console.error('   Ask your agent to convert them to the format in templates/story-bank.template.md.\n');
+}
 
 if (stories.length === 0) {
   console.error('No stories found in story-bank.md yet.');

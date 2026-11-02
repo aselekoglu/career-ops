@@ -29,7 +29,12 @@ function toOffer(raw: unknown): DiscoveredOffer | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const url = typeof o.url === "string" ? o.url.trim() : "";
-  if (!/^https?:\/\//i.test(url)) return null;
+  try {
+    const parsedUrl = new URL(url);
+    if (!(parsedUrl.protocol === "https:" || parsedUrl.protocol === "http:") || !parsedUrl.hostname) return null;
+  } catch {
+    return null;
+  }
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
   const conf = o.confidence;
   return {

@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { careerOpsRoot } from "@/lib/career-ops";
 import { atomicWriteWithBackup } from "@/lib/core/safe-write";
+import { cloudDataEnabled } from "@/lib/cloud-store";
+import { cloudReadCv } from "@/lib/cloud-career-ops";
 
 function cvPath() {
   return path.join(careerOpsRoot(), "cv.md");
@@ -11,6 +13,10 @@ function cvPath() {
 const MAX_CV_BYTES = 200_000;
 
 export async function GET() {
+  if (cloudDataEnabled()) {
+    const content = await cloudReadCv();
+    return NextResponse.json({ content: content ?? "", exists: content !== null });
+  }
   try {
     return NextResponse.json({ content: fs.readFileSync(cvPath(), "utf8"), exists: true });
   } catch {

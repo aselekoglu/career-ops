@@ -6,12 +6,12 @@ the exact same files the CLI reads and writes (`data/pipeline.md`,
 database, no server. If you never run it, nothing about your CLI workflow changes.
 
 > **Status: alpha.** Expect rough edges. Feedback →
-> [Discussion #1142](https://github.com/santifer/career-ops/discussions/1142) ·
-> roadmap context → [Discussion #156](https://github.com/santifer/career-ops/discussions/156).
+> [Discussion #1142](https://github.com/career-ops-hq/career-ops/discussions/1142) ·
+> roadmap context → [Discussion #156](https://github.com/career-ops-hq/career-ops/discussions/156).
 
 ## Quick start
 
-Requires Node 20+.
+Requires Node 22.6+ (see [Tests](#tests) — `npm test` needs glob discovery, and `--experimental-strip-types` for the suites that import `.ts` modules directly; the flag landed in 22.6.0).
 
 ```bash
 cd web
@@ -27,11 +27,13 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
 - **Pipeline** — your tracker as a sortable, filterable table; status changes
   write back through the core's own scripts.
 - **Explore** — the free reverse-ATS scan with an honest partial-dataset
-  indicator, plus AI-assisted discovery (bring your own CLI/keys).
+  indicator, plus AI-assisted discovery (bring your own CLI/keys, including Grok Build CLI).
+- **Scheduled scans** — save local zero-token or full-dataset scans and run due
+  jobs through an optional Windows Task Scheduler worker.
 - **Apply** — assisted form prefill with a hard rule inherited from the core:
   **it never submits for you** — you always press the button.
-- **Today / Analytics / CV / Config** — action queue, funnel, CV editing with
-  preview, settings.
+- **Today / Analytics / CV / Config** — action queue, funnel + pipeline Sankey,
+  CV editing with preview, settings.
 
 ## Safety
 
@@ -39,16 +41,133 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
   no account needed. Your CV and data stay in your own files.
 - **Never auto-submits:** the apply flow drafts and prefills; submitting is
   always a human action.
+- **CV generation never asks the agent to write:** the `pdf` worker tailors your
+  CV and emits it inline in a `<<cv-html>>` envelope; the backend parses that
+  envelope, writes the HTML, and renders the PDF itself. Job postings and
+  evaluation reports are untrusted input that reaches this agent, so the safest
+  thing is for it to hold no write tool at all — on Claude Code every write-capable
+  tool is disallowed for this mode (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`
+  and `Bash`). Other CLIs are invoked with a bare prompt and keep their own default
+  tool access, so on those the agent still *holds* write tools — what the pipeline
+  guarantees is that the CV which gets rendered is the one the backend parsed out of
+  the envelope, never a file an agent wrote behind it.
 - **Additive:** the web is isolated from the core's packaging, CI and release
   automation. The CLI works exactly the same without it.
+
+### Hosted AI provider (OpenAI or Gemini)
+
+The Vercel server supports either provider for Assistant, AI-assisted Explore,
+evaluations, and tailored CV generation. Set these as **encrypted server-only
+Vercel environment variables** (never commit API keys, paste them into an
+issue/PR, or expose them with `NEXT_PUBLIC_`):
+
+- `OPENAI_API_KEY`: enables OpenAI Responses API.
+- `CAREER_OPS_AI_PROVIDER=openai`: optional explicit selection (recommended
+  when migrating). If unset, a configured OpenAI key is preferred over Gemini.
+- `OPENAI_MODEL`: optional model override (default `gpt-5-mini`).
+- `GEMINI_API_KEY`: retains the previous Google Gemini implementation.
+- `CAREER_OPS_AI_PROVIDER=gemini`: explicit Gemini selection if both keys exist.
+
+Both providers use the same Career Ops canonical CV and evaluation prompts and
+the same durable PDF and reporting pipeline. The OpenAI adapter sets
+`store: false`, never gives search access to CV/evaluation prompts, and sends
+the key only in the server-side Authorization header. Hosted AI status exposes
+the selected provider and readiness without revealing credentials.
+
+**Deployment:** add the credential to the correct Vercel project, Production
+(and Preview only if needed), then trigger a fresh deployment so the environment
+variable is available. A verified PDF must appear as a completed Career Ops CV
+artifact; a locally generated substitute does not count.
+
+### Protected Vercel deployment
+
+The Vercel deployment is protected. Configure either `OPENAI_API_KEY` or
+`GEMINI_API_KEY` as a server-side environment variable in each Vercel environment
+where hosted AI should be available (Preview and/or Production). Set
+`CAREER_OPS_AI_PROVIDER` to `openai` or `gemini` to select explicitly; without
+that setting, OpenAI is selected when its key is configured, otherwise Gemini is
+selected. Never add keys to source control, client configuration, browser
+storage, or browser requests. The hosted status endpoint reports provider
+readiness without displaying credentials. Vercel Deployment Protection and the
+app's Basic authentication must both remain enabled.
+
+Only exact authenticated, same-origin hosted AI paths whose handlers are
+explicitly enabled by the deployment are allowed through the AI gate. A
+configured key alone never enables a local CLI or file-backed handler; routes
+without an enabled hosted implementation remain blocked. Local CLI execution,
+`/api/run`, and file-backed operations remain disabled on Vercel. Durable
+database-backed actions use their explicit APIs and external workers; recurring
+scheduled execution stays disabled on Vercel.
+
+## Scheduled scans on Windows
+
+Automatic recurring scans through Task Scheduler are Windows-only. On macOS and Linux,
+saved scans run only when you choose **Run now** on the Scheduled scans page.
+The web UI can save scan definitions without installing an OS task. To check and
+run due jobs every 15 minutes, install the local worker from the repository root:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File web/scripts/install-scan-schedule.ps1
+```
+
+Remove it with `web/scripts/uninstall-scan-schedule.ps1`. It runs in the current user's interactive session, so the user must be logged in. The task runs only
+`web/scripts/scheduled-jobs-runner.mjs`; it never evaluates roles, applies, or invokes
+an AI model. Job definitions and run history stay in the gitignored `data/`
+directory.
 
 ## Development
 
 ```bash
 npm run dev          # dev server (Turbopack)
+npm test             # unit suites (node --test, no framework)
 npx tsc --noEmit     # typecheck
 npm run build        # production build
 ```
 
 Set `CAREER_OPS_ROOT=/path/to/checkout` in `web/.env.local` to point the app at
 a different career-ops directory (useful for testing against sample data).
+Root scripts such as `doctor.mjs` run from the checkout that holds `web/`, not
+from `CAREER_OPS_ROOT`; set `CAREER_OPS_CODE_ROOT` when the app runs outside it.
+
+`/api` is gated by the same-origin + loopback guard in `src/lib/origin-guard.mjs`.
+Two opt-ins widen it, both unset by default and both in `web/.env.local`:
+`CAREER_OPS_WEB_ALLOWED_HOSTS` names extra non-loopback hosts the dashboard may
+answer on, and `CAREER_OPS_ALLOWED_ORIGINS` names origins allowed to call the
+API from outside the app — a comma- or space-separated list, no trailing slash.
+The second is what a local companion client needs: a browser extension calls
+from a `chrome-extension://` origin, which Fetch Metadata always reports as
+`cross-site`, so the guard refuses it unless the id is named here. The host
+layer still applies to an allowlisted origin.
+
+### Tests
+
+Suites live in `web/tests/`, mirroring the path of what they test under
+`web/src/` — so `src/lib/clean-chips.mjs` is tested by
+`tests/lib/clean-chips.test.mjs`. Name the file `{module}.test.mjs`.
+
+`npm test` discovers them with a glob (`tests/**/*.test.mjs`), so a new suite
+needs **no registration** — just add the file. **Requires Node ≥ 22**: earlier
+versions don't expand CLI globs for `node --test`, so `npm test` prints
+`Could not find '…'`, runs nothing and exits 1. Hence `engines.node` in
+`web/package.json` — a higher floor than `next` itself asks for.
+
+Three constraints follow from all this:
+
+- **Keep tests out of `src/`.** `src/` is the Next.js app's own tree, scanned by
+  `next build`'s file tracing and `tsc --noEmit`; test files there entangle
+  fixtures with build and route conventions.
+- **Use `.mjs`, not `.ts`.** There is no test framework and no TypeScript loader
+  by design — `node --test` cannot run a `.ts` suite, so one would look like
+  coverage and never execute. Extract the logic under test into a plain `.mjs`
+  module (the pattern `src/lib/pdf-paths.mjs` and `src/lib/pdf-render.mjs`
+  already follow) and import it from the test.
+- **Web suites use `node:test`; core suites don't.** Here you write
+  `import { test } from "node:test"` with `node:assert/strict`. The root
+  `tests/` suite deliberately uses neither — it has its own `pass`/`fail`
+  helpers, because [#1440](https://github.com/career-ops-hq/career-ops/issues/1440)
+  requires the core suite to run on a bare clone with "no framework, not even
+  `node:test`". Don't carry either style across the boundary.
+
+`tests/web-test-layout.test.mjs` in the **root** suite enforces all of the above
+on every PR, including that `npm test` never goes back to listing suites by name
+([#2360](https://github.com/career-ops-hq/career-ops/issues/2360)).

@@ -18,10 +18,10 @@ import { UsageMeter } from "@/components/usage-meter";
 import { instrumentSerif } from "@/lib/fonts";
 import { NAV_ITEMS, isActivePath } from "@/lib/nav-items";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, cloudRuntime = false }: { children: React.ReactNode; cloudRuntime?: boolean }) {
   const pathname = usePathname();
   return (
-    <JobsProvider>
+    <JobsProvider cloudRuntime={cloudRuntime}>
       <PipelineProvider>
       <ApplyProvider>
       <ExploreProvider>

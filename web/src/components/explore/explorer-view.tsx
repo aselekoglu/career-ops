@@ -6,7 +6,9 @@ import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { instrumentSerif } from "@/lib/fonts";
 import type { Application, InboxJob } from "@/lib/career-ops";
+import { normalizeTextKey } from "@/lib/core/normalize-text-key.mjs";
 import { paramsToFilters, paramsToAi, type ExploreFilters } from "@/lib/explore";
+import { isHostedExploreReadOnly } from "@/lib/explore-readonly.mjs";
 import { FilterBuilder } from "./filter-builder";
 import { DiscoveringState } from "./discovering-state";
 import { AiHuntView } from "./ai-hunt-view";
@@ -14,8 +16,10 @@ import { ExploreModeToggle } from "./explore-mode-toggle";
 import { AiSearchBox } from "./ai-search-box";
 import { ResultsList, type EnrichedOffer } from "./results-list";
 import { useExplore } from "./explore-provider";
+import { ScheduleJobAction } from "./schedule-job-action";
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+// Same shape as core normalizeTextKey(s, " ") — never [^a-z0-9] (#2666).
+const norm = (s: string) => normalizeTextKey(s, " ");
 const CLI_NAMES: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
@@ -37,7 +41,7 @@ export function ExplorerView({
   appsSnapshot: Application[];
   rootExists: boolean;
 }) {
-  const { filters, setFilters, initFilters, phase, running, offers, discover, loadFresh, status, error, mode, setMode, aiIntent, setAiIntent, discoverAI, companiesScanned, companiesAvailable, capHit, droppedNoDate, partial } = useExplore();
+  const { filters, setFilters, initFilters, phase, running, offers, discover, loadFresh, status, error, scannerMissing, mode, setMode, aiIntent, setAiIntent, discoverAI, executionMode, hostedMode, hostedReady, companiesScanned, companiesAvailable, capHit, droppedNoDate, partial } = useExplore();
   const scanNote =
     companiesScanned > 0
       ? `Scanned ${companiesScanned.toLocaleString()}${companiesAvailable > companiesScanned ? ` of ${companiesAvailable.toLocaleString()}` : ""} compan${companiesScanned === 1 ? "y" : "ies"}${partial ? " · some sources were unreachable" : ""}.`
@@ -104,13 +108,21 @@ export function ExplorerView({
   );
 
   const isAi = mode === "ai";
-  if (running) return isAi ? <AiHuntView cliName={cli.name} /> : <DiscoveringState />;
-
-  const canDiscover = filters.ats.length > 0;
+  const hostedReadOnly = isHostedExploreReadOnly(executionMode, mode);
   const isResults = phase === "results";
+  const canDiscover = filters.ats.length > 0;
+  const scanRunning = running && !isAi;
+  // Keep one ResultsList mounted across scanning → revealing → results so
+  // filter/sort/scroll and co-rise survive the 850ms reveal handoff.
+  const showScanList = !isAi && offers.length > 0 && (scanRunning || isResults);
+
+  if (running && isAi) return <AiHuntView cliName={cli.name} />;
 
   return (
-    <div className="mx-auto max-w-5xl px-5 py-8 md:px-8">
+    <div className={scanRunning ? undefined : "mx-auto max-w-5xl px-5 py-8 md:px-8"}>
+      {scanRunning && <DiscoveringState />}
+      {!scanRunning && (
+        <>
       <header className="mb-6">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
@@ -119,13 +131,15 @@ export function ExplorerView({
             <span className="rounded-full border border-brand/30 bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-text">New</span>
           </div>
           <div className="w-full sm:ml-auto sm:w-auto">
-            <ExploreModeToggle mode={mode} onChange={setMode} cliConfigured={!!cli.id} />
+            <ExploreModeToggle mode={mode} onChange={setMode} cliConfigured={executionMode === "unknown" || (hostedMode ? hostedReady : !!cli.id)} />
           </div>
         </div>
         {!isResults && (
           <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-muted">
             {isAi
-              ? "Describe the role in plain language — an AI hunts the open web for it, on your own AI. Candidates are unverified until you evaluate."
+            ? executionMode === "unknown"
+              ? "AI search availability is being confirmed."
+              : `Describe the role in plain language — ${hostedMode ? "Gemini searches the open web." : "your AI CLI hunts the open web."} Candidates are unverified until you evaluate.`
               : "Scan the public ATS network — Greenhouse, Lever, Ashby, Workday. Fresh postings matched to you, zero tokens. You only spend when you choose to evaluate one."}
           </p>
         )}
@@ -146,11 +160,14 @@ export function ExplorerView({
               intent={aiIntent}
               onIntent={setAiIntent}
               onSubmit={() => void discoverAI()}
-              cliConfigured={!!cli.id}
-              cliName={cli.name}
+              cliConfigured={executionMode === "unknown" || (hostedMode ? hostedReady : !!cli.id)}
+              cliName={hostedMode ? "Gemini" : cli.name}
+              hostedUnavailable={hostedMode && !hostedReady}
+              statusUnknown={executionMode === "unknown"}
               onRunScan={() => setMode("scan")}
             />
             {phase === "results" && <ResultsList offers={enriched} />}
+            {phase === "results" && hostedReadOnly && <p className="text-xs text-muted">Hosted AI discoveries are view-only in this deployment.</p>}
             {phase === "empty-loose" && (
               <EmptyState
                 tone="loose"
@@ -160,7 +177,7 @@ export function ExplorerView({
                 rerunLabel="Run the free Scan"
               />
             )}
-            {phase === "failed" && <FailedCard msg={error || status} onRetry={() => void discoverAI()} />}
+            {phase === "failed" && <FailedCard msg={error || status} scannerMissing={scannerMissing} onRetry={() => void discoverAI()} />}
           </div>
         )
       ) : (
@@ -174,7 +191,7 @@ export function ExplorerView({
               {refineOpen && (
                 <div className="space-y-4 border-t border-border p-4">
                   <FilterBuilder filters={filters} onChange={setFilters} seededFrom={seed.seededFrom} />
-                  <DiscoverBar canDiscover={canDiscover} onDiscover={discover} label="Re-cast (free)" />
+                  <DiscoverBar canDiscover={canDiscover} onDiscover={discover} label="Re-cast (free)" filters={filters} />
                 </div>
               )}
             </div>
@@ -182,7 +199,7 @@ export function ExplorerView({
             <div className="mb-6 rounded-2xl border border-border bg-surface/30 p-5">
               <FilterBuilder filters={filters} onChange={setFilters} seededFrom={seed.seededFrom} />
               <div className="mt-5">
-                <DiscoverBar canDiscover={canDiscover} onDiscover={discover} label="Discover (free)" />
+                <DiscoverBar canDiscover={canDiscover} onDiscover={discover} label="Discover (free)" filters={filters} />
               </div>
             </div>
           )}
@@ -199,8 +216,19 @@ export function ExplorerView({
           {isResults && capHit && (
             <CappedBanner companiesScanned={companiesScanned} companiesAvailable={companiesAvailable} onRefine={() => setRefineOpen(true)} />
           )}
-          {isResults && <ResultsList offers={enriched} />}
+        </>
+      )}
+      </>
+      )}
 
+      {showScanList && (
+        <div className={scanRunning ? "relative z-[1] mx-auto max-w-5xl px-5 pb-10 md:px-8" : undefined}>
+          <ResultsList offers={enriched} />
+        </div>
+      )}
+
+      {!scanRunning && !isAi && (
+        <>
           {phase === "empty-current" && (
             <EmptyState
               tone="good"
@@ -237,14 +265,14 @@ export function ExplorerView({
               partial={partial}
             />
           )}
-          {phase === "failed" && <FailedCard msg={error || status} onRetry={() => void discover()} />}
+          {phase === "failed" && <FailedCard msg={error || status} scannerMissing={scannerMissing} onRetry={() => void discover()} />}
         </>
       )}
     </div>
   );
 }
 
-function DiscoverBar({ canDiscover, onDiscover, label }: { canDiscover: boolean; onDiscover: () => void; label: string }) {
+function DiscoverBar({ canDiscover, onDiscover, label, filters }: { canDiscover: boolean; onDiscover: () => void; label: string; filters: ExploreFilters }) {
   return (
     <div className="flex flex-wrap items-center gap-3">
       <button
@@ -255,6 +283,7 @@ function DiscoverBar({ canDiscover, onDiscover, label }: { canDiscover: boolean;
       >
         <Compass className="size-4" /> {label}
       </button>
+      <ScheduleJobAction filters={filters} />
       <span className="inline-flex items-center gap-1.5 text-[12px] text-muted">
         <span className="size-1.5 rounded-full bg-emerald-500" />
         Evaluating a role later costs tokens. Discovering never does.
@@ -338,10 +367,14 @@ function CappedBanner({ companiesScanned, companiesAvailable, onRefine }: { comp
   );
 }
 
-function FailedCard({ msg, onRetry }: { msg: string; onRetry: () => void }) {
-  // The scanner-missing 400 (data-only / pre-scan-ats-full checkout) must NOT
+function FailedCard({ msg, scannerMissing, onRetry }: { msg: string; scannerMissing: boolean; onRetry: () => void }) {
+  // The scanner-missing case (data-only / pre-scan-ats-full checkout) must NOT
   // offer a "Try again" that re-fails forever — give a real next step instead.
-  const scannerMissing = /isn'?t available|data only|complete career-ops checkout|scanner/i.test(msg);
+  // The caller decides this from the response body's SCANNER_MISSING code, never
+  // from the error text and never from the bare 400: a runtime scan error ("The
+  // scanner returned no readable output.") mentions the scanner too, and 400 is
+  // a shared channel that also carries malformed-request and MODE_MISSING
+  // failures. Neither may be misreported as a broken checkout.
   if (scannerMissing) {
     return (
       <div className="rounded-2xl border border-border bg-surface/30 px-6 py-10 text-center">
