@@ -25,6 +25,14 @@ test("hosted CV keeps a visible HTTPS project link grounded in the source Projec
   assert.match(safe, /class="contact-row"><a href="https:\/\/example\.com\/profile">Profile<\/a>/);
 });
 
+test("hosted CV decodes HTML entities in link labels only once", () => {
+  const html = htmlWithProjectLink("https://github.com/example/public-project", "&amp;lt;script&amp;gt;");
+  const safe = sanitizeHostedProjectLinks(html, sourceCv);
+
+  assert.match(safe, /href="https:\/\/github\.com\/example\/public-project">&amp;lt;script&amp;gt;<\/a>/);
+  assert.doesNotMatch(safe, /<script>/i);
+});
+
 test("hosted CV removes a project link absent from the source Projects section", () => {
   const safe = sanitizeHostedProjectLinks(htmlWithProjectLink("https://github.com/elsewhere/not-a-project"), sourceCv);
 

@@ -5,13 +5,20 @@ const PROJECT_LINK_BLOCK = /<div\b[^>]*\bclass\s*=\s*(["'])[^"']*\bproject-link\
 const CONTACT_ROW = /<div\b(?=[^>]*\bclass\s*=\s*(["'])[^"']*\bcontact-row\b[^"']*\1)[^>]*>[\s\S]*?<\/div>/gi;
 
 function decodeHtml(value) {
-  return String(value)
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&nbsp;/gi, " ");
+  // One replacement pass preserves double-encoded text instead of recursively
+  // turning it into markup or a different URL before the value is escaped.
+  return String(value).replace(/&(amp|lt|gt|quot|#39|apos|nbsp);/gi, (entity) => {
+    switch (entity.toLowerCase()) {
+      case "&amp;": return "&";
+      case "&lt;": return "<";
+      case "&gt;": return ">";
+      case "&quot;": return '"';
+      case "&#39;":
+      case "&apos;": return "'";
+      case "&nbsp;": return " ";
+      default: return entity;
+    }
+  });
 }
 
 function normalizeProjectUrl(raw) {
