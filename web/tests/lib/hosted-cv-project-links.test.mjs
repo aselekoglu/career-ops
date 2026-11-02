@@ -4,7 +4,7 @@ import * as hostedCvPrompt from "../../src/lib/ai/hosted-cv-prompt.mjs";
 
 const { sanitizeHostedProjectLinks } = hostedCvPrompt;
 
-const sourceCv = `# Candidate\n\n## Projects\n### Public project\nRepository: https://github.com/example/public-project\n\n## Education\nB.S. Computer Science`;
+const sourceCv = `# Candidate\nEmail: synthetic@example.test\nPortfolio: https://example.com/profile\n\n## Projects\n### Public project\nRepository: https://github.com/example/public-project\n\n## Education\nB.S. Computer Science`;
 
 function htmlWithProjectLink(href, label = "github.com/example/public-project") {
   return `<!doctype html><html><head><style></style></head><body>
@@ -49,7 +49,7 @@ test("hosted CV removes non-HTTPS project links even when they appear in the sou
   assert.doesNotMatch(safe, /class="project-link"/);
 });
 
-test("hosted CV preserves links outside Projects and strips unapproved links from project markup", () => {
+test("hosted CV preserves contact links but strips other unapproved document links", () => {
   const html = htmlWithProjectLink("https://github.com/example/public-project")
     .replace(
       '<div class="project-title">Public project</div>',
@@ -63,5 +63,26 @@ test("hosted CV preserves links outside Projects and strips unapproved links fro
 
   assert.match(safe, /class="project-link"><a href="https:\/\/github\.com\/example\/public-project">/);
   assert.doesNotMatch(safe, /href="https:\/\/github\.com\/elsewhere\/fake"/);
-  assert.match(safe, /href="https:\/\/example\.com\/degree">Education<\/a>/);
+  assert.doesNotMatch(safe, /href="https:\/\/example\.com\/degree"/);
+  assert.match(safe, /class="contact-row"><a href="https:\/\/example\.com\/profile">Profile<\/a>/);
+});
+
+test("hosted CV preserves only source-backed contact link targets", () => {
+  const html = htmlWithProjectLink("https://github.com/example/public-project")
+    .replace("https://example.com/profile", "https://attacker.example/fake");
+  const safe = sanitizeHostedProjectLinks(html, sourceCv);
+
+  assert.doesNotMatch(safe, /href="https:\/\/attacker\.example\/fake"/);
+  assert.match(safe, /Profile/);
+  assert.doesNotMatch(safe, /href="data:text\/html,/);
+});
+
+test("hosted CV link filtering resists decoy section markers before the real Projects section", () => {
+  const html = htmlWithProjectLink("data:text/html,%3Cscript%3Ealert(1)%3C/script%3E", "unverified link")
+    .replace("<head>", "<head><!-- PROJECTS --><!-- EDUCATION -->");
+  const safe = sanitizeHostedProjectLinks(html, sourceCv);
+
+  assert.doesNotMatch(safe, /href="data:text\/html,/);
+  assert.doesNotMatch(safe, /class="project-link"/);
+  assert.match(safe, /class="contact-row"><a href="https:\/\/example\.com\/profile">Profile<\/a>/);
 });

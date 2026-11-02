@@ -1,4 +1,6 @@
-const SOURCE_URL = /https:\/\/[^\s<>"')\]]+/gi;
+const SOURCE_URL = /https?:\/\/[^\s<>"')\]]+/gi;
+const SOURCE_EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const SOURCE_PHONE = /\+?\d[\d\s().-]{5,}\d/g;
 const PROJECT_LINK_BLOCK = /<div\b[^>]*\bclass\s*=\s*(["'])[^"']*\bproject-link\b[^"']*\1[^>]*>([\s\S]*?)<\/div>/gi;
 const CONTACT_ROW = /<div\b(?=[^>]*\bclass\s*=\s*(["'])[^"']*\bcontact-row\b[^"']*\1)[^>]*>[\s\S]*?<\/div>/gi;
 
@@ -71,6 +73,61 @@ function visibleText(markup) {
     .trim();
 }
 
+function sourceWebUrls(sourceCv) {
+  const urls = new Set();
+  for (const raw of String(sourceCv || "").match(SOURCE_URL) || []) {
+    const candidate = decodeHtml(raw).trim().replace(/[.,;:!?]+$/g, "");
+    try {
+      const url = new URL(candidate);
+      if (["https:", "http:"].includes(url.protocol) && url.hostname && !url.username && !url.password) {
+        urls.add(url.href);
+      }
+    } catch {
+      // A malformed URL in the CV is not an allowlisted contact target.
+    }
+  }
+  return urls;
+}
+
+function normalizeContactHref(raw, sourceCv) {
+  const candidate = decodeHtml(raw).trim();
+  if (/^https?:\/\//i.test(candidate)) {
+    try {
+      const url = new URL(candidate);
+      return sourceWebUrls(sourceCv).has(url.href) ? url.href : null;
+    } catch {
+      return null;
+    }
+  }
+  if (/^mailto:/i.test(candidate)) {
+    const email = candidate.slice(7).split(/[?#]/, 1)[0].trim().toLowerCase();
+    const sourceEmails = String(sourceCv || "").match(SOURCE_EMAIL) || [];
+    return sourceEmails.some((item) => item.toLowerCase() === email) ? `mailto:${email}` : null;
+  }
+  if (/^tel:/i.test(candidate)) {
+    const number = candidate.slice(4).trim();
+    if (!/^\+?[\d\s().-]+$/.test(number)) return null;
+    const digits = number.replace(/\D/g, "");
+    if (digits.length < 7) return null;
+    const sourceNumbers = String(sourceCv || "").split(/\r?\n/).flatMap((line) => line.match(SOURCE_PHONE) || []);
+    return sourceNumbers.some((item) => item.replace(/\D/g, "") === digits)
+      ? `tel:${number.startsWith("+") ? "+" : ""}${digits}`
+      : null;
+  }
+  return null;
+}
+
+function sanitizeContactRow(row, sourceCv) {
+  return row
+    .replace(/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_anchor, _quote, rawHref, labelMarkup) => {
+      const href = normalizeContactHref(rawHref, sourceCv);
+      const label = visibleText(labelMarkup);
+      return href && label
+        ? `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`
+        : escapeHtml(label);
+    });
+}
+
 function safeProjectLink(inner, allowedUrls) {
   const anchor = inner.trim().match(/^<a\s+href\s*=\s*(["'])(.*?)\1\s*>([\s\S]*?)<\/a>$/i);
   if (!anchor) return "";
@@ -91,40 +148,6 @@ export function sanitizeHostedProjectLinks(html, sourceCv) {
   if (typeof html !== "string") return html;
 
   const allowedUrls = sourceProjectUrls(sourceCv);
-  const sanitizeRegion = (region) => {
-    const protectedLinks = [];
-    const protect = (value) => {
-      let token = `\u0000CAREER_OPS_PROJECT_LINK_${protectedLinks.length}\u0000`;
-      while (region.includes(token)) token += "_";
-      protectedLinks.push([token, value]);
-      return token;
-    };
-
-    let result = region
-      .replace(PROJECT_LINK_BLOCK, (_block, _quote, inner) => {
-        const safe = safeProjectLink(inner, allowedUrls);
-        return safe ? protect(safe) : "";
-      })
-      .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1")
-      .replace(/\s+href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-
-    for (const [token, value] of protectedLinks) result = result.split(token).join(value);
-    return result;
-  };
-
-  const start = html.indexOf("<!-- PROJECTS -->");
-  const end = start < 0 ? -1 : html.indexOf("<!-- EDUCATION -->", start + "<!-- PROJECTS -->".length);
-  if (start >= 0 && end > start) {
-    return html.slice(0, start)
-      + sanitizeRegion(html.slice(start, end))
-      + html.slice(end);
-  }
-
-  // If the model drops the template markers while keeping project markup,
-  // fail closed for non-contact links. A template with no project section is
-  // valid and does not need rewriting.
-  if (!/\bclass\s*=\s*(["'])[^"']*\bprojects?\b[^"']*\1/i.test(html)) return html;
-
   const protectedParts = [];
   const protect = (value) => {
     let token = `\u0000CAREER_OPS_CV_PART_${protectedParts.length}\u0000`;
@@ -132,10 +155,20 @@ export function sanitizeHostedProjectLinks(html, sourceCv) {
     protectedParts.push([token, value]);
     return token;
   };
+
   let result = html
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, protect)
-    .replace(CONTACT_ROW, protect);
-  result = sanitizeRegion(result);
+    .replace(CONTACT_ROW, (row) => protect(sanitizeContactRow(row, sourceCv)))
+    .replace(PROJECT_LINK_BLOCK, (_block, _quote, inner) => {
+      const safe = safeProjectLink(inner, allowedUrls);
+      return safe ? protect(safe) : "";
+    })
+    // The hosted template exposes candidate links only in the header contact
+    // row and in project-link blocks. Strip other anchors and href attributes
+    // globally so comments or section reshaping cannot bypass the allowlist.
+    .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, "$1")
+    .replace(/\s+href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+
   for (const [token, value] of protectedParts) result = result.split(token).join(value);
   return result;
 }
