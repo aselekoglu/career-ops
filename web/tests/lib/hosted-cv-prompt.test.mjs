@@ -29,6 +29,9 @@ test("hosted CV prompt adapts profile positioning while keeping evidence and ATS
   assert.match(prompt.user, /strict reverse-chronological order/i);
   assert.match(prompt.user, /Job requirements suggest emphasis, never new qualifications/i);
   assert.match(prompt.user, /Delete optional elements and their separators/i);
+  assert.match(prompt.system, /project URLs must be exact HTTPS URLs from the SOURCE CV's Projects section/i);
+  assert.match(prompt.user, /class="project-link"/);
+  assert.match(prompt.user, /\.project-link a\s*\{[\s\S]*text-decoration: underline/);
   assert.match(prompt.user, /Avoid keyword stuffing/i);
   assert.match(prompt.user, /format="a4"/);
 });

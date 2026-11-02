@@ -460,6 +460,24 @@ ${bullets}
   }).join('\n  ');
 }
 
+// Project URLs must be explicit verified web links; never turn arbitrary strings
+// into clickable links or allow script schemes in the final PDF.
+function projectUrl(raw) {
+  if (typeof raw !== 'string' || !/^https:\/\//i.test(raw.trim())) return '';
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) return '';
+    return sanitizeUrl(u.href);
+  } catch {
+    return '';
+  }
+}
+
+function projectLinkLabel(entry) {
+  const url = String(entry?.url || '').trim();
+  return escapeHtml(entry?.url_label || url.replace(/^https:\/\//i, ''));
+}
+
 function buildProjects(entries, partial) {
   if (!Array.isArray(entries) || entries.length === 0) return '';
   if (!partial) {
@@ -467,11 +485,6 @@ function buildProjects(entries, partial) {
       const badge = e.badge
         ? `<span class="project-badge">${escapeHtml(e.badge)}</span>`
         : '';
-      const nameText = escapeHtml(e.name || '');
-      const url = sanitizeUrl(e.url);
-      const nameHtml = url
-        ? `<a href="${url}">${nameText}</a>`
-        : nameText;
       // Prefer a single description; fall back to joining bullets into one line so
       // a bullets-shaped payload still renders inside the .project-desc block.
       const descText = e.description
@@ -482,8 +495,10 @@ function buildProjects(entries, partial) {
       const tech = e.tech
         ? `\n    <div class="project-tech">${escapeHtml(e.tech)}</div>`
         : '';
+      const url = projectUrl(e.url);
+      const link = url ? `\n    <div class="project-link"><a href="${url}">${projectLinkLabel(e)}</a></div>` : '';
       return `<div class="project">
-    <div class="project-title">${nameHtml}${badge}</div>${desc}${tech}
+    <div class="project-title">${escapeHtml(e.name)}${badge}</div>${link}${desc}${tech}
   </div>`;
     }).join('\n  ');
   }
@@ -492,16 +507,13 @@ function buildProjects(entries, partial) {
   return entries.filter(e => hasRequiredFields(e, 'projects', 'html')).map(e => {
     const descText = e.description
       || (Array.isArray(e.bullets) ? e.bullets.filter(Boolean).join(' ') : '');
+    const url = projectUrl(e.url);
     const blockValues = new Map([
       ['BADGE_BLOCK', { value: escapeHtml(e.badge || ''), present: Boolean(e.badge) }],
+      ['URL_BLOCK',   { value: url,                      present: Boolean(url) }],
       ['DESC_BLOCK',  { value: escapeHtml(descText),      present: Boolean(descText) }],
       ['TECH_BLOCK',  { value: escapeHtml(e.tech || ''),  present: Boolean(e.tech) }],
     ]);
-    const nameText = escapeHtml(e.name || '');
-    const url = sanitizeUrl(e.url);
-    const nameHtml = url
-      ? `<a href="${url}">${nameText}</a>`
-      : nameText;
     // A bullets array with 2+ items and no description renders one DESC_BLOCK
     // per bullet, matching how experience renders one <li> per bullet, instead
     // of joining them into a single block.
@@ -521,10 +533,12 @@ function buildProjects(entries, partial) {
       entryBlocks.set('DESC_BLOCK', { ...descBlock, present });
     }
     return fillEntry(entryTemplate, entryBlocks, {
-      NAME:  nameHtml,
-      BADGE: escapeHtml(e.badge || ''),
-      DESC:  escapeHtml(descText),
-      TECH:  escapeHtml(e.tech || ''),
+      NAME:      escapeHtml(e.name || ''),
+      BADGE:     escapeHtml(e.badge || ''),
+      URL:       url,
+      URL_LABEL: projectLinkLabel(e),
+      DESC:      escapeHtml(descText),
+      TECH:      escapeHtml(e.tech || ''),
     }, blockValues);
   }).join('\n  ');
 }
@@ -1122,6 +1136,8 @@ async function runSelfTest() {
     }],
     projects: [{
       name: 'Test Project',
+      url: 'https://github.com/test/test-project',
+      url_label: 'github.com/test/test-project',
       badge: 'Open Source',
       tech: 'Python, FastAPI, Docker',
       description: 'Built a REST API with automated test coverage exceeding 90%.',
@@ -1191,11 +1207,12 @@ async function runSelfTest() {
   // like. One fewer item is exactly the old "one fewer separator" assertion.
   const { github, ...candidateWithoutGithub } = sample.candidate;
   const htmlWithoutGithub = renderHtml(template, { ...sample, candidate: candidateWithoutGithub });
-  const countSeparators = (h) => {
-    const row = h.match(/<div class="contact-row">([\s\S]*?)<\/div>/);
-    return row ? (row[1].match(/<\/a>|<\/span>/g) || []).length : 0;
+  const contactContent = (html) => html.match(/<div class="contact-row">([\s\S]*?)<\/div>/)?.[1] || '';
+  const countSeparators = (html) => {
+    const row = contactContent(html);
+    return (row.match(/<\/a>|<\/span>/g) || []).length;
   };
-  if (htmlWithoutGithub.includes('github.com/test')) {
+  if (contactContent(htmlWithoutGithub).includes('github.com/test')) {
     console.error('Self-test failed: github contact link rendered when candidate.github is absent');
     process.exit(1);
   }
@@ -1211,12 +1228,36 @@ async function runSelfTest() {
     ...sample,
     candidate: { ...sample.candidate, github: { url: 'javascript:alert(1)', display: 'github.com/test' } },
   });
-  if (htmlWithRejectedGithub.includes('href=""') || htmlWithRejectedGithub.includes('github.com/test')) {
+  if (htmlWithRejectedGithub.includes('href=""') || contactContent(htmlWithRejectedGithub).includes('github.com/test')) {
     console.error('Self-test failed: rejected github URL still rendered a contact item');
     process.exit(1);
   }
   if (countSeparators(htmlWithRejectedGithub) !== countSeparators(html) - 1) {
     console.error('Self-test failed: rejected github URL left a dangling separator in the contact row');
+    process.exit(1);
+  }
+
+  // Each included project URL is a visible, clickable PDF anchor. Missing and
+  // rejected URLs must not result in empty href attributes or fake links.
+  if (!html.includes('href="https://github.com/test/test-project"') || !html.includes('github.com/test/test-project')) {
+    console.error('Self-test failed: project repository link missing from output');
+    process.exit(1);
+  }
+  const invalidProject = { ...sample.projects[0], url: 'javascript:alert(1)' };
+  const htmlInvalidProject = renderHtml(template, { ...sample, projects: [invalidProject] }, TEMPLATE_PATH);
+  if (htmlInvalidProject.includes('href=""') || htmlInvalidProject.includes('javascript:alert(1)') || htmlInvalidProject.includes('class="project-link"')) {
+    console.error('Self-test failed: unsafe project URL emitted a link');
+    process.exit(1);
+  }
+  const htmlNoProjectUrl = renderHtml(template, { ...sample, projects: [{ ...sample.projects[0], url: '' }] }, TEMPLATE_PATH);
+  if (htmlNoProjectUrl.includes('class="project-link"')) {
+    console.error('Self-test failed: empty project URL emitted a link');
+    process.exit(1);
+  }
+  const httpProject = { ...sample.projects[0], url: 'http://github.com/test/test-project' };
+  const htmlHttpProject = renderHtml(template, { ...sample, projects: [httpProject] }, TEMPLATE_PATH);
+  if (htmlHttpProject.includes('class="project-link"') || htmlHttpProject.includes('href="http://github.com/test/test-project"')) {
+    console.error('Self-test failed: non-HTTPS project URL emitted a link');
     process.exit(1);
   }
 

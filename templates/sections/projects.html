@@ -4,6 +4,7 @@
   Field placeholders filled per entry:
     NAME         — project name
     BADGE_BLOCK  — conditional: badge span when badge is present; omitted otherwise
+    URL_BLOCK    — conditional: sanitized project URL, visibly clickable in PDF
     DESC_BLOCK   — conditional: description div when description is present; omitted otherwise
     TECH_BLOCK   — conditional: tech div when tech is present; omitted otherwise
 
@@ -12,10 +13,12 @@
 <!--ENTRY-->
 <div class="project">
   <div class="project-title">{{NAME}}{{BADGE_BLOCK}}</div>
+  {{URL_BLOCK}}
   {{DESC_BLOCK}}
   {{TECH_BLOCK}}
 </div>
 <!--BADGE_BLOCK--><span class="project-badge">{{BADGE}}</span><!--/BADGE_BLOCK-->
+<!--URL_BLOCK--><div class="project-link"><a href="{{URL}}">{{URL_LABEL}}</a></div><!--/URL_BLOCK-->
 <!--DESC_BLOCK--><div class="project-desc">{{DESC}}</div><!--/DESC_BLOCK-->
 <!--TECH_BLOCK--><div class="project-tech">{{TECH}}</div><!--/TECH_BLOCK-->
 <!--/ENTRY-->

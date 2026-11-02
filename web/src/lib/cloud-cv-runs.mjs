@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createHostedAiService } from "./ai/hosted-ai.mjs";
 import { parseCvEnvelope } from "./cv-envelope.mjs";
 import { buildHostedCvPrompt } from "./ai/hosted-cv-prompt.mjs";
+import { sanitizeHostedProjectLinks } from "./ai/hosted-cv-project-links.mjs";
 import {
   cloudReadApplications,
   cloudReadCv,
@@ -70,7 +71,7 @@ function publicRun(row) {
   };
 }
 
-function assertSafeHtml(html) {
+function assertSafeHtml(html, sourceCv) {
   if (typeof html !== "string" || !/<!doctype html/i.test(html) || !/<\/html\s*>/i.test(html)) {
     throw new Error("CV_HTML_INVALID");
   }
@@ -78,7 +79,7 @@ function assertSafeHtml(html) {
   if (/\{\{[^}]+\}\}/.test(html)) throw new Error("CV_TEMPLATE_UNFILLED");
   if (/<(?:script|iframe|object|embed|form)\b/i.test(html)) throw new Error("CV_HTML_UNSAFE");
   if (/javascript\s*:/i.test(html) || /@import\b/i.test(html)) throw new Error("CV_HTML_UNSAFE");
-  return html;
+  return sanitizeHostedProjectLinks(html, sourceCv);
 }
 
 function htmlToText(input) {
@@ -138,7 +139,7 @@ async function generateCvHtml(args) {
   const parsed = parseCvEnvelope(raw);
   if (!parsed.ok) throw new Error("CV_ENVELOPE_INVALID:" + parsed.error);
   return {
-    html: assertSafeHtml(parsed.html),
+    html: assertSafeHtml(parsed.html, args.cv),
     format: args.requestedFormat === "a4" ? "a4" : args.requestedFormat === "letter" ? "letter" : parsed.format,
   };
 }
