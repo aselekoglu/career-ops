@@ -94,6 +94,7 @@ test('health and initialization accurately describe the bridge write capabilitie
   assert.match(instructions, /Tracker and Inbox writes are available only for exact rows\/URLs/);
   assert.match(instructions, /Archive\/delete require explicit user confirmation/);
   assert.match(instructions, /Source CV\/profile edits require/);
+  assert.match(instructions, /Profile narrative headline and strengths guide adaptive framing/);
   assert.doesNotMatch(instructions, /Application submission and edits stay disabled/);
 });
 
@@ -209,6 +210,10 @@ test('source schemas reject unknown sources, nested keys, invalid annotations, i
   assert.equal(byName('career_ops_source_get').inputSchema.properties.source.enum.join(','), 'cv,profile');
   assert.equal(byName('career_ops_cv_edit_preview').inputSchema.properties.edits.items.additionalProperties, false);
   assert.equal(byName('career_ops_profile_edit_preview').inputSchema.properties.patch.additionalProperties, false);
+  assert.equal(byName('career_ops_profile_edit_preview').inputSchema.properties.patch.properties.headline.type, 'string');
+  assert.equal(byName('career_ops_profile_edit_preview').inputSchema.properties.patch.properties.superpowers.items.type, 'string');
+  assert.deepEqual(byName('career_ops_profile_edit_preview').inputSchema.properties.sourceAnnotations.properties.superpowers.required, ['kind', 'reference']);
+  assert.equal(byName('career_ops_profile_edit_preview').inputSchema.properties.sourceAnnotations.properties.superpowers.additionalProperties, false);
   assert.deepEqual(byName('career_ops_source_apply').inputSchema.properties.confirm.enum, [true]);
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async () => { calls++; return Response.json({}); });
@@ -229,6 +234,9 @@ test('source schemas reject unknown sources, nested keys, invalid annotations, i
     ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { location: 'Toronto' }, sourceAnnotations: {} }],
     ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { compMin: 100 }, sourceAnnotations: { compMin: annotation } }],
     ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { name: 'Name' }, sourceAnnotations: { name: { ...annotation, private: 'unknown' } } }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { headline: ' ' }, sourceAnnotations: { headline: annotation } }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { superpowers: [] }, sourceAnnotations: { superpowers: annotation } }],
+    ['career_ops_profile_edit_preview', { expectedSha256, operationId, patch: { superpowers: ['Root cause', ' '] }, sourceAnnotations: { superpowers: annotation } }],
     ['career_ops_source_proposal', { source: 'cv', proposalId: '../proposal' }],
     ['career_ops_source_apply', { source: 'cv', proposalId, expectedSha256, operationId, confirm: false }],
     ['career_ops_source_history', { source: 'profile', limit: 101 }],
@@ -266,19 +274,28 @@ test('source previews use fixed Basic-authenticated proposal routes and never ca
     assert.equal(String(url), env.CAREER_OPS_API_ORIGIN + '/api/sources/profile/proposals');
     assert.deepEqual(JSON.parse(options.body), {
       source: 'profile', expectedSha256: baseSha, operationId: profileOperationId,
-      patch: { location: 'Toronto' }, sourceAnnotations: { location: annotation },
+      patch: { location: 'Toronto', headline: 'Problem-first innovator', superpowers: ['Root-cause analysis', 'Practical solution design'] },
+      sourceAnnotations: { location: annotation, headline: annotation, superpowers: annotation },
     });
     return Response.json({ proposalId: profileOperationId, source: 'profile', status: 'preview', baseSha256: baseSha, proposedSha256: proposedSha,
-      diff: [{ path: 'candidate.location', before: 'Ottawa', after: 'Toronto', fields: ['location'], sourceAnnotations: [annotation] }], expiresAt: '2026-10-05T00:00:00.000Z', proposedContent: 'must-not-escape' });
+      diff: [
+        { path: 'candidate.location', before: 'Ottawa', after: 'Toronto', fields: ['location'], sourceAnnotations: [annotation] },
+        { path: 'narrative.headline', before: 'Old headline', after: 'Problem-first innovator', fields: ['headline'], sourceAnnotations: [annotation] },
+        { path: 'narrative.superpowers', before: ['Old strength'], after: ['Root-cause analysis', 'Practical solution design'], fields: ['superpowers'], sourceAnnotations: [annotation] },
+      ], expiresAt: '2026-10-05T00:00:00.000Z', proposedContent: 'must-not-escape' });
   });
   const cv = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_cv_edit_preview', arguments: { expectedSha256: baseSha, operationId: cvOperationId, edits } }), configured)).json();
   assert.equal(cv.result.structuredContent.status, 'preview');
   assert.equal(cv.result.structuredContent.diff.length, 2);
   assert.ok(!JSON.stringify(cv).includes('must-not-escape'));
   const profile = await (await worker.fetch(rpc('tools/call', { name: 'career_ops_profile_edit_preview', arguments: {
-    expectedSha256: baseSha, operationId: profileOperationId, patch: { location: 'Toronto' }, sourceAnnotations: { location: annotation },
+    expectedSha256: baseSha, operationId: profileOperationId,
+    patch: { location: 'Toronto', headline: 'Problem-first innovator', superpowers: ['Root-cause analysis', 'Practical solution design'] },
+    sourceAnnotations: { location: annotation, headline: annotation, superpowers: annotation },
   } }), configured)).json();
-  assert.equal(profile.result.structuredContent.diff[0].path, 'candidate.location');
+  assert.equal(profile.result.structuredContent.diff.length, 3);
+  assert.equal(profile.result.structuredContent.diff[1].path, 'narrative.headline');
+  assert.equal(profile.result.structuredContent.diff[2].path, 'narrative.superpowers');
   assert.equal(profile.result.structuredContent.source, 'profile');
   assert.equal(calls, 2);
 });

@@ -3,11 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// cloud-cv-runs.mjs imports Next.js/Vercel's extensionless modules, so it cannot
-// be imported directly in a native Node test. Verify the static prompt contract
-// without inventing a second renderer or skipping its runtime build checks.
+// Verify the pure hosted CV prompt contract without importing Next.js/Vercel
+// runtime dependencies or inventing a second renderer.
 const source = readFileSync(
-  fileURLToPath(new URL("../../src/lib/cloud-cv-runs.mjs", import.meta.url)),
+  fileURLToPath(new URL("../../src/lib/ai/hosted-cv-prompt.mjs", import.meta.url)),
   "utf8",
 );
 

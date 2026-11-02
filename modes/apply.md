@@ -276,6 +276,8 @@ For every free-text field, inspect the **rendered form control** before drafting
 
 For each question, generate the response following:
 
+Before drafting free-text answers, read `narrative.headline` and `narrative.superpowers` from `config/profile.yml` when present. Treat them as positioning guidance, not proof. Adapt only the relevant idea to the role and question, and support every experience, impact, and technology claim with the Step 4b sources. Do not repeat the same headline mechanically across answers.
+
 1. **Report context**: Use proof points from block B, STAR stories from block F
 2. **Previous Section H / Application Answers**: If a draft or final response exists, use it as a base and refine
 3. **"I'm choosing you" tone**: Same auto-pipeline framework

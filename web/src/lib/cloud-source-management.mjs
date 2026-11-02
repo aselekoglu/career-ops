@@ -15,7 +15,7 @@ const MAX_REFERENCE_CHARS = 2_000;
 const MAX_BODY_BYTES = 256_000;
 const MAX_HISTORY_OFFSET = 10_000;
 const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
-const PROFILE_FIELDS = new Set(["name", "email", "location", "roles", "compMin", "compMax", "currency", "remote"]);
+const PROFILE_FIELDS = new Set(["name", "email", "location", "roles", "compMin", "compMax", "currency", "remote", "headline", "superpowers"]);
 const ALWAYS_FRESH_PATHS = new Set(["cv.md", "config/profile.yml", "modes/_profile.md", "modes/_custom.md", "article-digest.md", "portals.yml"]);
 const sha = value => createHash("sha256").update(value, "utf8").digest("hex");
 const json = (value, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -156,8 +156,9 @@ export function createCloudSourceManagement({ sql, now = () => new Date() }) {
     if (keys.some(key => !PROFILE_FIELDS.has(key)) || Object.keys(input.sourceAnnotations).length !== keys.length || keys.some(key => !(key in input.sourceAnnotations))) throw new Error("INVALID_PROFILE_PATCH");
     if (("compMin" in input.patch) !== ("compMax" in input.patch)) throw new Error("INVALID_PROFILE_PATCH");
     const p = input.patch;
-    for (const key of ["name", "email", "location", "currency", "remote"]) if (key in p && (typeof p[key] !== "string" || !p[key].trim() || p[key].length > 500)) throw new Error("INVALID_PROFILE_PATCH");
+    for (const key of ["name", "email", "location", "currency", "remote", "headline"]) if (key in p && (typeof p[key] !== "string" || !p[key].trim() || p[key].length > 500)) throw new Error("INVALID_PROFILE_PATCH");
     if ("roles" in p && (!Array.isArray(p.roles) || p.roles.length < 1 || p.roles.length > 6 || p.roles.some(role => typeof role !== "string" || !role.trim() || role.length > 200))) throw new Error("INVALID_PROFILE_PATCH");
+    if ("superpowers" in p && (!Array.isArray(p.superpowers) || p.superpowers.length < 1 || p.superpowers.length > 6 || p.superpowers.some(item => typeof item !== "string" || !item.trim() || item.length > 200))) throw new Error("INVALID_PROFILE_PATCH");
     if ("currency" in p && !/^[A-Z]{3}$/.test(p.currency)) throw new Error("INVALID_PROFILE_PATCH");
     for (const key of ["compMin", "compMax"]) if (key in p && (typeof p[key] !== "number" || !Number.isFinite(p[key]) || p[key] < 0 || p[key] > 1_000_000_000)) throw new Error("INVALID_PROFILE_PATCH");
     if ("compMin" in p && p.compMin > p.compMax) throw new Error("INVALID_PROFILE_PATCH");
@@ -170,13 +171,14 @@ export function createCloudSourceManagement({ sql, now = () => new Date() }) {
     try { parsed = parseYaml(base.content); } catch { throw new Error("PROFILE_FORMAT_INVALID"); }
     if (!ensureObject(parsed)) throw new Error("PROFILE_FORMAT_INVALID");
     const baseObject = cloneObject(parsed), merged = cloneObject(parsed), p = input.patch;
-    for (const parent of ["candidate", "target_roles", "compensation"]) {
+    for (const parent of ["candidate", "target_roles", "compensation", "narrative"]) {
       if (Object.hasOwn(baseObject, parent) && !ensureObject(baseObject[parent])) throw new Error("PROFILE_FORMAT_INVALID");
     }
     const mappings = {
       name: ["candidate", "full_name"], email: ["candidate", "email"], location: ["candidate", "location"],
       roles: ["target_roles", "primary"], compMin: ["compensation", "target_range"], compMax: ["compensation", "target_range"],
       currency: ["compensation", "currency"], remote: ["compensation", "location_flexibility"],
+      headline: ["narrative", "headline"], superpowers: ["narrative", "superpowers"],
     };
     const targetRange = "compMin" in p ? `${p.compMin}-${p.compMax}` : null;
     for (const key of keys) {
@@ -188,10 +190,13 @@ export function createCloudSourceManagement({ sql, now = () => new Date() }) {
     if (Buffer.byteLength(proposedContent, "utf8") > MAX_CV_BYTES) throw new Error("SOURCE_TOO_LARGE");
     const annotations = {};
     for (const key of keys) annotations[key] = await validateAnnotation(input.sourceAnnotations[key]);
-    const diff = unchanged ? [] : [...new Set(keys.map(key => mappings[key].join(".")))].map(path => {
+    const diff = unchanged ? [] : [...new Set(keys.map(key => mappings[key].join(".")))].flatMap(path => {
       const keysForPath = keys.filter(key => mappings[key].join(".") === path);
       const pathParts = path.split(".");
-      return { path, before: pathValue(baseObject, pathParts) ?? null, after: pathValue(merged, pathParts) ?? null, fields: keysForPath, sourceAnnotations: keysForPath.map(key => annotations[key]) };
+      const before = pathValue(baseObject, pathParts) ?? null;
+      const after = pathValue(merged, pathParts) ?? null;
+      if (isDeepStrictEqual(before, after)) return [];
+      return [{ path, before, after, fields: keysForPath, sourceAnnotations: keysForPath.map(key => annotations[key]) }];
     });
     return { proposedContent, diff, sourceAnnotations: annotations, unchanged };
   }
