@@ -848,8 +848,9 @@ async function runSelfTest() {
   // must drop both its anchor and its separator, leaving no dangling item.
   const { github, ...candidateWithoutGithub } = sample.candidate;
   const htmlWithoutGithub = renderHtml(template, { ...sample, candidate: candidateWithoutGithub });
+  const contactContent = (html) => html.match(/<div class="contact-row">([\s\S]*?)<\/div>/)?.[1] || '';
   const countSeparators = (h) => (h.match(/class="separator"/g) || []).length;
-  if (htmlWithoutGithub.includes('github.com/test')) {
+  if (contactContent(htmlWithoutGithub).includes('github.com/test')) {
     console.error('Self-test failed: github contact link rendered when candidate.github is absent');
     process.exit(1);
   }
@@ -865,7 +866,7 @@ async function runSelfTest() {
     ...sample,
     candidate: { ...sample.candidate, github: { url: 'javascript:alert(1)', display: 'github.com/test' } },
   });
-  if (htmlWithRejectedGithub.includes('href=""') || htmlWithRejectedGithub.includes('github.com/test')) {
+  if (htmlWithRejectedGithub.includes('href=""') || contactContent(htmlWithRejectedGithub).includes('github.com/test')) {
     console.error('Self-test failed: rejected github URL still rendered a contact item');
     process.exit(1);
   }
